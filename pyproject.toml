@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nexus-orchestrator"
+version = "0.1.0"
+description = "Distributed Agentic Workflow System — Master + Worker nodes over Redis/ARQ"
+requires-python = ">=3.10"
+dependencies = [
+    # --- Async job queue (Redis-backed, asyncio-native) ---
+    "arq>=0.26",
+
+    # --- Redis async client (ARQ dependency, also used directly) ---
+    "redis[hiredis]>=5.0",
+
+    # --- Typed data contracts shared between master and workers ---
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",   # .env / environment variable loading
+
+    # --- Resource monitoring & process management ---
+    "psutil>=6.0",
+
+    # --- Structured async logging ---
+    "structlog>=24.1",
+
+    # --- HTTP client for agents that call external APIs ---
+    "httpx>=0.27",
+
+    # --- CLI entrypoints ---
+    "typer>=0.12",
+
+    # --- Async utilities ---
+    "anyio>=4.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+nexus-master = "scripts.start_master:main"
+nexus-worker = "scripts.start_worker:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nexus", "scripts"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
