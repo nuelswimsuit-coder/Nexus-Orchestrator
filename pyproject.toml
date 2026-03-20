@@ -32,6 +32,25 @@ dependencies = [
 
     # --- Async utilities ---
     "anyio>=4.4",
+
+    # --- API server ---
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+
+    # --- Telegram bot ---
+    "aiogram>=3.20",
+
+    # --- Telefix bridge (async SQLite) ---
+    "aiosqlite>=0.20",
+
+    # --- Secrets encryption (Vault at-rest) ---
+    "cryptography>=42.0",
+
+    # --- API rate limiting ---
+    "slowapi>=0.1.9",
+
+    # --- Auto-Deployer: SSH/SCP to worker nodes (Phase 15) ---
+    "paramiko>=3.4",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +64,8 @@ dev = [
 [project.scripts]
 nexus-master = "scripts.start_master:main"
 nexus-worker = "scripts.start_worker:main"
+nexus-api = "scripts.start_api:main"
+nexus-telegram = "scripts.start_telegram_bot:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["nexus", "scripts"]

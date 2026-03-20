@@ -1,0 +1,47 @@
+# Nexus Orchestrator — Worker Requirements
+# Install inside the .venv:
+#   pip install -r requirements.txt
+#
+# system_bootstrap.py handles this automatically on first run.
+
+# ── Job queue & broker ────────────────────────────────────────────────────────
+arq>=0.26
+redis[hiredis]>=5.0
+
+# ── Config & data contracts ───────────────────────────────────────────────────
+pydantic>=2.7
+pydantic-settings>=2.3
+python-dotenv>=1.0
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+structlog>=24.1
+
+# ── System monitoring ─────────────────────────────────────────────────────────
+psutil>=6.0
+
+# ── Telegram (MTProto client — worker sessions) ───────────────────────────────
+telethon>=1.36
+cryptography>=42.0
+Pillow>=10.0
+
+# ── Telegram Bot API (notification bot) ──────────────────────────────────────
+aiogram>=3.20
+
+# ── HTTP client ───────────────────────────────────────────────────────────────
+httpx>=0.27
+
+# ── Async utilities ───────────────────────────────────────────────────────────
+anyio>=4.4
+
+# ── SSH / remote deploy (Master only, harmless on workers) ───────────────────
+paramiko>=3.4
+
+# ── OpenClaw browser scraping (Linux worker only — Phase 19) ─────────────────
+# After installing, run: playwright install chromium
+playwright>=1.44
+
+# ── Polymarket CLOB trading (nexus/trading) ───────────────────────────────────
+# Official Polymarket Python CLOB client — order placement, book queries
+py-clob-client>=0.18
+# Builder signing SDK — attaches POLY_BUILDER_* attribution headers to orders
+py-builder-signing-sdk>=0.1

@@ -1,0 +1,1029 @@
+"""
+Nexus Auto-Deployer Service  (Phase 17 — Zero-Touch Cluster Update)
+====================================================================
+
+Syncs `nexus/`, `scripts/`, `requirements.txt`, `start_nexus.sh`, and
+`run_worker.sh` from the Master to every worker node over SSH/SCP, installs
+dependencies, then restarts the worker via `start_nexus.sh`.
+
+Deployment sequence per node
+-----------------------------
+1. Resolve the target IP:
+   a. If WORKER_IP is set in .env / settings, use it directly.
+   b. Otherwise look up local_ip from the Redis heartbeat for that node_id.
+2. Open SSH connection (paramiko) using WORKER_SSH_USER / WORKER_SSH_PASSWORD.
+3. Send SIGTERM to the remote worker process (graceful stop).
+4. SFTP-upload nexus/, scripts/, and root-level files to the destination path:
+      Linux   → WORKER_DEPLOY_ROOT_LINUX  (default /home/yadmin/Desktop/Nexus-Orchestrator)
+      Windows → WORKER_DEPLOY_ROOT_WIN
+5. Run: pip install -r requirements.txt  (inside the remote .venv)
+6. Re-launch the worker via `bash start_nexus.sh` so PYTHONPATH is set.
+7. Publish progress events to Redis for the dashboard SSE stream.
+
+Progress events
+---------------
+Each step emits a JSON event to  nexus:deploy:progress:<node_id>  ::
+
+    {
+        "node_id": "worker_laptop_01",
+        "step":    "installing_deps",     # see DeployStep
+        "status":  "running",             # "running" | "done" | "error"
+        "detail":  "pip install -r …",
+        "ts":      "2025-01-01T00:00:00Z"
+    }
+
+Configuration (.env)
+---------------------
+    WORKER_SSH_USER=yadmin
+    WORKER_SSH_PASSWORD=<password>
+    WORKER_IP=192.168.1.42            # direct IP — no Redis heartbeat needed
+    WORKER_DEPLOY_ROOT_LINUX=/home/yadmin/Desktop/Nexus-Orchestrator
+    WORKER_DEPLOY_ROOT_WIN=C:\\Users\\Yarin\\Desktop\\Nexus-Orchestrator
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Literal
+
+import structlog
+
+log = structlog.get_logger(__name__)
+
+# ── Constants ──────────────────────────────────────────────────────────────────
+
+NEXUS_ROOT = Path(__file__).resolve().parent.parent.parent.parent  # project root
+
+# Directories to sync (relative to project root)
+SYNC_DIRS = ["nexus", "scripts"]
+
+# Individual root-level files to sync alongside the directories
+SYNC_FILES = [
+    "requirements.txt",
+    "start_nexus.sh",
+    "run_worker.sh",
+    "pyproject.toml",
+]
+
+# Redis key prefix for progress events
+PROGRESS_KEY_PREFIX = "nexus:deploy:progress:"
+PROGRESS_MAX_LEN = 100
+
+DeployStep = Literal[
+    "connecting",
+    "stopping_worker",
+    "uploading",
+    "installing_deps",
+    "restarting",
+    "done",
+    "error",
+]
+
+DeployStatus = Literal["running", "done", "error"]
+
+# Human-readable labels shown in the dashboard status ticker
+STEP_LABELS: dict[str, str] = {
+    "connecting":      "Connecting…",
+    "stopping_worker": "Stopping worker…",
+    "uploading":       "Syncing files…",
+    "installing_deps": "Installing deps…",
+    "restarting":      "Restarting worker…",
+    "done":            "Worker Live ✓",
+    "error":           "Error ✗",
+}
+
+
+# ── Progress event helper ──────────────────────────────────────────────────────
+
+def _event(
+    node_id: str,
+    step: DeployStep,
+    status: DeployStatus,
+    detail: str = "",
+) -> dict:
+    return {
+        "node_id": node_id,
+        "step": step,
+        "status": status,
+        "detail": detail,
+        "label": STEP_LABELS.get(step, step),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# ── Deployer ──────────────────────────────────────────────────────────────────
+
+class DeployerService:
+    """
+    Orchestrates rolling deployments to all active worker nodes.
+
+    Parameters
+    ----------
+    redis   : Async Redis client (already connected).
+    vault   : Vault instance for reading SSH credentials.
+    settings: The shared Settings object (for WORKER_IP, paths, etc.).
+    """
+
+    def __init__(self, redis, vault, settings=None) -> None:  # type: ignore[type-arg]
+        self._redis = redis
+        self._vault = vault
+        self._settings = settings
+
+    # ── Public API ─────────────────────────────────────────────────────────────
+
+    async def deploy_all(self, node_ids: list[str] | None = None) -> dict[str, str]:
+        """
+        Deploy to all active workers (or a specific subset).
+
+        If WORKER_IP is set in settings, a synthetic node entry is added so
+        the laptop is always reachable even when it has no Redis heartbeat.
+
+        Returns {node_id: "ok" | "error: <reason>"}.
+        """
+        targets = node_ids or await self._build_target_list()
+        if not targets:
+            log.warning("deployer_no_targets")
+            return {}
+
+        log.info("deployer_start", targets=targets)
+        results: dict[str, str] = {}
+
+        sem = asyncio.Semaphore(3)
+
+        async def _deploy_one(nid: str) -> None:
+            async with sem:
+                results[nid] = await self._deploy_node(nid)
+
+        await asyncio.gather(*[_deploy_one(nid) for nid in targets])
+        log.info("deployer_done", results=results)
+        return results
+
+    async def sync_project_to_worker(
+        self,
+        project_name: str,
+        project_path: str,
+        remote_path: str | None = None,
+    ) -> str:
+        """
+        Phase 20 — Multi-Project Sync.
+
+        Sync a specific desktop project (OTP_Sessions_Creator, BudgetTracker,
+        etc.) to the Linux worker at a custom remote path.
+
+        Parameters
+        ----------
+        project_name : Name of the project (for logging and progress events)
+        project_path : Local absolute path to the project directory
+        remote_path  : Remote destination (defaults to /home/yadmin/Desktop/{project_name})
+
+        Returns "ok" or "error: <reason>".
+        """
+        node_id = "worker_linux"
+        ip = self._get_setting("worker_ip")
+        if not ip:
+            detail = "WORKER_IP is not set in .env — cannot sync"
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
+
+        if not os.path.exists(project_path):
+            detail = f"Project path does not exist: {project_path}"
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
+
+        remote_dest = remote_path or f"/home/yadmin/Desktop/{project_name}"
+        ssh_user = self._get_setting("worker_ssh_user") or "yadmin"
+        ssh_pass = (
+            self._vault._backend.get("WORKER_SSH_PASSWORD")
+            or os.environ.get("WORKER_SSH_PASSWORD")
+            or self._get_setting("worker_ssh_password")
+            or ""
+        )
+
+        if not ssh_pass:
+            detail = "WORKER_SSH_PASSWORD is not set in .env or Vault"
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
+
+        try:
+            import paramiko  # type: ignore[import-untyped]
+        except ImportError:
+            detail = "paramiko not installed — run: pip install paramiko"
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
+
+        await self.clear_progress(node_id)
+        ssh = paramiko.SSHClient()
+        # Security hardening: use known_hosts instead of auto-accepting unknown keys
+        try:
+            ssh.load_system_host_keys()
+            ssh.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
+            ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
+        except Exception:
+            # Fallback to auto-accept with warning for development
+            log.warning("ssh_security_fallback",
+                       reason="known_hosts not found — using AutoAddPolicy")
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        try:
+            # ── 1. Connect ────────────────────────────────────────────────────
+            await self._emit(node_id, "connecting", "running",
+                             f"SSH → {ssh_user}@{ip}")
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: ssh.connect(
+                    hostname=ip, username=ssh_user, password=ssh_pass,
+                    timeout=15, banner_timeout=15,
+                ),
+            )
+            await self._emit(node_id, "connecting", "done",
+                             f"Connected to {ip}")
+
+            # ── 2. Sync project files ─────────────────────────────────────────
+            await self._emit(node_id, "uploading", "running",
+                             f"Syncing {project_name} → {remote_dest}")
+            
+            file_count = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._sync_single_project(ssh, project_path, remote_dest, project_name),
+            )
+            
+            await self._emit(node_id, "uploading", "done",
+                             f"{file_count} files synced to {remote_dest}")
+
+            await self._emit(node_id, "done", "done",
+                             f"Project '{project_name}' deployed — ready on worker")
+            return "ok"
+
+        except Exception as exc:
+            detail = str(exc)
+            log.exception("deployer_project_sync_error", 
+                         project=project_name, node_id=node_id, error=detail)
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
+        finally:
+            ssh.close()
+
+    def _sync_single_project(
+        self,
+        ssh,
+        local_project_path: str,
+        remote_dest: str,
+        project_name: str,
+    ) -> int:
+        """
+        SFTP-upload an entire desktop project to the worker.
+        Returns the number of files transferred.
+        """
+        from pathlib import Path
+
+        sftp = ssh.open_sftp()
+        local_path = Path(local_project_path)
+        file_count = 0
+
+        try:
+            _sftp_mkdir_p(sftp, remote_dest)
+
+            # Recursive upload with exclusions
+            for item in local_path.rglob("*"):
+                # Skip large/unnecessary directories
+                if any(skip in item.parts for skip in 
+                      ("node_modules", ".venv", ".git", "__pycache__", 
+                       ".mypy_cache", "venv", "vendor", ".next", "dist", "build")):
+                    continue
+                
+                if item.is_file():
+                    try:
+                        # Calculate relative path
+                        rel_path = item.relative_to(local_path)
+                        remote_file_path = f"{remote_dest}/{str(rel_path).replace(os.sep, '/')}"
+                        
+                        # Ensure parent directory exists
+                        remote_parent = "/".join(remote_file_path.split("/")[:-1])
+                        _sftp_mkdir_p(sftp, remote_parent)
+                        
+                        # Upload the file
+                        sftp.put(str(item), remote_file_path)
+                        file_count += 1
+                        
+                        # Log progress every 50 files
+                        if file_count % 50 == 0:
+                            log.debug("project_sync_progress", 
+                                     project=project_name, files_done=file_count)
+                                     
+                    except Exception as exc:
+                        log.debug("project_sync_file_error", 
+                                 file=str(item), error=str(exc))
+
+        finally:
+            sftp.close()
+
+        log.info("project_sync_complete", 
+                 project=project_name, files_transferred=file_count,
+                 remote_dest=remote_dest)
+        return file_count
+
+    async def sync_to_worker(self) -> str:
+        """
+        Phase 19 — Nexus-Push direct sync.
+
+        Connects to WORKER_IP via paramiko, uploads nexus/, scripts/,
+        and requirements.txt via SFTP (emitting per-file progress events),
+        then executes the exact self-healing command:
+
+            bash -c 'cd /home/yadmin/Desktop/Nexus-Orchestrator/scripts
+              && source .venv/bin/activate
+              && pip install -r ../requirements.txt
+              && pkill -f start_worker.py || true
+              && nohup python3 start_worker.py > worker.log 2>&1 &'
+
+        Every step emits JSON events to nexus:deploy:progress:worker_linux
+        so the dashboard terminal streams them live.
+
+        Returns "ok" or "error: <reason>".
+        """
+        node_id = "worker_linux"
+        ip      = self._get_setting("worker_ip")
+        if not ip:
+            detail = "WORKER_IP is not set in .env — cannot sync"
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
+
+        remote_root = (
+            self._get_setting("worker_remote_path")
+            or self._get_setting("worker_deploy_root_linux")
+            or "/home/yadmin/Desktop/Nexus-Orchestrator"
+        )
+        ssh_user = self._get_setting("worker_ssh_user") or "yadmin"
+        ssh_pass = (
+            self._vault._backend.get("WORKER_SSH_PASSWORD")
+            or os.environ.get("WORKER_SSH_PASSWORD")
+            or self._get_setting("worker_ssh_password")
+            or ""
+        )
+
+        if not ssh_pass:
+            detail = "WORKER_SSH_PASSWORD is not set in .env or Vault"
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
+
+        try:
+            import paramiko  # type: ignore[import-untyped]
+        except ImportError:
+            detail = "paramiko not installed — run: pip install paramiko"
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
+
+        await self.clear_progress(node_id)
+        ssh = paramiko.SSHClient()
+        # Security hardening: use known_hosts instead of auto-accepting unknown keys
+        try:
+            ssh.load_system_host_keys()
+            ssh.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
+            ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
+        except Exception:
+            # Fallback to auto-accept with warning for development
+            log.warning("ssh_security_fallback",
+                       reason="known_hosts not found — using AutoAddPolicy")
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        # Shared queue: upload thread pushes (filename, done_count, total) tuples;
+        # the async loop drains it and emits Redis events.
+        upload_queue: asyncio.Queue[tuple[str, int, int] | None] = asyncio.Queue()
+
+        async def _drain_upload_queue() -> None:
+            """Relay per-file upload progress from the executor thread to Redis."""
+            while True:
+                item = await upload_queue.get()
+                if item is None:
+                    break
+                fname, done, total = item
+                pct = int(done / total * 100) if total else 0
+                await self._emit(
+                    node_id, "uploading", "running",
+                    f"[{done}/{total}] {fname}  ({pct}%)",
+                )
+
+        loop = asyncio.get_event_loop()
+
+        def _progress_cb(fname: str, done: int, total: int) -> None:
+            """Called from the executor thread for each uploaded file."""
+            loop.call_soon_threadsafe(upload_queue.put_nowait, (fname, done, total))
+
+        try:
+            # ── 1. Connect ────────────────────────────────────────────────────
+            await self._emit(node_id, "connecting", "running",
+                             f"SSH → {ssh_user}@{ip}")
+            await loop.run_in_executor(
+                None,
+                lambda: ssh.connect(
+                    hostname=ip, username=ssh_user, password=ssh_pass,
+                    timeout=15, banner_timeout=15,
+                ),
+            )
+            await self._emit(node_id, "connecting", "done",
+                             f"Connected to {ip}")
+
+            # ── 2. Count files so the progress bar has a denominator ──────────
+            total_files = _count_sync_files()
+            await self._emit(node_id, "uploading", "running",
+                             f"Uploading {total_files} files → {remote_root}")
+
+            # Start draining upload events while the upload runs
+            drain_task = asyncio.create_task(_drain_upload_queue())
+
+            await loop.run_in_executor(
+                None,
+                lambda: self._upload_with_progress(ssh, remote_root, _progress_cb),
+            )
+
+            # Signal the drain task to stop and wait for it
+            await upload_queue.put(None)
+            await drain_task
+
+            await self._emit(node_id, "uploading", "done",
+                             f"{total_files} files synced to {remote_root}")
+
+            # ── 3. Self-healing command ───────────────────────────────────────
+            # Use bash -c so `source` works in the non-interactive exec_command shell
+            heal_cmd = (
+                f"bash -c 'cd {remote_root}/scripts"
+                f" && source .venv/bin/activate"
+                f" && pip install -r ../requirements.txt"
+                f" && pkill -f start_worker.py || true"
+                f" && nohup python3 start_worker.py > worker.log 2>&1 &'"
+            )
+
+            await self._emit(node_id, "installing_deps", "running",
+                             "pip install -r requirements.txt")
+            exit_code, stdout_tail = await loop.run_in_executor(
+                None,
+                lambda: self._run_heal(ssh, heal_cmd),
+            )
+            if exit_code != 0:
+                await self._emit(node_id, "installing_deps", "error",
+                                 f"pip install exited {exit_code} — {stdout_tail[-200:]}")
+            else:
+                await self._emit(node_id, "installing_deps", "done",
+                                 "Dependencies installed")
+
+            await self._emit(node_id, "restarting", "done",
+                             "start_worker.py launched in background")
+            await self._emit(node_id, "done", "done",
+                             "Deployment complete — Worker Live ✓")
+            return "ok"
+
+        except Exception as exc:
+            detail = str(exc)
+            log.exception("deployer_sync_error", node_id=node_id, error=detail)
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
+        finally:
+            ssh.close()
+
+    def _upload_with_progress(
+        self,
+        ssh,
+        remote_root: str,
+        progress_cb: "Callable[[str, int, int], None]",
+    ) -> None:
+        """
+        Upload nexus/, scripts/, and requirements.txt via SFTP.
+        Calls progress_cb(filename, files_done_so_far, total_files) after each file.
+        """
+        from typing import Callable  # local import to avoid circular
+
+        sftp = ssh.open_sftp()
+        try:
+            _sftp_mkdir_p(sftp, remote_root)
+
+            # Collect all (local_path, remote_path) pairs up front
+            pairs: list[tuple[Path, str]] = []
+
+            for dir_name in SYNC_DIRS:
+                local_dir = NEXUS_ROOT / dir_name
+                if local_dir.exists():
+                    remote_dir = f"{remote_root}/{dir_name}"
+                    _collect_files(local_dir, remote_dir, pairs)
+
+            for file_name in SYNC_FILES:
+                local_file = NEXUS_ROOT / file_name
+                if local_file.exists():
+                    pairs.append((local_file, f"{remote_root}/{file_name}"))
+
+            total = len(pairs)
+            for idx, (local_path, remote_path) in enumerate(pairs, start=1):
+                # Ensure parent directory exists
+                remote_parent = "/".join(remote_path.split("/")[:-1])
+                _sftp_mkdir_p(sftp, remote_parent)
+                try:
+                    sftp.put(str(local_path), remote_path)
+                except Exception as exc:
+                    log.warning("sftp_put_error",
+                                local=str(local_path), remote=remote_path,
+                                error=str(exc))
+                rel = str(local_path.relative_to(NEXUS_ROOT))
+                progress_cb(rel, idx, total)
+
+            # Make shell scripts executable
+            for sh in ("start_nexus.sh", "run_worker.sh"):
+                try:
+                    sftp.chmod(f"{remote_root}/{sh}", 0o755)
+                except Exception:
+                    pass
+        finally:
+            sftp.close()
+
+    def _run_heal(self, ssh, cmd: str) -> tuple[int, str]:
+        """
+        Execute the self-healing command and wait for it to complete.
+        Returns (exit_code, combined_output_tail).
+        """
+        _, stdout, stderr = ssh.exec_command(cmd, timeout=300)
+        out = stdout.read().decode(errors="replace")
+        err = stderr.read().decode(errors="replace")
+        exit_code = stdout.channel.recv_exit_status()
+        combined = (out + err)[-1200:]
+        log.info("deployer_heal_output", combined=combined, exit_code=exit_code)
+        return exit_code, combined
+
+    async def get_progress(self, node_id: str) -> list[dict]:
+        key = f"{PROGRESS_KEY_PREFIX}{node_id}"
+        raw_events = await self._redis.lrange(key, 0, -1)
+        return [json.loads(e) for e in raw_events]
+
+    async def clear_progress(self, node_id: str) -> None:
+        await self._redis.delete(f"{PROGRESS_KEY_PREFIX}{node_id}")
+
+    # ── Target resolution ──────────────────────────────────────────────────────
+
+    async def _build_target_list(self) -> list[str]:
+        """
+        Combine Redis-discovered workers with any WORKER_IP static entry.
+        Deduplicates by node_id.
+        """
+        targets: list[str] = []
+
+        # Static WORKER_IP entry — always included when configured
+        worker_ip = self._get_setting("worker_ip")
+        if worker_ip:
+            targets.append("worker_linux")  # canonical ID for the static laptop
+
+        # Redis-discovered workers
+        redis_workers = await self._discover_worker_nodes()
+        for nid in redis_workers:
+            if nid not in targets:
+                targets.append(nid)
+
+        return targets
+
+    async def _discover_worker_nodes(self) -> list[str]:
+        pattern = "nexus:heartbeat:*"
+        worker_ids: list[str] = []
+        cursor = 0
+        while True:
+            cursor, keys = await self._redis.scan(
+                cursor=cursor, match=pattern, count=100
+            )
+            for key in keys:
+                raw = await self._redis.get(key)
+                if not raw:
+                    continue
+                try:
+                    hb = json.loads(raw)
+                    if hb.get("role") == "worker":
+                        worker_ids.append(hb["node_id"])
+                except Exception:
+                    pass
+            if cursor == 0:
+                break
+        return worker_ids
+
+    async def _resolve_ip(self, node_id: str) -> str | None:
+        """
+        Resolve the IP for a node.
+
+        Priority:
+        1. If node_id == "worker_linux" and WORKER_IP is set → use it directly.
+        2. Otherwise look up local_ip from the Redis heartbeat.
+        """
+        worker_ip = self._get_setting("worker_ip")
+        if node_id == "worker_linux" and worker_ip:
+            return worker_ip
+
+        key = f"nexus:heartbeat:{node_id}"
+        raw = await self._redis.get(key)
+        if not raw:
+            # Last resort: if only one static IP is configured, use it
+            return worker_ip or None
+        try:
+            hb = json.loads(raw)
+            return hb.get("local_ip")
+        except Exception:
+            return None
+
+    # ── Per-node deployment ────────────────────────────────────────────────────
+
+    async def _deploy_node(self, node_id: str) -> str:
+        await self.clear_progress(node_id)
+
+        ip = await self._resolve_ip(node_id)
+        if not ip or ip in ("unknown", ""):
+            detail = (
+                f"No IP for '{node_id}'. "
+                "Set WORKER_IP in .env or ensure the worker is sending heartbeats."
+            )
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
+
+        ssh_user = (
+            self._vault._backend.get("WORKER_SSH_USER")
+            or os.environ.get("WORKER_SSH_USER")
+            or self._get_setting("worker_ssh_user")
+            or "yadmin"
+        )
+        ssh_pass = (
+            self._vault._backend.get("WORKER_SSH_PASSWORD")
+            or os.environ.get("WORKER_SSH_PASSWORD")
+            or self._get_setting("worker_ssh_password")
+            or ""
+        )
+
+        if not ssh_pass:
+            detail = "WORKER_SSH_PASSWORD is not set in .env or Vault"
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
+
+        try:
+            import paramiko  # type: ignore[import-untyped]
+        except ImportError:
+            detail = "paramiko not installed — run: pip install paramiko"
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
+
+        ssh = paramiko.SSHClient()
+        # Security hardening: use known_hosts instead of auto-accepting unknown keys
+        try:
+            ssh.load_system_host_keys()
+            ssh.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
+            ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
+        except Exception:
+            # Fallback to auto-accept with warning for development
+            log.warning("ssh_security_fallback",
+                       reason="known_hosts not found — using AutoAddPolicy")
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        try:
+            # ── 1. Connect ────────────────────────────────────────────────────
+            await self._emit(node_id, "connecting", "running", f"SSH → {ssh_user}@{ip}")
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: ssh.connect(
+                    hostname=ip,
+                    username=ssh_user,
+                    password=ssh_pass,
+                    timeout=15,
+                    banner_timeout=15,
+                ),
+            )
+            await self._emit(node_id, "connecting", "done", f"Connected to {ip}")
+
+            # ── 2. Detect remote OS and resolve destination path ───────────────
+            remote_os, remote_root, venv_python = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self._detect_remote_env(ssh, ssh_user)
+            )
+            log.info("deployer_remote_env", node_id=node_id, remote_os=remote_os, remote_root=remote_root)
+
+            # ── 3. Stop worker ────────────────────────────────────────────────
+            await self._emit(node_id, "stopping_worker", "running", "Sending SIGTERM to worker")
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self._stop_worker(ssh, remote_os, remote_root)
+            )
+            await self._emit(node_id, "stopping_worker", "done", "Worker stopped")
+
+            # ── 4. Upload files ───────────────────────────────────────────────
+            await self._emit(node_id, "uploading", "running",
+                             f"Syncing nexus/ scripts/ → {remote_root}")
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self._upload_dirs(ssh, remote_root, remote_os)
+            )
+            await self._emit(node_id, "uploading", "done", "Files synced")
+
+            # ── 5. Install dependencies ───────────────────────────────────────
+            await self._emit(node_id, "installing_deps", "running",
+                             "pip install -r requirements.txt")
+            deps_ok = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self._install_deps(ssh, remote_root, venv_python, remote_os)
+            )
+            if not deps_ok:
+                await self._emit(node_id, "installing_deps", "error",
+                                 "pip install had errors — check worker.log")
+            else:
+                await self._emit(node_id, "installing_deps", "done",
+                                 "Dependencies installed")
+
+            # ── 6. Restart worker via start_nexus.sh ──────────────────────────
+            await self._emit(node_id, "restarting", "running", "bash start_nexus.sh")
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self._restart_worker(ssh, remote_root, venv_python, remote_os)
+            )
+            await self._emit(node_id, "restarting", "done", "Worker restarted")
+            await self._emit(node_id, "done", "done", "Deployment complete — Worker Live")
+            return "ok"
+
+        except Exception as exc:
+            detail = str(exc)
+            log.exception("deployer_node_error", node_id=node_id, error=detail)
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
+        finally:
+            ssh.close()
+
+    # ── SSH helpers (blocking — run in executor) ───────────────────────────────
+
+    def _detect_remote_env(self, ssh, ssh_user: str) -> tuple[str, str, str]:
+        """
+        Returns (remote_os, remote_root, venv_python).
+
+        Uses WORKER_DEPLOY_ROOT_LINUX / WIN from settings when set.
+        Falls back to auto-detection via `find` on Linux.
+        """
+        _, stdout, _ = ssh.exec_command("uname -s 2>/dev/null || echo Windows")
+        uname = stdout.read().decode().strip()
+        remote_os = "Linux" if "linux" in uname.lower() else "Windows"
+
+        if remote_os == "Linux":
+            # 1. Prefer the explicit config value
+            configured = self._get_setting("worker_deploy_root_linux")
+            if configured:
+                remote_root = configured
+            else:
+                # 2. Auto-detect by finding pyproject.toml
+                _, out, _ = ssh.exec_command(
+                    "find /home -maxdepth 5 -name 'pyproject.toml' 2>/dev/null | head -1"
+                )
+                found = out.read().decode().strip()
+                remote_root = str(Path(found).parent) if found else f"/home/{ssh_user}/Desktop/Nexus-Orchestrator"
+            venv_python = f"{remote_root}/.venv/bin/python"
+        else:
+            configured = self._get_setting("worker_deploy_root_win")
+            remote_root = configured or rf"C:\Users\{ssh_user}\Desktop\Nexus-Orchestrator"
+            venv_python = rf"{remote_root}\.venv\Scripts\python.exe"
+
+        return remote_os, remote_root, venv_python
+
+    def _stop_worker(self, ssh, remote_os: str, remote_root: str) -> None:
+        """Gracefully stop the running worker using the PID file, then pkill."""
+        if remote_os == "Linux":
+            pid_file = f"{remote_root}/worker.pid"
+            # Try PID file first for a clean SIGTERM
+            ssh.exec_command(
+                f"if [ -f {pid_file} ]; then "
+                f"  kill -SIGTERM $(cat {pid_file}) 2>/dev/null || true; "
+                f"  sleep 2; "
+                f"  kill -SIGKILL $(cat {pid_file}) 2>/dev/null || true; "
+                f"  rm -f {pid_file}; "
+                f"fi; "
+                f"pkill -SIGTERM -f 'start_worker.py' 2>/dev/null || true; "
+                f"sleep 1"
+            )
+        else:
+            ssh.exec_command(
+                'taskkill /F /FI "WINDOWTITLE eq nexus-worker*" 2>nul & '
+                'taskkill /F /IM python.exe /FI "WINDOWTITLE eq nexus*" 2>nul & '
+                'timeout /t 2 /nobreak >nul'
+            )
+
+    def _upload_dirs(self, ssh, remote_root: str, remote_os: str) -> None:
+        """SFTP-upload nexus/, scripts/, and root-level files."""
+        sftp = ssh.open_sftp()
+        try:
+            sep = "/" if remote_os == "Linux" else "\\"
+
+            # Ensure the destination root exists
+            _sftp_mkdir_p(sftp, remote_root)
+
+            # Upload directories
+            for dir_name in SYNC_DIRS:
+                local_dir = NEXUS_ROOT / dir_name
+                if local_dir.exists():
+                    remote_dir = f"{remote_root}{sep}{dir_name}"
+                    _sftp_put_dir(sftp, local_dir, remote_dir, remote_os)
+
+            # Upload individual root-level files
+            for file_name in SYNC_FILES:
+                local_file = NEXUS_ROOT / file_name
+                if not local_file.exists():
+                    log.debug("deployer_skip_missing_file", file=file_name)
+                    continue
+                remote_path = f"{remote_root}{sep}{file_name}"
+                try:
+                    sftp.put(str(local_file), remote_path)
+                    log.debug("deployer_file_uploaded", file=file_name)
+                except Exception as exc:
+                    log.warning("deployer_file_upload_error", file=file_name, error=str(exc))
+
+            # Make shell scripts executable on Linux
+            if remote_os == "Linux":
+                for sh in ("start_nexus.sh", "run_worker.sh"):
+                    try:
+                        sftp.chmod(f"{remote_root}/{sh}", 0o755)
+                    except Exception:
+                        pass
+        finally:
+            sftp.close()
+
+    def _install_deps(
+        self,
+        ssh,
+        remote_root: str,
+        venv_python: str,
+        remote_os: str,
+    ) -> bool:
+        """
+        Install dependencies on the remote node.
+
+        Linux sequence (matches the spec exactly):
+          1. Create .venv if missing.
+          2. cd <root>/scripts && source ../.venv/bin/activate
+          3. pip install --upgrade pip
+          4. pip install -r ../requirements.txt
+          5. Retry with --no-cache-dir on failure.
+
+        Returns True on success.
+        """
+        if remote_os == "Linux":
+            venv_dir = f"{remote_root}/.venv"
+            scripts_dir = f"{remote_root}/scripts"
+            cmd = (
+                # 1. Create venv if absent
+                f"if [ ! -f {venv_dir}/bin/python ]; then "
+                f"  python3 -m venv {venv_dir}; "
+                f"fi && "
+                # 2. cd into scripts/, activate, upgrade pip, install deps
+                f"cd {scripts_dir} && "
+                f"source {venv_dir}/bin/activate && "
+                f"pip install --quiet --upgrade pip && "
+                f"pip install --quiet -r ../requirements.txt "
+                # 3. Retry with --no-cache-dir if first attempt failed
+                f"|| pip install --quiet --no-cache-dir -r ../requirements.txt; "
+                f"echo EXIT_CODE:$?"
+            )
+        else:
+            req_file = rf"{remote_root}\requirements.txt"
+            cmd = (
+                f'"{venv_python}" -m pip install --quiet --upgrade pip && '
+                f'"{venv_python}" -m pip install --quiet -r "{req_file}"'
+            )
+
+        _, stdout, _ = ssh.exec_command(cmd, timeout=300)
+        output = stdout.read().decode()
+        exit_status = stdout.channel.recv_exit_status()
+        log.info("deployer_deps_output", output=output[-1000:])
+
+        if remote_os == "Linux" and "EXIT_CODE:0" in output:
+            return True
+        return exit_status == 0
+
+    def _restart_worker(
+        self,
+        ssh,
+        remote_root: str,
+        venv_python: str,
+        remote_os: str,
+    ) -> None:
+        """
+        Kill any existing start_worker.py processes, then launch start_nexus.sh
+        detached so it survives the SSH session.
+        """
+        if remote_os == "Linux":
+            start_sh = f"{remote_root}/start_nexus.sh"
+            log_file = f"{remote_root}/worker.log"
+            cmd = (
+                # Kill existing worker processes
+                f"pkill -f 'start_worker.py' 2>/dev/null || true; "
+                f"sleep 1; "
+                # Ensure script is executable
+                f"chmod +x {start_sh}; "
+                # Launch detached — nohup + & ensures it outlives the SSH channel
+                f"cd {remote_root} && "
+                f"nohup bash {start_sh} >> {log_file} 2>&1 &"
+            )
+        else:
+            sep = "\\"
+            worker_script = f"{remote_root}{sep}scripts{sep}start_worker.py"
+            log_file = rf"{remote_root}\worker.log"
+            cmd = (
+                f'cd /d "{remote_root}" && '
+                f'start /B "{venv_python}" "{worker_script}" '
+                f'>> "{log_file}" 2>&1'
+            )
+
+        ssh.exec_command(cmd)
+
+    # ── Redis progress emitter ─────────────────────────────────────────────────
+
+    async def _emit(
+        self,
+        node_id: str,
+        step: DeployStep,
+        status: DeployStatus,
+        detail: str = "",
+    ) -> None:
+        event = _event(node_id, step, status, detail)
+        key = f"{PROGRESS_KEY_PREFIX}{node_id}"
+        await self._redis.rpush(key, json.dumps(event))
+        await self._redis.ltrim(key, -PROGRESS_MAX_LEN, -1)
+        await self._redis.expire(key, 3600)
+        log.debug("deployer_progress", **event)
+
+    # ── Settings helper ────────────────────────────────────────────────────────
+
+    def _get_setting(self, key: str) -> str:
+        """Read a value from the injected settings object, or fall back to env."""
+        if self._settings is not None:
+            return getattr(self._settings, key, "") or ""
+        return os.environ.get(key.upper(), "")
+
+
+# ── File collection helpers ────────────────────────────────────────────────────
+
+def _collect_files(
+    local_dir: Path,
+    remote_dir: str,
+    pairs: "list[tuple[Path, str]]",
+) -> None:
+    """
+    Recursively collect (local_path, remote_path) pairs from local_dir.
+    Skips __pycache__, .venv, .git, node_modules, and compiled bytecode.
+    """
+    for item in local_dir.iterdir():
+        if item.name in ("__pycache__", ".venv", ".git", "node_modules", ".mypy_cache"):
+            continue
+        if item.suffix in (".pyc", ".pyo"):
+            continue
+        remote_path = f"{remote_dir}/{item.name}"
+        if item.is_dir():
+            _collect_files(item, remote_path, pairs)
+        else:
+            pairs.append((item, remote_path))
+
+
+def _count_sync_files() -> int:
+    """Count the total number of files that will be uploaded."""
+    pairs: list[tuple[Path, str]] = []
+    for dir_name in SYNC_DIRS:
+        local_dir = NEXUS_ROOT / dir_name
+        if local_dir.exists():
+            _collect_files(local_dir, f"/{dir_name}", pairs)
+    for file_name in SYNC_FILES:
+        if (NEXUS_ROOT / file_name).exists():
+            pairs.append((NEXUS_ROOT / file_name, file_name))
+    return len(pairs)
+
+
+# ── SFTP helpers ───────────────────────────────────────────────────────────────
+
+def _sftp_put_dir(sftp, local_dir: Path, remote_dir: str, remote_os: str) -> None:
+    """
+    Recursively upload `local_dir` to `remote_dir` via SFTP.
+    Skips __pycache__, .venv, .git, node_modules, and compiled bytecode.
+    """
+    sep = "/" if remote_os == "Linux" else "\\"
+    _sftp_mkdir_p(sftp, remote_dir)
+
+    for item in local_dir.iterdir():
+        if item.name in ("__pycache__", ".venv", ".git", "node_modules", ".mypy_cache"):
+            continue
+        if item.suffix in (".pyc", ".pyo"):
+            continue
+
+        remote_path = f"{remote_dir}{sep}{item.name}"
+        if item.is_dir():
+            _sftp_put_dir(sftp, item, remote_path, remote_os)
+        else:
+            try:
+                sftp.put(str(item), remote_path)
+            except Exception as exc:
+                log.warning("sftp_put_error", local=str(item), remote=remote_path, error=str(exc))
+
+
+def _sftp_mkdir_p(sftp, remote_path: str) -> None:
+    """Create remote directory and all parents (like mkdir -p)."""
+    parts = remote_path.replace("\\", "/").split("/")
+    current = ""
+    for part in parts:
+        if not part:
+            current = "/"
+            continue
+        current = f"{current}/{part}" if current != "/" else f"/{part}"
+        try:
+            sftp.stat(current)
+        except FileNotFoundError:
+            try:
+                sftp.mkdir(current)
+            except Exception:
+                pass

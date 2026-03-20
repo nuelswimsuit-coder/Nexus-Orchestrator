@@ -20,6 +20,12 @@ RESULT_QUEUE = "nexus:results"
 HITL_REQUEST_CHANNEL = "nexus:hitl:requests"
 HITL_RESPONSE_CHANNEL = "nexus:hitl:responses"
 
+# Durable store — every pending HitlRequest is written here so the API
+# can serve it even if it started after the master published the request.
+# Key: nexus:hitl:pending:<request_id>  Value: HitlRequest JSON  TTL: 2h
+HITL_PENDING_KEY_PREFIX = "nexus:hitl:pending:"
+HITL_PENDING_TTL = 7200  # 2 hours
+
 # ── Timeouts (seconds) ────────────────────────────────────────────────────────
 TASK_DEFAULT_TIMEOUT = 300       # 5 min — worker hard-kills a job after this
 HITL_APPROVAL_TIMEOUT = 3600     # 1 hour — HITL gate expires if no human responds

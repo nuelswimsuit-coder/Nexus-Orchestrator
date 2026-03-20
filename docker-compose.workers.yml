@@ -1,0 +1,35 @@
+# Nexus Orchestrator — Worker Scale-Out Compose File
+#
+# Usage:
+#   docker compose -f docker-compose.workers.yml up -d
+#   docker compose -f docker-compose.workers.yml up --scale worker=5 -d
+#   docker compose -f docker-compose.workers.yml down
+
+version: "3.9"
+
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: nexus-worker:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ID=worker-docker-${HOSTNAME:-auto}
+      - WORKER_CAPABILITIES=any
+    volumes:
+      # Mount Mangement Ahu read-only so the scraper subprocess can access it
+      - "C:/Users/Yarin/Desktop/Mangement Ahu:/mangement-ahu:ro"
+    networks:
+      - nexus-net
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+
+networks:
+  nexus-net:
+    driver: bridge

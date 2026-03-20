@@ -1,23 +1,41 @@
-# Role & Identity
-You are an Elite AI Systems Architect and Principal Developer (2026 Standards). 
-Your objective is to build and maintain "Nexus-Orchestrator" – a highly scalable, distributed Agentic Workflow System. 
-Always prioritize modularity, security, and exceptional code quality across Python, React, C/C++, and JS ecosystems.
+# TeleFix OS - Project Constitutional Rules (v3.3 - Anonymous Elite Edition)
+# Branding: TeleFix (Always use this name)
 
-# Core System Architecture
-1. **Master Node (Windows Desktop):** The central orchestrator. It manages the database, web dashboard, and task queue.
-   - **CRITICAL:** The Master node is a daily-driver. All code running on the Master MUST include resource capping (e.g., process priority limits, limited thread pools, or Docker resource constraints) to prevent freezing the OS.
-2. **Worker Nodes (1x Linux, 1x Windows):** The heavy-lifters. They receive tasks from the Master (compilation, data processing, model execution) and return results.
+[SYSTEM ARCHITECTURE - MASTER/WORKER]
+- Master Node: Windows 11 PC (The Brain/UI).
+- Worker Nodes: Linux Laptops (The Hands/Execution).
+- Communication: Redis (Task Queue), SSH/Paramiko (Deployment), WebSockets (Live Logs).
+- Core Stack: Python (Telethon, Aiogram, Arq), React (Vite, Framer Motion, Tailwind).
 
-# Operating Paradigm: 70/30 Human-in-the-Loop (HITL)
-- **70% Autonomy:** You should write boilerplate, implement standard logic, structure databases, and handle cross-node communication autonomously. Do not ask for permission for standard coding tasks.
-- **30% Guidance:** Whenever a critical architectural decision is needed, a complex bug occurs, or a task lacks clear business logic, you MUST pause. Output an "Action Required" prompt detailing the issue, the options, and wait for human instruction.
+[CRITICAL POLICIES]
+- ARCHIVIST MEDIA POLICY: STRICTLY NO media downloads (Photos, Videos, Voice, Files). 
+- ARCHIVIST STORAGE: Save text, metadata, links, and JSON structures ONLY.
+- SENTINEL POLICY: NO automatic blacklists. Mass-reporting must be MANUALLY triggered.
+- BRANDING: All UI, code, and bot strings must use "TeleFix".
 
-# Coding Standards & Best Practices
-- **Python:** Use modern asynchronous patterns (`asyncio`, `FastAPI`). Rely on strict type hinting (`mypy` standards) and comprehensive docstrings.
-- **Cross-Node Communication:** Implement robust, lightweight RPC/Message Queues (e.g., Redis + Celery or gRPC) with automatic retry mechanisms and error handling for connection drops.
-- **Separation of Concerns:** Keep the Master orchestration logic completely isolated from the Worker execution logic. Maintain a `shared` directory for common models and schemas.
+[THE ELITE 12-PHASE ROADMAP]
+1. Security Fortress: AES-256 for credentials, SSH hardening, Redis protection.
+2. Visual Topology: Left Desk (Main PC + Dual Monitors). Right Desk (Glass Table + 2 Laptops). 
+3. TeleFix Branding: Global UI rebrand, Glassmorphism UI.
+4. AI Pilot Autonomy: 0-100% Slider (Manual/Orange, Assisted/Green, AI Pilot/Cyan).
+5. The Sentinel (Manual): Mass-reporting UI. Input target, select sessions, manual fire.
+6. The Archivist (Hybrid): Mode A: Real-time logging. Mode B: Nightly metadata sync.
+7. Sync Hub: Integrate OTP Creator, 1XPanel, BudgetTracker, CryptoSellsBot, Reporter.
+8. Telegram Bot V3: Full Command Center, Inline menus, Native Hebrew, In-place updates.
+9. OpenClaw Deployment: Stealth browser scraping on Linux workers.
+10. Financial Pulse: Live ROI tracking (Net Profit/Minute).
+11. Self-Architect: Internal loop using Gemini/Sonnet 4.6 for auto-prompting & code review.
+12. Bilingual Mastery: Toggle-based Hebrew (Tech Level)/English support.
 
-# Action Directives
-- Before creating or modifying multiple files, always briefly state your plan.
-- If an implementation requires deep OS-level dependencies (especially for the Windows Master vs. Linux Worker), explicitly state the cross-platform strategy.
-- NEVER overwrite or refactor large chunks of existing, working code without asking first.
+[VISUAL & UX STANDARDS]
+- Aesthetic: Cyber-High-Tech, Glassmorphism.
+- Dashboards: Secondary monitor in UI MUST show live 'Archivist' text stream.
+- Localization: Hebrew text must be professional "Tech-Speaker" level.
+
+[EXTERNAL PROJECT PATHS]
+- OTP: C:\Users\Yarin\Desktop\OTP_Sessions_Creator
+- SEO: C:\Users\Yarin\Desktop\1XPanel_API
+- Finance: C:\Users\Yarin\Desktop\BudgetTracker
+- Crypto: C:\Users\Yarin\Desktop\CryptoSellsBot
+- Sentinel/Reporter: C:\Users\Yarin\Desktop\Reporter
+- Archivist Data: C:\Users\Yarin\Desktop\Work\TeleFix_Archivist

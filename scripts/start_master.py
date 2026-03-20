@@ -4,104 +4,539 @@ Master Node entrypoint.
 Usage
 -----
     python scripts/start_master.py
+    nexus-master   (after pip install -e .)
 
-Or via the installed CLI entrypoint (after `pip install -e .`):
-    nexus-master
-
-What this script does
----------------------
-1. Loads settings from .env.
-2. Configures structured logging.
-3. Applies OS-level low-priority scheduling so the master runs quietly
-   in the background without competing with your foreground applications.
-4. Starts the ResourceGuard background monitor.
-5. Connects the Dispatcher to Redis.
-6. Runs a simple demo loop that dispatches two smoke-test tasks and prints
-   the results.  Replace this loop with your real orchestration logic.
+Startup sequence
+----------------
+1. Logging — structured JSON via structlog.
+2. Resource management — OS priority lowered + ResourceGuard background monitor.
+3. Vault — secrets manager initialised (EnvVaultBackend by default).
+4. Notifications — NotificationService with WhatsAppProvider registered.
+5. Dispatcher — connects to Redis, starts real HITL gate listener.
+6. Smoke tests:
+   a. system.echo  — instant, no approval.
+   b. system.sleep — 2 s, no approval.
+   c. HITL test    — pauses here until you Approve/Reject in the dashboard.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import signal as _signal
+import sys
+from pathlib import Path
 
-import structlog
-from arq.connections import RedisSettings
+# Windows / Python 3.10+ fix: the default ProactorEventLoop does not support
+# all asyncio features used by ARQ.  Switch to SelectorEventLoop and ensure a
+# loop exists in the main thread before anything else runs.
+if sys.platform == "win32":
+    # Required for Windows + Python 3.8+ compatibility with aiohttp/arq
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from nexus.master.dispatcher import Dispatcher
-from nexus.master.resource_guard import ResourceGuard, apply_low_priority
-from nexus.shared.config import settings
-from nexus.shared.logging_config import configure_logging
-from nexus.shared.schemas import TaskPayload
+try:
+    asyncio.get_running_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+# ── Force-load .env BEFORE any nexus imports so pydantic-settings always
+# sees the correct values regardless of working directory.
+# This is the fix for "telegram_provider_no_token" when running from a
+# directory other than the project root.
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+if _ENV_FILE.exists():
+    # Manual parse — avoids a python-dotenv dependency while being robust
+    for _line in _ENV_FILE.read_text(encoding="utf-8").splitlines():
+        _line = _line.strip()
+        if not _line or _line.startswith("#") or "=" not in _line:
+            continue
+        _key, _, _val = _line.partition("=")
+        _key = _key.strip()
+        _val = _val.strip().split("#")[0].strip()  # strip inline comments
+        if _key and _key not in os.environ:          # don't override real env vars
+            os.environ[_key] = _val
+
+import structlog  # noqa: E402
+from arq.connections import RedisSettings  # noqa: E402
+
+from nexus.master.dispatcher import Dispatcher  # noqa: E402
+from nexus.master.hitl_gate import TaskRejectedError  # noqa: E402
+from nexus.master.resource_guard import ResourceGuard, apply_low_priority  # noqa: E402
+from nexus.master.supervisor import ProcessSupervisor  # noqa: E402
+from nexus.master.supervisor import Supervisor  # noqa: E402
+from nexus.master.services.architect import ArchitectService  # noqa: E402
+from nexus.master.services.decision_engine import AutonomousOrchestrator  # noqa: E402
+from nexus.master.services.evolution import EvolutionEngine  # noqa: E402
+from nexus.master.services.feedback_loop import FeedbackLoopService  # noqa: E402
+from nexus.master.services.reporting import MultiReportingService, ReportingService  # noqa: E402
+from nexus.master.services.scout import ScoutService  # noqa: E402
+from nexus.master.sentinel import SentinelEngine  # noqa: E402
+from nexus.master.services.vault import Vault  # noqa: E402
+from nexus.shared.config import settings  # noqa: E402
+from nexus.shared.paths import get_telefix_path  # noqa: E402
+from nexus.shared.logging_config import configure_logging  # noqa: E402
+from nexus.shared.notifications.providers.telegram import TelegramProvider  # noqa: E402
+from nexus.shared.notifications.providers.whatsapp import WhatsAppProvider  # noqa: E402
+from nexus.shared.system_settings import sync_runtime_from_system_settings  # noqa: E402
+
+# Inline import — avoids a circular-import risk; the bot module is scripts-level.
+import sys as _sys, importlib as _importlib  # noqa: E402
+_sys.path.insert(0, str(Path(__file__).resolve().parent))  # ensure scripts/ is on path
+from nexus.shared.notifications.service import NotificationService  # noqa: E402
+from nexus.shared.schemas import TaskPayload  # noqa: E402
 
 log = structlog.get_logger(__name__)
 
 
+async def _system_settings_sync_loop(
+    guard: ResourceGuard,
+    interval_s: float = 10.0,
+) -> None:
+    """
+    Keep master runtime caps synced from config/system_settings.json.
+    """
+    while True:
+        await asyncio.sleep(interval_s)
+        dynamic = sync_runtime_from_system_settings()
+        guard.cpu_cap = float(dynamic["power_limit"])
+
+
 async def run() -> None:
+    sync_runtime_from_system_settings()
     # ── 1. Logging ─────────────────────────────────────────────────────────────
     configure_logging(level=settings.log_level, node_id=settings.node_id)
+    print("[START] מוודא שאין מופעים כפולים ומריץ את @sasaNexusBot...")
     log.info("nexus_master_starting", node_id=settings.node_id)
 
-    # ── 2. Resource management ─────────────────────────────────────────────────
-    # Lower OS scheduling priority so the master yields to foreground apps.
-    apply_low_priority()
+    # ── Graceful shutdown event — set by SIGINT / SIGTERM handlers ─────────────
+    loop = asyncio.get_running_loop()
+    _stop_event = asyncio.Event()
 
+    def _on_signal(signum: int, frame: object) -> None:  # noqa: ARG001
+        print("[CLEANUP] סוגר חיבורים ישנים ומתנתק משרתי טלגרם...")
+        log.warning("nexus_master_shutdown_signal", signum=signum)
+        loop.call_soon_threadsafe(_stop_event.set)
+
+    _signal.signal(_signal.SIGINT, _on_signal)
+    try:
+        _signal.signal(_signal.SIGTERM, _on_signal)
+    except (OSError, AttributeError, ValueError):
+        pass  # SIGTERM not available on Windows
+
+    # ── 2. Resource management ─────────────────────────────────────────────────
+    apply_low_priority()
     guard = ResourceGuard(
         cpu_cap_percent=settings.master_cpu_cap_percent,
         ram_cap_mb=settings.master_ram_cap_mb,
     )
-    # Fire-and-forget: runs concurrently with everything else.
     asyncio.create_task(guard.monitor(), name="resource-guard")
+    asyncio.create_task(_system_settings_sync_loop(guard), name="system-settings-sync")
 
-    # ── 3. Dispatcher ──────────────────────────────────────────────────────────
+    # ── 2b. Process supervisor (TERM → 3s → KILL for worker restarts) ──────────
+    supervisor = ProcessSupervisor(term_timeout_s=3.0)
+
+    # ── 3. Vault ───────────────────────────────────────────────────────────────
+    # Reads secrets from NEXUS_SECRET_<KEY> environment variables by default.
+    # Also loads the Mangement Ahu project's .env so Telefix credentials are
+    # available to any Worker task that needs them (e.g. telegram.* tasks).
+    vault = Vault()
+
+    telefix_env = get_telefix_path("Mangement Ahu") / ".env"
+    loaded = vault.load_env_file(
+        telefix_env,
+        key_mapping={
+            "BOT_TOKEN": "TELEFIX_BOT_TOKEN",
+            "API_ID":    "TELEFIX_API_ID",
+            "API_HASH":  "TELEFIX_API_HASH",
+        },
+    )
+    if loaded:
+        # Register which task types get Telefix credentials injected.
+        vault.register_task_secrets("telegram", [
+            "TELEFIX_BOT_TOKEN",
+            "TELEFIX_API_ID",
+            "TELEFIX_API_HASH",
+        ])
+
+    log.info("vault_ready", summary=vault.audit_summary())
+
+    # ── 4. Notifications ───────────────────────────────────────────────────────
+    notifier = NotificationService()
+
+    # ── Telegram (primary channel — token is in .env) ──────────────────────────
+    # Re-read directly from os.environ to guarantee we see the force-loaded values
+    # even if pydantic-settings cached an empty default before the .env was loaded.
+    tg_token   = os.environ.get("TELEGRAM_BOT_TOKEN", "") or settings.telegram_bot_token
+    tg_chat_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "") or settings.telegram_admin_chat_id
+    tg_url     = os.environ.get("TELEGRAM_DASHBOARD_URL", "") or settings.telegram_dashboard_url
+
+    if tg_token and tg_chat_id:
+        tg_provider = TelegramProvider(
+            bot_token=tg_token,
+            admin_chat_id=tg_chat_id,
+            dashboard_url=tg_url or "http://localhost:3000",
+        )
+        notifier.register(tg_provider)
+        log.info(
+            "telegram_notifications_active",
+            chat_id=tg_chat_id,
+            token_prefix=tg_token[:12] + "...",
+        )
+
+        # ── Boot notification ──────────────────────────────────────────────────
+        # If the system was rebooted less than 5 minutes ago, send a Hebrew
+        # Telegram message so the operator knows Nexus came back online.
+        # Redis de-duplication prevents a duplicate message when Worker also
+        # starts within the same boot window.
+        from nexus.shared.boot_notifier import check_and_notify_boot  # noqa: PLC0415
+        await check_and_notify_boot(
+            bot_token=tg_token,
+            admin_chat_id=tg_chat_id,
+            node_id=settings.node_id,
+        )
+
+        # ── Telegram Command Center (inline polling) ───────────────────────────
+        # Import the fully-wired start_bot_polling coroutine from the bot script
+        # and run it as a background task in this event loop.  This means the
+        # bot responds to /start and menu buttons without a separate process.
+        # The ProcessSupervisor (term_timeout_s=3) is available for any caller
+        # that needs to hard-kill a stale bot worker PID before restarting.
+        try:
+            _bot_mod = _importlib.import_module("start_telegram_bot")
+            asyncio.create_task(
+                _bot_mod.start_bot_polling(tg_token),
+                name="telegram-command-center",
+            )
+            log.info(
+                "telegram_command_center_live",
+                hint="INFO: Telegram Command Center is now LIVE and listening.",
+                chat_id=tg_chat_id,
+                supervisor_term_timeout_s=supervisor.term_timeout_s,
+            )
+        except Exception as _bot_exc:
+            log.warning(
+                "telegram_command_center_failed",
+                error=str(_bot_exc),
+                hint="Bot polling could not start — notifications still work.",
+            )
+    else:
+        tg_provider = None
+        log.warning(
+            "telegram_notifications_disabled",
+            hint="Set TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_CHAT_ID in .env",
+        )
+
+    # ── WhatsApp ───────────────────────────────────────────────────────────────
+    # If WhatsApp is mock (no Evolution/Twilio credentials) but Telegram IS
+    # configured, we skip registering WhatsApp entirely — Telegram already
+    # covers all HITL alerts with inline Approve/Reject buttons.
+    # If neither is configured, register WhatsApp in mock mode so at least
+    # the messages appear in the structlog console output.
+    wa_mode = os.environ.get("WHATSAPP_PROVIDER", "") or settings.whatsapp_provider
+    if wa_mode != "mock":
+        notifier.register(WhatsAppProvider(to_number=settings.whatsapp_to_number))
+        log.info("whatsapp_notifications_active", mode=wa_mode, to=settings.whatsapp_to_number)
+    elif not tg_provider:
+        # No Telegram either — register mock WhatsApp so console shows alerts
+        notifier.register(WhatsAppProvider(to_number=settings.whatsapp_to_number))
+        log.warning(
+            "notifications_mock_only",
+            hint=(
+                "Both Telegram and WhatsApp are unconfigured. "
+                "HITL alerts will only appear in the console. "
+                "Set TELEGRAM_BOT_TOKEN + TELEGRAM_ADMIN_CHAT_ID in .env "
+                "to receive real notifications."
+            ),
+        )
+    else:
+        log.info(
+            "whatsapp_skipped_telegram_active",
+            reason="WhatsApp is mock — Telegram covers all HITL alerts with inline buttons.",
+        )
+
+    # ── 5. Dispatcher ──────────────────────────────────────────────────────────
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     dispatcher = Dispatcher(
         redis_settings=redis_settings,
         node_id=settings.node_id,
         resource_guard=guard,
+        vault=vault,
+        notification_service=notifier,
     )
     await dispatcher.start()
 
-    # ── 4. Demo orchestration loop ─────────────────────────────────────────────
-    # Replace everything below with your real workflow logic.
-    # This section is intentionally minimal — just enough to verify the
-    # full stack is wired correctly end-to-end.
+    # ── 5a. Sentinel AI (Autonomous Error Management) ─────────────────────────
+    # The SentinelEngine is the self-healing layer: it monitors Binance latency,
+    # RAM, and worker heartbeats, calls Gemini AI to diagnose crashes, and
+    # executes recommended actions (restart / cooldown / failover) autonomously.
+    # It also exposes its state to the API via app.state.sentinel.
+    sentinel = SentinelEngine(
+        redis=dispatcher._arq,
+        gemini_api_key=os.environ.get("GEMINI_API_KEY", "") or settings.gemini_api_key,
+        node_id=settings.node_id,
+        dispatcher=dispatcher,
+        notifier=notifier,
+    )
+    asyncio.create_task(sentinel.run_loop(), name="sentinel-ai")
+    log.info(
+        "sentinel_ai_registered",
+        hint="[SENTINEL-AI] מערכת הגנה אוטונומית פעילה — ניטור שגיאות, חביון, וזיכרון.",
+    )
 
+    # Expose sentinel on app.state so the API router can read live status
+    from nexus.api.main import app as _nexus_app_sentinel  # noqa: PLC0415
+    _nexus_app_sentinel.state.sentinel = sentinel
+
+    # ── 5a. Supervisor Watchdog (3-Strikes Auto-Recovery) ──────────────────────
+    # The Supervisor monitors the remote Worker (via Redis heartbeat + SSH restart)
+    # and any locally-registered processes.  On failure it applies exponential
+    # backoff (10 s / 30 s / 60 s) and sends a CRITICAL Telegram alert after 3
+    # consecutive crashes inside a 5-minute window.
+    # Each recovery runs in its own asyncio task — other workers are unaffected.
+    supervisor = Supervisor(
+        redis=dispatcher._arq,
+        settings=settings,
+        telegram_provider=tg_provider,
+    )
+    # Optionally supervise the Telegram Command Center bot as a local process.
+    import sys as _sys_sup
+    from pathlib import Path as _Path_sup
+    _bot_script = str(_Path_sup(__file__).resolve().parent / "start_telegram_bot.py")
+    supervisor.register_local(
+        name        = "telegram-bot",
+        restart_cmd = [_sys_sup.executable, _bot_script],
+        node_id     = settings.node_id,
+    )
+    await supervisor.start()
+    log.info(
+        "supervisor_watchdog_registered",
+        hint="3-Strikes auto-recovery active. CRITICAL failures escalated to Telegram.",
+    )
+
+    # Expose supervisor on the app state so the API router can call manual_reset
+    # and serve /api/business/supervisor-status without importing supervisor again.
+    from nexus.api.main import app as _nexus_app  # noqa: PLC0415
+    _nexus_app.state.supervisor = supervisor
+
+    # ── 5b. Autonomous Orchestrator (5-minute brain loop) ─────────────────────
+    # The AutonomousOrchestrator scores all candidate actions every 5 minutes,
+    # dispatches the top action automatically if confidence ≥ 60, and writes
+    # its reasoning to the Redis agent log (visible in the dashboard terminal).
+    #
+    # RGB sync:
+    #   "calculating" → Master PC pulses Deep Indigo
+    #   "dispatching" → Master PC flashes Gold/Yellow
+    #   "warning"     → Master PC pulses Red
+    orchestrator = AutonomousOrchestrator(
+        dispatcher=dispatcher,
+        redis=dispatcher._arq,
+        notifier=notifier,   # enables STUCK alerts via Telegram
+    )
+    asyncio.create_task(
+        orchestrator.run_loop(interval_seconds=60),
+        name="autonomous-orchestrator",
+    )
+    log.info("autonomous_orchestrator_registered", interval_s=60)
+
+    # ── 5c. Reporting Service (3× daily — 09:00, 14:00, 21:00) ────────────────
+    # Generates a Telegram profit + performance report three times per day:
+    #   09:00 → Morning briefing   (last  9 h)
+    #   14:00 → Afternoon pulse    (last  5 h)
+    #   21:00 → Evening report     (last 24 h, full stats)
+    # Reports include: Virtual PnL, Win Rate, Auto-Restarts, Node Status,
+    # Peak Opportunity (max arbitrage % identified), and Session Health.
+    # When sending, writes nexus:report:sending to Redis for 10 s →
+    # the dashboard flashes the Master PC RGB Neon Blue.
+    reporting = MultiReportingService(
+        notifier=notifier,
+        redis=dispatcher._arq,
+    )
+    asyncio.create_task(reporting.run_loop(), name="reporting-service")
+    log.info(
+        "reporting_service_registered",
+        schedule="09:00 (Morning) · 14:00 (Afternoon) · 21:00 (Evening)",
+    )
+
+    # ── 5c-ii. Evolution Engine — First-Birth Protocol (Phase 14) ─────────────
+    # The EvolutionEngine is the Phase 14 Scout+Architect+BirthGate.
+    # It runs every 30 minutes, picks the highest-confidence niche from the
+    # catalogue, generates a full project scaffold, and either:
+    #   - Sends a PROJECT_BIRTH_APPROVAL HITL (first project ever), or
+    #   - Auto-deploys if confidence > 80% and first_project_approved is True.
+    evolution_engine = EvolutionEngine(
+        redis=dispatcher._arq,
+        dispatcher=dispatcher,
+        notifier=notifier,
+    )
+    asyncio.create_task(
+        evolution_engine.run_loop(interval_seconds=1800),
+        name="evolution-engine",
+    )
+    log.info("evolution_engine_registered", interval_s=1800)
+
+    # ── 5d. Scout + Architect + Feedback Loop (Phase 13) ─────────────────────
+    # Scout: scans Google Trends / crypto news every 24h and produces an
+    #        "Opportunity Report" stored in Redis.
+    # Architect: when an opportunity is approved (or auto-started), scaffolds
+    #            a new project folder and deploys it to an idle Worker.
+    # FeedbackLoop: monitors project metrics every 10 min and scales Workers
+    #               when a project hits the graduation threshold (100 users/2 days).
+    gemini_key = os.environ.get("GEMINI_API_KEY", "") or settings.gemini_api_key
+
+    scout = ScoutService(
+        redis=dispatcher._arq,
+        gemini_api_key=gemini_key,
+        interval_hours=24,
+    )
+    asyncio.create_task(scout.run_loop(), name="scout-service")
+    log.info("scout_service_registered", interval_hours=24)
+
+    architect = ArchitectService(
+        redis=dispatcher._arq,
+        dispatcher=dispatcher,
+        gemini_api_key=gemini_key,
+    )
+
+    feedback = FeedbackLoopService(
+        redis=dispatcher._arq,
+        architect=architect,
+        dispatcher=dispatcher,
+    )
+    asyncio.create_task(feedback.run_loop(), name="feedback-loop")
+    log.info("feedback_loop_registered", interval_s=600)
+
+    # ── 5e. Self-Architect Agent (Phase 9) ────────────────────────────────────
+    # Scans codebase every 6 hours, finds issues, generates optimization prompts,
+    # and produces the OTP Sessions Creator compatibility report.
+    from nexus.master.services.architect_agent import ArchitectAgent
+    architect_agent = ArchitectAgent(redis=dispatcher._arq, interval_hours=6)
+    asyncio.create_task(architect_agent.run_loop(), name="architect-agent")
+    log.info("architect_agent_registered", interval_hours=6)
+
+    # Auto-start any high-confidence opportunities from the last Scout report
+    asyncio.create_task(
+        _auto_start_opportunities(scout, architect),
+        name="auto-start-opportunities",
+    )
+
+    # ── 5e. Cron schedule ──────────────────────────────────────────────────────
+    # Nightly auto-scrape at 02:00 local time.
+    # The CronScheduler is already running (started inside dispatcher.start()).
+    nightly_scrape = TaskPayload(
+        task_type="telegram.auto_scrape",
+        parameters={},
+        project_id="telefix",
+        priority=3,
+    )
+    dispatcher.cron.add(hour=2, minute=0, task=nightly_scrape, name="nightly-scrape")
+    log.info("cron_nightly_scrape_registered", at="02:00 local")
+
+    # Also update the docstring
+    log.info(
+        "startup_sequence",
+        hint=(
+            "Orchestrator runs every 5 min. "
+            "Watch the Agent Thinking Log at http://localhost:3000"
+        ),
+    )
+
+    # ── 6a. Standard smoke tests ───────────────────────────────────────────────
     log.info("dispatching_smoke_tests")
 
     echo_task = TaskPayload(
         task_type="system.echo",
         parameters={"message": "Hello from the Master Node!"},
+        project_id="nexus-demo",
     )
     sleep_task = TaskPayload(
         task_type="system.sleep",
         parameters={"seconds": 2},
+        project_id="nexus-demo",
     )
 
-    # Dispatch both tasks concurrently and wait for both results.
     job_id_echo, job_id_sleep = await asyncio.gather(
         dispatcher.dispatch(echo_task),
         dispatcher.dispatch(sleep_task),
     )
-    log.info("tasks_dispatched", echo_job=job_id_echo, sleep_job=job_id_sleep)
-
-    # Poll for results (blocking — swap for fire-and-forget in production).
     echo_result, sleep_result = await asyncio.gather(
         dispatcher.get_result(job_id_echo),
         dispatcher.get_result(job_id_sleep),
     )
-
     log.info("echo_result", result=echo_result.model_dump())
     log.info("sleep_result", result=sleep_result.model_dump())
 
-    # ── 5. Keep master alive (replace with your event loop / scheduler) ────────
-    log.info("master_ready", hint="Replace the demo loop with your orchestration logic.")
+    # ── 6b. HITL smoke test ────────────────────────────────────────────────────
+    # This task requires human approval before the worker executes it.
+    # The master PAUSES here until you click Approve or Reject at
+    # http://localhost:3000  (the React dashboard).
+    # A WhatsApp notification is also sent to WHATSAPP_TO_NUMBER.
+    hitl_task = TaskPayload(
+        task_type="system.echo",
+        parameters={"message": "HITL-approved payload — ran after human sign-off."},
+        project_id="nexus-demo",
+        requires_approval=True,
+        approval_context=(
+            "⚠ Smoke test: the worker will echo a message to the task log. "
+            "Approve to proceed, or Reject to cancel. "
+            "(Master is blocked right now — open http://localhost:3000)"
+        ),
+    )
+
+    log.info(
+        "hitl_smoke_test_waiting",
+        hint="Open http://localhost:3000 and approve or reject the pending task.",
+    )
+
     try:
-        await asyncio.Event().wait()  # block forever until Ctrl-C
+        job_id_hitl = await dispatcher.dispatch(hitl_task)
+        hitl_result = await dispatcher.get_result(job_id_hitl)
+        log.info("hitl_smoke_test_approved_and_completed", result=hitl_result.model_dump())
+    except TaskRejectedError as exc:
+        log.info("hitl_smoke_test_rejected", reason=str(exc))
+    except TimeoutError:
+        log.error("hitl_smoke_test_timed_out")
+
+    # ── 7. Keep master alive ───────────────────────────────────────────────────
+    log.info("master_ready", hint="All smoke tests complete. Master is running.")
+    try:
+        await _stop_event.wait()
     except asyncio.CancelledError:
         pass
     finally:
+        print("[CLEANUP] סוגר חיבורים ישנים ומתנתק משרתי טלגרם...")
         await dispatcher.stop()
         log.info("nexus_master_stopped")
+
+
+async def _auto_start_opportunities(
+    scout: ScoutService,
+    architect: ArchitectService,
+) -> None:
+    """
+    On startup, check the latest Scout report for any high-confidence
+    opportunities that haven't been built yet and auto-start them.
+    """
+    import asyncio as _asyncio
+    await _asyncio.sleep(10)   # let the system settle first
+
+    try:
+        report = await scout.get_latest_report()
+        if report is None:
+            log.info("auto_start_no_report_yet")
+            return
+
+        for opp in report.get("opportunities", []):
+            if opp.get("auto_start"):
+                log.info(
+                    "auto_starting_opportunity",
+                    niche=opp.get("niche"),
+                    confidence=opp.get("confidence"),
+                )
+                project_id = await architect.build_project(opp)
+                log.info("auto_started_project", project_id=project_id, niche=opp.get("niche"))
+    except Exception as exc:
+        log.error("auto_start_error", error=str(exc))
 
 
 def main() -> None:

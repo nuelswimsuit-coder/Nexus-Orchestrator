@@ -1,0 +1,52 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "1. Boot Redis (WSL)",
+      "type": "shell",
+      "command": "wsl -u root service redis-server start",
+      "presentation": {
+        "clear": true,
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "2. Start Nexus (Optimized)",
+      "type": "shell",
+      "command": "python scripts/nexus_lite.py",
+      "isBackground": true,
+      "presentation": {
+        "clear": true,
+        "group": "nexus-core",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Start Frontend",
+      "type": "shell",
+      "command": "cd frontend ; start http://localhost:3000 ; npm run dev",
+      "isBackground": true,
+      "presentation": {
+        "clear": true,
+        "group": "nexus-core",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "🚀 RUN NEXUS FULL SYSTEM",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "1. Boot Redis (WSL)",
+        "2. Start Nexus (Optimized)",
+        "Start Frontend"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}

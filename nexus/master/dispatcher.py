@@ -4,10 +4,13 @@ Master Dispatcher — the brain of the Nexus Orchestrator.
 Responsibilities
 ----------------
 1. Accept TaskPayload objects from any producer (API, CLI, scheduler, agent).
-2. Route tasks through the HITL gate if they require human approval.
-3. Enqueue approved tasks onto the ARQ Redis queue for worker consumption.
-4. Track in-flight jobs and collect results.
-5. Publish NodeHeartbeat so the cluster can observe master liveness.
+2. Inject secrets from the Vault into the payload before dispatch.
+3. Validate worker capability requirements and route accordingly.
+4. Route tasks through the HITL gate if they require human approval.
+5. Enqueue approved tasks onto the ARQ Redis queue for worker consumption.
+6. Track in-flight jobs and collect results.
+7. Publish NodeHeartbeat so the cluster can observe master liveness.
+8. Run cron-scheduled tasks (e.g. nightly auto-scrape at 02:00).
 
 ARQ job model
 -------------
@@ -20,17 +23,20 @@ and write the result back.  To retrieve the outcome, instantiate a Job object:
     info = await job.result_info()   # non-blocking: returns None if not done
     raw  = await job.result(timeout) # blocking: waits until done or timeout
 
-Extending this dispatcher
--------------------------
-- Add a `schedule_task()` method for cron-style deferred dispatch.
-- Add a `broadcast_task()` method to fan out to all workers simultaneously.
-- Replace the simple result-polling loop with a Redis Streams consumer group
-  for guaranteed-delivery result collection at scale.
+Cron scheduler
+--------------
+`CronScheduler` runs as a background asyncio task.  It wakes up every minute,
+checks whether any registered cron entry is due, and calls `dispatcher.dispatch()`
+for matching tasks.  Entries are defined as (hour, minute, TaskPayload) tuples
+in local time.  The scheduler is intentionally simple — for production use
+replace with APScheduler or Celery Beat.
 """
 
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
+from datetime import datetime
 
 import structlog
 from arq import ArqRedis, create_pool
@@ -39,10 +45,85 @@ from arq.jobs import Job, JobResult
 
 from nexus.master.hitl_gate import HitlGate, TaskRejectedError
 from nexus.master.resource_guard import ResourceGuard
+from nexus.master.services.vault import Vault
 from nexus.shared.constants import TASK_DEFAULT_TIMEOUT
+from nexus.shared.notifications.service import NotificationService
 from nexus.shared.schemas import NodeHeartbeat, NodeRole, TaskPayload, TaskResult, TaskStatus
 
 log = structlog.get_logger(__name__)
+
+HEARTBEAT_KEY_PREFIX = "nexus:heartbeat:"
+
+
+# ── Cron Scheduler ─────────────────────────────────────────────────────────────
+
+@dataclass
+class CronEntry:
+    """A single scheduled task — fires at (hour, minute) local time daily."""
+    hour: int
+    minute: int
+    task: TaskPayload
+    name: str = ""
+    _last_fired_date: str = field(default="", repr=False)
+
+
+class CronScheduler:
+    """
+    Lightweight daily cron scheduler for the Master Dispatcher.
+
+    Wakes up every 60 seconds, checks whether any registered entry is due
+    (matching current local hour:minute), and dispatches it if it hasn't
+    already fired today.
+
+    Usage
+    -----
+        scheduler = CronScheduler(dispatcher)
+        scheduler.add(hour=2, minute=0, task=my_task, name="nightly-scrape")
+        asyncio.create_task(scheduler.run())
+    """
+
+    def __init__(self, dispatcher: Dispatcher) -> None:
+        self._dispatcher = dispatcher
+        self._entries: list[CronEntry] = []
+
+    def add(self, hour: int, minute: int, task: TaskPayload, name: str = "") -> None:
+        """Register a task to fire daily at (hour, minute) local time."""
+        entry = CronEntry(hour=hour, minute=minute, task=task, name=name or task.task_type)
+        self._entries.append(entry)
+        log.info("cron_entry_registered", name=entry.name, at=f"{hour:02d}:{minute:02d}")
+
+    async def run(self) -> None:
+        """Background loop — checks every 60 s and fires due entries."""
+        log.info("cron_scheduler_started", entries=len(self._entries))
+        while True:
+            await asyncio.sleep(60)
+            now = datetime.now()
+            today = now.strftime("%Y-%m-%d")
+            for entry in self._entries:
+                if now.hour == entry.hour and now.minute == entry.minute:
+                    if entry._last_fired_date == today:
+                        continue  # already fired today
+                    entry._last_fired_date = today
+                    log.info(
+                        "cron_firing",
+                        name=entry.name,
+                        at=f"{entry.hour:02d}:{entry.minute:02d}",
+                    )
+                    asyncio.create_task(
+                        self._safe_dispatch(entry),
+                        name=f"cron-{entry.name}",
+                    )
+
+    async def _safe_dispatch(self, entry: CronEntry) -> None:
+        try:
+            job_id = await self._dispatcher.dispatch(entry.task)
+            log.info("cron_dispatched", name=entry.name, job_id=job_id)
+        except Exception as exc:
+            log.error("cron_dispatch_error", name=entry.name, error=str(exc))
+
+
+class CapabilityNotAvailableError(Exception):
+    """Raised when no online worker satisfies the task's required_capabilities."""
 
 
 class Dispatcher:
@@ -51,13 +132,11 @@ class Dispatcher:
 
     Parameters
     ----------
-    redis_settings : arq.connections.RedisSettings
-        Connection details for the shared Redis broker.
-    node_id : str
-        Unique identifier for this master instance (used in heartbeats).
-    resource_guard : ResourceGuard
-        Pre-configured guard; its monitor() coroutine should already be
-        running as a background task before Dispatcher is created.
+    redis_settings       : ARQ connection details for the shared Redis broker.
+    node_id              : Unique identifier for this master instance.
+    resource_guard       : Pre-configured guard (monitor() should already run).
+    vault                : Secrets vault for injecting credentials at dispatch.
+    notification_service : Optional alert fanout for HITL and failure events.
     """
 
     def __init__(
@@ -65,14 +144,19 @@ class Dispatcher:
         redis_settings: RedisSettings,
         node_id: str = "master",
         resource_guard: ResourceGuard | None = None,
+        vault: Vault | None = None,
+        notification_service: NotificationService | None = None,
     ) -> None:
         self._redis_settings = redis_settings
         self.node_id = node_id
         self._guard = resource_guard
+        self._vault = vault or Vault()
+        self._notifier = notification_service
         self._arq: ArqRedis | None = None
         self._hitl_gate: HitlGate | None = None
+        self.cron: CronScheduler = CronScheduler(self)
 
-        # Simple in-memory job tracker: job_id → TaskPayload
+        # Simple in-memory job tracker: task_id → TaskPayload
         # Replace with a persistent store (SQLite, Postgres) for production.
         self._in_flight: dict[str, TaskPayload] = {}
 
@@ -84,14 +168,25 @@ class Dispatcher:
             self._redis_settings,
             default_queue_name="nexus:tasks",
         )
-        self._hitl_gate = HitlGate(self._arq)
+        self._hitl_gate = HitlGate(
+            redis=self._arq,
+            notification_service=self._notifier,
+        )
         await self._hitl_gate.start()
 
         asyncio.create_task(self._heartbeat_loop(), name="master-heartbeat")
-        log.info("dispatcher_started", node_id=self.node_id)
+        asyncio.create_task(self.cron.run(), name="cron-scheduler")
+        log.info(
+            "dispatcher_started",
+            node_id=self.node_id,
+            vault_backend=type(self._vault._backend).__name__,
+            notifications=self._notifier.provider_names if self._notifier else [],
+        )
 
     async def stop(self) -> None:
-        """Gracefully close the Redis connection."""
+        """Gracefully stop the HITL gate listener and close the Redis connection."""
+        if self._hitl_gate:
+            await self._hitl_gate.stop()
         if self._arq:
             await self._arq.aclose()
         log.info("dispatcher_stopped", node_id=self.node_id)
@@ -100,51 +195,73 @@ class Dispatcher:
 
     async def dispatch(self, task: TaskPayload) -> str:
         """
-        Route a task through the HITL gate (if needed) and enqueue it.
+        Prepare, validate, gate, and enqueue a task.
 
-        Returns the ARQ job ID which can be used to poll for the result.
+        Steps
+        -----
+        1. Vault injection  — secrets are merged into the payload in-memory.
+        2. Capability check — verify an online worker can handle this task.
+        3. HITL gate        — suspend if human approval is required.
+        4. ARQ enqueue      — push the job onto the Redis queue.
 
-        HITL hook
-        ---------
-        If `task.requires_approval` is True, this coroutine suspends here
-        until a human approves or rejects the task via the HITL gate.
-        The worker queue is not touched until approval is granted, so no
-        worker capacity is consumed during the wait.
+        Returns the ARQ job ID (== task_id) for result polling.
+
+        Raises
+        ------
+        CapabilityNotAvailableError — no capable worker is online.
+        TaskRejectedError           — operator rejected at the HITL gate.
+        asyncio.TimeoutError        — HITL gate timed out.
         """
         assert self._arq is not None, "Dispatcher.start() must be called first"
         assert self._hitl_gate is not None
 
-        log.info("task_received", task_id=task.task_id, task_type=task.task_type)
+        log.info(
+            "task_received",
+            task_id=task.task_id,
+            task_type=task.task_type,
+            project_id=task.project_id,
+            priority=task.priority,
+            required_capabilities=task.required_capabilities,
+        )
 
-        # ── HITL gate ──────────────────────────────────────────────────────────
-        # This await may block for up to HITL_APPROVAL_TIMEOUT seconds while
-        # a human reviews the task.  All other dispatches continue concurrently
-        # because this is async — only THIS task is paused.
+        # ── Step 1: Vault injection ────────────────────────────────────────────
+        task = self._vault.inject(task)
+
+        # ── Step 2: Capability routing ─────────────────────────────────────────
+        if task.required_capabilities:
+            await self._assert_capable_worker(task)
+
+        # ── Step 3: HITL gate ──────────────────────────────────────────────────
+        # This await may block for up to HITL_APPROVAL_TIMEOUT seconds.
+        # All other dispatches continue concurrently — only THIS task is paused.
         try:
             await self._hitl_gate.request_approval(task)
         except TaskRejectedError:
             log.info("task_rejected_by_hitl", task_id=task.task_id)
             raise
 
-        # ── Enqueue onto ARQ ───────────────────────────────────────────────────
-        # `execute_task` is the function name registered on the worker side
-        # (see nexus/worker/listener.py).  ARQ serialises the kwargs to JSON
-        # and stores them in Redis; the worker deserialises and calls the fn.
+        # ── Step 4: Enqueue onto ARQ ───────────────────────────────────────────
+        # Use model_dump_for_wire() to include injected_secrets in the payload
+        # (they are excluded from the default model_dump() to prevent logging).
         job = await self._arq.enqueue_job(
             "execute_task",
-            task_payload=task.model_dump(),
+            task_payload=task.model_dump_for_wire(),
             _job_id=task.task_id,
             _queue_name="nexus:tasks",
             _expires=TASK_DEFAULT_TIMEOUT,
         )
 
         if job is None:
-            # ARQ returns None if a job with the same ID already exists.
             log.warning("task_already_enqueued", task_id=task.task_id)
             return task.task_id
 
         self._in_flight[task.task_id] = task
-        log.info("task_enqueued", task_id=task.task_id, job_id=job.job_id)
+        log.info(
+            "task_enqueued",
+            task_id=task.task_id,
+            job_id=job.job_id,
+            project_id=task.project_id,
+        )
         return job.job_id
 
     async def get_result(
@@ -157,34 +274,22 @@ class Dispatcher:
         Wait for the job with `task_id` to finish and return its TaskResult.
 
         Uses arq.jobs.Job for correct result retrieval:
-          - result_info() is a non-blocking probe (returns None while running).
-          - result(timeout) is the blocking form used here to avoid a busy loop.
-
-        For fire-and-forget workflows, skip this and let workers publish results
-        to a results stream independently.
+          - result(timeout) blocks until the job finishes or timeout elapses.
+          - result_info() fetches full metadata (start/finish times, etc.).
         """
         assert self._arq is not None
 
         job = Job(task_id, redis=self._arq, _queue_name="nexus:tasks")
-
-        # Block until the job finishes or the timeout elapses.
-        # job.result() raises asyncio.TimeoutError on expiry and
-        # arq.jobs.JobExecutionFailed if the worker raised an unhandled exception.
         raw: dict = await job.result(timeout=timeout, poll_delay=poll_interval)
-
-        # Fetch the full metadata (start/finish times, success flag, kwargs).
         info: JobResult | None = await job.result_info()
 
         self._in_flight.pop(task_id, None)
 
-        worker_id: str = "unknown"
+        worker_id = "unknown"
         started_at = None
         finished_at = None
 
         if info is not None:
-            # kwargs holds the arguments passed to execute_task on the worker.
-            worker_id = info.kwargs.get("task_payload", {}).get("task_id", "unknown")
-            # Prefer the worker_id embedded in the result dict itself.
             if isinstance(raw, dict):
                 worker_id = raw.get("worker_id", worker_id)
             started_at = info.start_time
@@ -192,6 +297,20 @@ class Dispatcher:
 
         error: str | None = raw.get("error") if isinstance(raw, dict) else None
         output = raw.get("output") if isinstance(raw, dict) else raw
+
+        # Fire failure notification if the task failed and we have a notifier.
+        if error and self._notifier:
+            original = self._in_flight.get(task_id)
+            asyncio.create_task(
+                self._notifier.notify_task_failed(
+                    task_id=task_id,
+                    task_type=original.task_type if original else "unknown",
+                    error=error,
+                    attempt=1,
+                    max_tries=3,
+                ),
+                name=f"notify-fail-{task_id}",
+            )
 
         return TaskResult(
             task_id=task_id,
@@ -208,15 +327,66 @@ class Dispatcher:
         job_id = await self.dispatch(task)
         return await self.get_result(job_id)
 
+    # ── Capability routing ─────────────────────────────────────────────────────
+
+    async def _assert_capable_worker(self, task: TaskPayload) -> None:
+        """
+        Scan live heartbeat keys and verify at least one online worker
+        declares all of the task's required_capabilities.
+
+        Raises CapabilityNotAvailableError if no capable worker is found.
+        """
+        assert self._arq is not None
+        required = set(task.required_capabilities)
+
+        cursor = 0
+        pattern = f"{HEARTBEAT_KEY_PREFIX}*".encode()
+        while True:
+            cursor, keys = await self._arq.scan(
+                cursor=cursor, match=pattern, count=100
+            )
+            for key in keys:
+                raw = await self._arq.get(key)
+                if raw is None:
+                    continue
+                try:
+                    hb = NodeHeartbeat.model_validate_json(raw)
+                    if hb.role == NodeRole.WORKER and required.issubset(
+                        set(hb.capabilities)
+                    ):
+                        log.debug(
+                            "capable_worker_found",
+                            worker=hb.node_id,
+                            capabilities=hb.capabilities,
+                        )
+                        return
+                except Exception:
+                    pass
+            if cursor == 0:
+                break
+
+        raise CapabilityNotAvailableError(
+            f"No online worker satisfies required_capabilities={list(required)} "
+            f"for task_type='{task.task_type}'"
+        )
+
     # ── Internal helpers ───────────────────────────────────────────────────────
 
     async def _heartbeat_loop(self, interval: float = 30.0) -> None:
         """
         Publish a NodeHeartbeat every `interval` seconds.
 
-        Workers and a future dashboard can subscribe to the heartbeat channel
-        to detect master failures and trigger failover logic.
+        Two delivery mechanisms:
+        - Redis key "nexus:heartbeat:<node_id>" with TTL — for the API's
+          cluster/status endpoint (SCAN-based, no subscription needed).
+        - Redis pub/sub channel "nexus:heartbeats" — for real-time subscribers.
         """
+        from nexus.worker.hardware import get_hardware_info
+        hw = get_hardware_info()
+
+        heartbeat_key = f"{HEARTBEAT_KEY_PREFIX}{self.node_id}"
+        key_ttl = int(interval * 2)
+
         while True:
             await asyncio.sleep(interval)
             stats = (
@@ -230,10 +400,17 @@ class Dispatcher:
                 cpu_percent=stats["cpu_percent"],
                 ram_used_mb=stats["ram_mb"],
                 active_jobs=len(self._in_flight),
+                capabilities=[],
+                # Phase 3 hardware fields
+                local_ip=hw["local_ip"],
+                cpu_model=hw["cpu_model"],
+                gpu_model=hw["gpu_model"],
+                ram_total_mb=hw["ram_total_mb"],
+                active_tasks_count=len(self._in_flight),
+                os_info=hw["os_info"],
             )
             if self._arq:
-                await self._arq.publish(  # type: ignore[attr-defined]
-                    "nexus:heartbeats",
-                    heartbeat.model_dump_json(),
-                )
+                payload = heartbeat.model_dump_json()
+                await self._arq.set(heartbeat_key, payload, ex=key_ttl)
+                await self._arq.publish("nexus:heartbeats", payload)  # type: ignore[attr-defined]
             log.debug("heartbeat_published", **heartbeat.model_dump())

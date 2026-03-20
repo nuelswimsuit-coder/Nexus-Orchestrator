@@ -1,0 +1,451 @@
+@import "tailwindcss";
+
+/* ── Design tokens ─────────────────────────────────────────────────────────── */
+@theme inline {
+  /* Font stack: Inter for Latin, Assistant for Hebrew */
+  --font-sans: var(--font-assistant), var(--font-inter), "Inter", "Assistant", system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), "JetBrains Mono", "Fira Code", monospace;
+
+  /* Dark Luxury palette — deep navy/black base */
+  --color-surface-0: #080b14;
+  --color-surface-1: #0d1120;
+  --color-surface-2: #131928;
+  --color-surface-3: #1a2235;
+  --color-surface-4: #222d44;
+
+  --color-text-primary:   #e8f2ff;
+  --color-text-secondary: #7da8cc;
+  --color-text-muted:     #2d4a65;
+
+  /* Neon Blue accent — premium financial terminal */
+  --color-accent:         #00b4ff;
+  --color-accent-bright:  #38d4ff;
+  --color-accent-hover:   #0090d4;
+  --color-accent-subtle:  #061a2e;
+  --color-accent-dim:     rgba(0, 180, 255, 0.10);
+  --color-accent-glow:    rgba(0, 180, 255, 0.22);
+
+  --color-success:        #00e096;
+  --color-success-subtle: #021f12;
+  --color-warning:        #ffb800;
+  --color-warning-subtle: #1c1200;
+  --color-danger:         #ff3355;
+  --color-danger-subtle:  #1c0005;
+}
+
+/* ── Glow control variables ────────────────────────────────────────────────── */
+:root {
+  --glow-opacity: 1;
+  --glow-scale:   1;
+  --rgb-filter-opacity: 1;
+  --text-scale-factor: 1;
+}
+
+/* ── Text Scale levels ─────────────────────────────────────────────────────── */
+[data-text-scale="small"]  { --text-scale-factor: 0.875; }
+[data-text-scale="medium"] { --text-scale-factor: 1.0;   }
+[data-text-scale="large"]  { --text-scale-factor: 1.2;   }
+
+/* High Contrast forces +25% text scale regardless of user text-scale choice */
+[data-theme="high-contrast"] { --text-scale-factor: 1.25; }
+
+/* ── Stealth Mode ──────────────────────────────────────────────────────────── */
+.stealth-mode {
+  --glow-opacity: 0;
+  --glow-scale:   0;
+  --rgb-filter-opacity: 0;
+}
+
+.stealth-mode svg               { filter: none !important; }
+.stealth-mode .rgb-glow         { box-shadow: none !important; border-color: #132034 !important; }
+.stealth-mode .rgb-text         { text-shadow: none !important; color: #2d4a65 !important; }
+.stealth-mode .rgb-led          { opacity: 0.3 !important; box-shadow: none !important; animation: none !important; }
+
+/* ── Base reset ────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  color-scheme: dark;
+  font-size: calc(21px * var(--text-scale-factor, 1)); /* 25% larger than original 17px */
+}
+
+/* Hebrew text is globally 15% larger than English for optimal legibility */
+html[lang="he"] {
+  font-size: calc(21px * var(--text-scale-factor, 1) * 1.15);
+}
+
+body {
+  background-color: #040608; /* near-black so canvas renders perfectly over it */
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.6;
+  direction: rtl;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100dvh;
+  transition: background-color 0.25s ease, color 0.25s ease, filter 0.3s ease;
+}
+
+/* Hebrew text uses Assistant for optimal rendering */
+:lang(he), [dir="rtl"] {
+  font-family: var(--font-assistant), "Assistant", var(--font-inter), system-ui, sans-serif;
+  letter-spacing: 0;
+}
+
+/* ── Premium Glassmorphism (Dark Luxury / Cyberpunk) ───────────────────────── */
+.glass {
+  background: rgba(4, 8, 20, 0.78);
+  backdrop-filter: blur(28px) saturate(1.7) brightness(1.04);
+  -webkit-backdrop-filter: blur(28px) saturate(1.7) brightness(1.04);
+  border: 1.5px solid rgba(0, 180, 255, 0.26);
+  box-shadow:
+    0 0 0 1px rgba(0, 180, 255, 0.10) inset,
+    0 12px 56px rgba(0, 0, 0, 0.68),
+    0 0 40px rgba(0, 180, 255, 0.10),
+    0 1px 0 rgba(0, 180, 255, 0.22) inset;
+  padding: 1.5rem;
+  position: relative;
+}
+
+/* Top shimmer line on glass cards */
+.glass::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 2rem;
+  right: 2rem;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(0, 180, 255, 0.35), transparent);
+  pointer-events: none;
+}
+
+.glass-subtle {
+  background: rgba(5, 10, 22, 0.52);
+  backdrop-filter: blur(14px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  border: 1px solid rgba(0, 180, 255, 0.13);
+}
+
+/* Cyberpunk neon border glow — apply to key interactive cards */
+.glass-accent {
+  background: rgba(0, 10, 28, 0.82);
+  backdrop-filter: blur(32px) saturate(1.8);
+  -webkit-backdrop-filter: blur(32px) saturate(1.8);
+  border: 1.5px solid rgba(0, 180, 255, 0.38);
+  border-radius: 18px;
+  box-shadow:
+    0 0 0 1px rgba(0, 180, 255, 0.12) inset,
+    0 16px 64px rgba(0, 0, 0, 0.72),
+    0 0 60px rgba(0, 180, 255, 0.15),
+    0 1px 0 rgba(56, 212, 255, 0.28) inset;
+  padding: 1.5rem;
+  position: relative;
+}
+
+.glass-accent::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 2rem;
+  right: 2rem;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(56, 212, 255, 0.55), transparent);
+  pointer-events: none;
+}
+
+/* Dot-grid pattern used in schematic backgrounds */
+.dot-grid {
+  background-image: radial-gradient(circle, rgba(14, 165, 233, 0.09) 1px, transparent 1px);
+  background-size: 26px 26px;
+}
+
+/* Ensure page content sits above fixed CyberGrid canvas (z-index: 0) */
+.nexus-content {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 5px; height: 5px; }
+::-webkit-scrollbar-track  { background: var(--color-surface-1); }
+::-webkit-scrollbar-thumb  { background: var(--color-surface-3); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-surface-4); }
+
+/* ── Focus ring ────────────────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* ── HIGH CONTRAST LIGHT MODE ───────────────────────────────────────────── */
+/* Applied via data-theme="high-contrast" on <html>                          */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+[data-theme="high-contrast"] {
+  /* Pure white surface palette */
+  --color-surface-0: #FFFFFF;
+  --color-surface-1: #F7F8FA;
+  --color-surface-2: #EEF0F4;
+  --color-surface-3: #E0E4EB;
+  --color-surface-4: #CDD3DC;
+
+  /* Maximum contrast typography */
+  --color-text-primary:   #000000;
+  --color-text-secondary: #0a0a0a;
+  --color-text-muted:     #2d3748;
+
+  /* Bold accessible navy accent */
+  --color-accent:         #0044BB;
+  --color-accent-bright:  #0033AA;
+  --color-accent-hover:   #002288;
+  --color-accent-subtle:  #EBF2FF;
+  --color-accent-dim:     rgba(0, 68, 187, 0.10);
+  --color-accent-glow:    rgba(0, 68, 187, 0.18);
+
+  /* High-contrast semantic colors */
+  --color-success:        #0a6640;
+  --color-success-subtle: #DCFCE7;
+  --color-warning:        #7c4e00;
+  --color-warning-subtle: #FFF8DC;
+  --color-danger:         #AA0000;
+  --color-danger-subtle:  #FFE4E4;
+
+  /* Suppress all glows */
+  --glow-opacity: 0;
+  --glow-scale: 0;
+  --rgb-filter-opacity: 0;
+}
+
+[data-theme="high-contrast"] html {
+  color-scheme: light;
+}
+
+[data-theme="high-contrast"] body {
+  background-color: #FFFFFF;
+  color: #000000;
+}
+
+/* Premium HC Glass — pure white with thick black borders */
+[data-theme="high-contrast"] .glass {
+  background: #FFFFFF;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 2px solid #000000;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18), 4px 4px 0 rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="high-contrast"] .glass-subtle {
+  background: #F7F8FA;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 2px solid #000000;
+}
+
+/* Dot-grid — visible dots on white bg */
+[data-theme="high-contrast"] .dot-grid {
+  background-image: radial-gradient(circle, rgba(0, 85, 204, 0.18) 1px, transparent 1px);
+  background-size: 26px 26px;
+}
+
+/* Topology glass — no blur in HC */
+[data-theme="high-contrast"] .topology-glass {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Scrollbar — visible on white */
+[data-theme="high-contrast"] ::-webkit-scrollbar-track  { background: #F0F2F5; }
+[data-theme="high-contrast"] ::-webkit-scrollbar-thumb  { background: #9CA3AF; }
+[data-theme="high-contrast"] ::-webkit-scrollbar-thumb:hover { background: #6B7280; }
+
+/* Suppress all glows, RGB animations, shadows in HC */
+[data-theme="high-contrast"] .rgb-glow  { box-shadow: none !important; }
+[data-theme="high-contrast"] .rgb-text  { text-shadow: none !important; }
+[data-theme="high-contrast"] .rgb-led   { animation: none !important; box-shadow: none !important; }
+[data-theme="high-contrast"] .rgb-breathe { animation: none !important; filter: none !important; }
+
+/* Stealth scanline overlay — disabled in HC */
+[data-theme="high-contrast"].stealth-mode::after { display: none; }
+
+/* ── High Contrast typography enforcement ──────────────────────────────────── */
+/* All labels become text-xl (1.25rem base × 1.25 scale = 1.5625rem effective)  */
+/* All headers become text-3xl (1.875rem base × 1.25 scale = 2.34rem effective) */
+
+[data-theme="high-contrast"] label,
+[data-theme="high-contrast"] .label,
+[data-theme="high-contrast"] [class*="label"] {
+  font-size: 1.25rem !important;   /* text-xl */
+  font-weight: 700 !important;
+  color: #000000 !important;
+}
+
+[data-theme="high-contrast"] h1,
+[data-theme="high-contrast"] h2,
+[data-theme="high-contrast"] [class*="header"],
+[data-theme="high-contrast"] [class*="heading"],
+[data-theme="high-contrast"] [class*="title"] {
+  font-size: 1.875rem !important;  /* text-3xl */
+  font-weight: 800 !important;
+  color: #000000 !important;
+}
+
+[data-theme="high-contrast"] h3,
+[data-theme="high-contrast"] h4,
+[data-theme="high-contrast"] h5,
+[data-theme="high-contrast"] h6 {
+  font-size: 1.25rem !important;   /* text-xl */
+  font-weight: 700 !important;
+  color: #000000 !important;
+}
+
+/* All body text minimum size in HC */
+[data-theme="high-contrast"] p,
+[data-theme="high-contrast"] span,
+[data-theme="high-contrast"] div {
+  letter-spacing: 0.01em;
+}
+
+/* Pure white background enforcement */
+[data-theme="high-contrast"],
+[data-theme="high-contrast"] html,
+[data-theme="high-contrast"] body {
+  background-color: #FFFFFF !important;
+  color: #000000 !important;
+}
+
+/* All borders in HC are 2px solid black */
+[data-theme="high-contrast"] .glass,
+[data-theme="high-contrast"] .glass-subtle,
+[data-theme="high-contrast"] [class*="card"],
+[data-theme="high-contrast"] [class*="panel"],
+[data-theme="high-contrast"] [class*="widget"] {
+  border: 2px solid #000000 !important;
+  background: #FFFFFF !important;
+}
+
+/* Focus ring in HC — thick black */
+[data-theme="high-contrast"] :focus-visible {
+  outline: 3px solid #000000 !important;
+  outline-offset: 3px !important;
+}
+
+/* ── Animations ────────────────────────────────────────────────────────────── */
+@keyframes rgb-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+
+@keyframes rgb-breathe {
+  0%, 100% { filter: brightness(1) saturate(1); }
+  50%       { filter: brightness(1.35) saturate(1.2); }
+}
+
+/* Scanning line in stealth mode */
+@keyframes stealth-scan {
+  0%   { transform: translateY(-100%); opacity: 0.5; }
+  100% { transform: translateY(100vh); opacity: 0; }
+}
+
+/* Flowing dashes along topology connection lines */
+@keyframes flow-dash {
+  from { stroke-dashoffset: 32; }
+  to   { stroke-dashoffset: 0; }
+}
+
+/* Subtle ambient pulse for accent glow areas */
+@keyframes ambient-pulse {
+  0%, 100% { opacity: 0.6; }
+  50%       { opacity: 1; }
+}
+
+/* Scale-in for modal/card entrances */
+@keyframes scale-in {
+  from { transform: scale(0.97); opacity: 0; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+
+/* Topology node entrance */
+@keyframes node-in {
+  from { transform: translateY(12px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+/* Terminal cursor blink */
+@keyframes terminal-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+/* Ticker fade for deploy status text */
+@keyframes ticker-fade {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+/* Log entry flash on new line */
+@keyframes log-flash {
+  0%   { background: rgba(14, 165, 233, 0.12); }
+  100% { background: transparent; }
+}
+
+/* [CRITICAL] log line strobe — red flash for self-healing alerts */
+@keyframes critical-flash {
+  0%,  49% { opacity: 1;    background: rgba(255, 30, 60, 0.13); }
+  50%, 100% { opacity: 0.55; background: transparent; }
+}
+
+/* System offline overlay entry */
+@keyframes overlay-fade-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* Repair progress bar scan */
+@keyframes repair-scan {
+  0%   { width: 15%;  margin-left: 0%; }
+  50%  { width: 70%;  margin-left: 20%; }
+  100% { width: 15%;  margin-left: 85%; }
+}
+
+/* Critical glow pulse for the offline overlay card */
+@keyframes critical-glow-pulse {
+  0%, 100% { box-shadow: 0 0 60px rgba(255,30,60,0.22), 0 0 120px rgba(255,30,60,0.07); }
+  50%       { box-shadow: 0 0 90px rgba(255,30,60,0.38), 0 0 180px rgba(255,30,60,0.13); }
+}
+
+/* Blinking warning icon */
+@keyframes blink-critical {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.15; }
+}
+
+/* System error banner pulse */
+@keyframes error-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 51, 85, 0.4); }
+  50%       { box-shadow: 0 0 0 6px rgba(255, 51, 85, 0); }
+}
+
+/* Scanline overlay in stealth mode */
+.stealth-mode::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 255, 80, 0.012) 2px,
+    rgba(0, 255, 80, 0.012) 4px
+  );
+  z-index: 9999;
+}
+
+/* Topology scene glass surface */
+.topology-glass {
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}

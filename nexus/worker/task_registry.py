@@ -1,3 +1,4 @@
+
 """
 Task Registry — maps task_type strings to async handler functions.
 

@@ -12,64 +12,156 @@ worker process.  When `arq nexus.worker.listener.WorkerSettings` is invoked
 3. Calls `execute_task(**job_kwargs)` for each job it picks up.
 4. Stores the return value (or exception) back in Redis.
 
-The `execute_task` function is the single entry point for ALL task types.
-It delegates to the TaskRegistry which routes by `task_type`.
+The `execute_task` function delegates to `nexus.worker.executor.runner.run_task`
+which handles validation, capability checks, secrets merging, and handler dispatch.
 
-HITL hook (worker side)
------------------------
-If a task's execution reaches a point where it needs a human decision
-mid-execution (not just pre-approval), the handler can raise a
-`HitlPauseRequested` exception (TODO: define in shared/schemas.py).
-The listener catches this, publishes a HitlRequest, and re-queues the
-task with a delay.  This pattern is sketched in the `execute_task` docstring.
+Result serialization
+--------------------
+ARQ serialises job results with msgpack.  msgpack cannot handle:
+  - datetime objects            → converted to ISO-format strings
+  - set objects                 → converted to sorted lists
+  - Pydantic models             → converted via model_dump()
+  - bytes                       → converted to base64 strings
+  - any other non-primitive     → converted to str()
 
-Deploying to remote nodes
--------------------------
-Copy the entire `nexus/` package and `scripts/start_worker.py` to each
-Worker Node.  Install dependencies with `pip install -e .` (or from
-requirements.txt).  Set the same REDIS_URL in .env so all nodes share the
-same broker.  The Linux and Windows workers are otherwise identical — ARQ
-is cross-platform.
+`_sanitize_result()` recursively walks the result dict and converts every
+non-serializable value before ARQ attempts to store it.  This prevents
+`arq.jobs.SerializationError` from crashing the worker.
+
+Resilience / Failover
+---------------------
+- `max_tries = 3`       — ARQ re-queues a failed job up to 3 times.
+- `job_timeout`         — Configurable via TASK_DEFAULT_TIMEOUT env var.
+- `keep_result = 86400` — Results retained for 24 h.
 """
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import os
 import socket
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 import structlog
 from arq.connections import RedisSettings
 
-from nexus.worker.task_registry import registry  # noqa: F401 — side-effect: registers built-ins
+import nexus.worker.tasks.auto_scrape  # noqa: F401 — registers telegram.auto_scrape
+import nexus.worker.tasks.content_factory  # noqa: F401 — registers telegram.content_factory
+import nexus.worker.tasks.incubator_spawn  # noqa: F401 — registers nexus.incubator.*
+import nexus.worker.tasks.prediction  # noqa: F401 — registers prediction.cross_exchange
+import nexus.worker.tasks.super_scraper  # noqa: F401 — registers telegram.super_scrape
+import nexus.worker.tasks.telegram_adder  # noqa: F401 — registers telegram.auto_add
+from nexus.worker.executor.runner import WORKER_CAPABILITIES, run_task
+from nexus.worker.task_registry import registry  # noqa: F401 — registers built-ins
 
 log = structlog.get_logger(__name__)
 
-# Unique identifier for this worker process.
-# Override with NODE_ID env var when deploying multiple workers.
 WORKER_ID = os.getenv("NODE_ID", f"worker-{socket.gethostname()}")
+
+
+# ── Result sanitization ────────────────────────────────────────────────────────
+
+def _sanitize_value(value: Any) -> Any:
+    """
+    Recursively convert a value to a msgpack-serializable primitive.
+
+    ARQ uses msgpack to store job results in Redis.  msgpack only supports:
+      None, bool, int, float, str, bytes, list, dict
+
+    Everything else must be converted before returning from execute_task.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+
+    if isinstance(value, bytes):
+        # Encode bytes as base64 string so they survive the round-trip
+        return base64.b64encode(value).decode("ascii")
+
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+
+    if isinstance(value, set):
+        return sorted(_sanitize_value(v) for v in value)
+
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_value(v) for v in value]
+
+    if isinstance(value, dict):
+        return {str(k): _sanitize_value(v) for k, v in value.items()}
+
+    # Pydantic models
+    if hasattr(value, "model_dump"):
+        return _sanitize_value(value.model_dump())
+
+    # dataclasses
+    if hasattr(value, "__dataclass_fields__"):
+        import dataclasses
+        return _sanitize_value(dataclasses.asdict(value))
+
+    # Enum
+    if hasattr(value, "value"):
+        return _sanitize_value(value.value)
+
+    # Last resort: stringify
+    return str(value)
+
+
+def _sanitize_result(result: dict[str, Any]) -> dict[str, Any]:
+    """
+    Walk the entire result dict and convert every non-serializable value.
+
+    Called on the return value of run_task() before ARQ stores it in Redis.
+    Guarantees no SerializationError regardless of what task handlers return.
+    """
+    return {str(k): _sanitize_value(v) for k, v in result.items()}
+
+
+# ── ARQ lifecycle hooks ────────────────────────────────────────────────────────
+
+_PANIC_KEY     = "SYSTEM_STATE:PANIC"
+_PANIC_CHANNEL = "nexus:system:control"
 
 
 async def startup(ctx: dict[str, Any]) -> None:
     """
     Called once by ARQ when the worker process starts.
 
-    Use this to initialise expensive shared resources (DB connections,
-    ML model loading, HTTP client sessions) that should be reused across
-    many task executions rather than recreated per-task.
+    Initialise expensive shared resources here (DB connections, ML models,
+    HTTP client sessions) — they will be reused across many task executions.
     """
     ctx["worker_id"] = WORKER_ID
     ctx["started_at"] = datetime.now(timezone.utc)
-    log.info("worker_started", worker_id=WORKER_ID, registered_tasks=registry.registered_types)
+    ctx["panic"] = False
+    log.info(
+        "worker_started",
+        worker_id=WORKER_ID,
+        capabilities=list(WORKER_CAPABILITIES),
+        registered_tasks=registry.registered_types,
+    )
+
+    # Publish initial heartbeat so the master's cluster status shows this
+    # worker immediately on startup rather than waiting for the first interval.
+    await _publish_heartbeat(ctx)
+
+    # Subscribe to the system control channel so we receive TERMINATE/RESUME
+    # signals from the panic endpoint immediately (without waiting for the
+    # next execute_task call to discover the Redis flag).
+    ctx["_panic_task"] = asyncio.create_task(
+        _panic_subscriber(ctx),
+        name="worker_panic_subscriber",
+    )
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
-    """
-    Called once by ARQ when the worker process shuts down cleanly.
-
-    Close any resources opened in `startup` here.
-    """
+    """Called once by ARQ when the worker process shuts down cleanly."""
+    if task := ctx.get("_panic_task"):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     log.info("worker_shutdown", worker_id=ctx.get("worker_id", WORKER_ID))
 
 
@@ -77,106 +169,210 @@ async def execute_task(
     ctx: dict[str, Any], task_payload: dict[str, Any], **_: Any
 ) -> dict[str, Any]:
     """
-    Universal task handler — the single ARQ function registered on every worker.
+    Universal ARQ entry point — called for every job on this worker.
 
-    Parameters
-    ----------
-    ctx          : ARQ context dict (populated by startup(); holds shared resources).
-    task_payload : Serialised TaskPayload dict sent by the master's Dispatcher.
+    Delegates to runner.run_task(), then sanitizes the result dict so
+    ARQ can serialize it with msgpack without raising SerializationError.
 
-    Returns
-    -------
-    A dict with keys `output` and optionally `error`, `worker_id`.
-    ARQ stores this in Redis; the master's Dispatcher.get_result() retrieves it.
-
-    HITL mid-execution hook (future)
-    ---------------------------------
-    If a handler needs a human decision partway through (e.g., an LLM agent
-    reaches an ambiguous branch), it can raise HitlPauseRequested(context=...).
-    The except block below would:
-        1. Publish a HitlRequest to HITL_REQUEST_CHANNEL.
-        2. Re-enqueue this task with a delay (arq deferred job).
-        3. Return a sentinel result so the master marks it AWAITING_APPROVAL.
-    This keeps the worker free to process other tasks during the human wait.
+    The `**_` absorbs any extra kwargs ARQ might inject.
     """
-    from nexus.shared.schemas import TaskPayload  # local import avoids circular at module level
-
     worker_id: str = ctx.get("worker_id", WORKER_ID)
-    started_at = datetime.now(timezone.utc)
+    redis = ctx.get("redis")
 
-    # Deserialise and validate the payload using the shared Pydantic schema.
-    task = TaskPayload.model_validate(task_payload)
+    # ── System Panic guard ─────────────────────────────────────────────────────
+    # Check both the in-memory flag (set by pub/sub subscriber) and the Redis
+    # key directly so tasks are blocked even if the subscriber missed a beat.
+    is_panic = ctx.get("panic", False)
+    if not is_panic and redis is not None:
+        try:
+            is_panic = (await redis.get(_PANIC_KEY)) == "true"
+        except Exception:
+            pass
 
-    log.info(
-        "task_started",
-        task_id=task.task_id,
-        task_type=task.task_type,
-        worker_id=worker_id,
-    )
-
-    try:
-        output = await registry.execute(task.task_type, task.parameters)
-        finished_at = datetime.now(timezone.utc)
-        duration = (finished_at - started_at).total_seconds()
-
-        log.info(
-            "task_completed",
-            task_id=task.task_id,
-            task_type=task.task_type,
+    if is_panic:
+        log.critical(
+            "task_blocked_system_panic",
+            task_type=task_payload.get("task_type"),
             worker_id=worker_id,
-            duration_s=round(duration, 3),
         )
         return {
-            "output": output,
-            "error": None,
-            "worker_id": worker_id,
-            "duration_seconds": duration,
+            "output":           None,
+            "error":            "SYSTEM_PANIC: Task blocked by emergency kill-switch",
+            "worker_id":        worker_id,
+            "duration_seconds": 0.0,
+            "project_id":       str(task_payload.get("project_id", "unknown")),
+            "attempts":         1,
         }
 
-    except KeyError as exc:
-        # Unknown task_type — configuration error, not a transient failure.
-        log.error("task_unknown_type", task_id=task.task_id, error=str(exc))
-        return {"output": None, "error": str(exc), "worker_id": worker_id}
+    raw_result = await run_task(
+        task_payload=task_payload,
+        worker_id=worker_id,
+        redis=redis,
+    )
 
+    # ── Sanitize before ARQ serializes ────────────────────────────────────────
+    # This is the critical step that prevents SerializationError.
+    # run_task() may return datetime objects, sets, Pydantic models, or any
+    # value returned by a task handler.  _sanitize_result() converts them all
+    # to msgpack-safe primitives (str, int, float, list, dict, None, bool).
+    try:
+        return _sanitize_result(raw_result)
     except Exception as exc:
-        # Handler raised an unexpected error.  Log it and return a failure
-        # result rather than letting ARQ retry indefinitely.
-        log.exception("task_failed", task_id=task.task_id, task_type=task.task_type, error=str(exc))
-        return {"output": None, "error": str(exc), "worker_id": worker_id}
+        log.error(
+            "result_sanitization_failed",
+            worker_id=worker_id,
+            error=str(exc),
+            result_keys=list(raw_result.keys()) if isinstance(raw_result, dict) else "?",
+        )
+        # Return a minimal safe result so ARQ doesn't crash
+        return {
+            "output": None,
+            "error": f"Result sanitization failed: {exc}",
+            "worker_id": worker_id,
+            "duration_seconds": 0.0,
+            "project_id": str(task_payload.get("project_id", "unknown")),
+            "attempts": 1,
+        }
+
+
+async def _panic_subscriber(ctx: dict[str, Any]) -> None:
+    """
+    Background coroutine that subscribes to ``nexus:system:control`` and
+    updates ``ctx['panic']`` when TERMINATE / RESUME signals arrive.
+
+    Uses a dedicated Redis connection (not the shared ARQ one) because
+    Pub/Sub requires a stateful subscribe mode that cannot be mixed with
+    normal commands on the same connection.
+    """
+    from redis.asyncio import from_url as _redis_from_url
+
+    redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
+    retry_s = 1.0
+    attempt = 0
+    while True:
+        pubsub_client = None
+        try:
+            attempt += 1
+            pubsub_client = _redis_from_url(redis_url, decode_responses=True)
+            pubsub = pubsub_client.pubsub()
+            await pubsub.subscribe(_PANIC_CHANNEL)
+            if attempt > 1:
+                log.info("worker_panic_subscriber_reconnected", attempts=attempt)
+            else:
+                log.info("worker_panic_subscriber_started", channel=_PANIC_CHANNEL)
+            retry_s = 1.0
+
+            async for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                data = message.get("data", "")
+                if data == "TERMINATE":
+                    ctx["panic"] = True
+                    log.critical("worker_terminate_signal_received", worker_id=ctx.get("worker_id"))
+                elif data == "RESUME":
+                    ctx["panic"] = False
+                    log.info("worker_resume_signal_received", worker_id=ctx.get("worker_id"))
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            if attempt <= 2 or attempt % 5 == 0:
+                log.warning(
+                    "worker_panic_subscriber_retry",
+                    attempt=attempt,
+                    retry_in_s=round(retry_s, 2),
+                    error=str(exc),
+                )
+            await asyncio.sleep(retry_s)
+            retry_s = min(retry_s * 1.7, 10.0)
+        finally:
+            if pubsub_client is not None:
+                try:
+                    await pubsub_client.aclose()
+                except Exception:
+                    pass
+
+
+async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
+    """
+    Write a NodeHeartbeat key to Redis so the API cluster endpoint
+    shows this worker as online immediately after startup.
+    """
+    from nexus.shared.schemas import NodeHeartbeat, NodeRole
+    from nexus.worker.hardware import get_hardware_info
+
+    redis = ctx.get("redis")
+    if redis is None:
+        return
+
+    hw = get_hardware_info()
+    mem = __import__("psutil").virtual_memory()
+    ram_used_mb = round(mem.used / (1024 * 1024), 1)
+    cpu_percent = __import__("psutil").cpu_percent(interval=None)
+
+    heartbeat = NodeHeartbeat(
+        node_id=WORKER_ID,
+        role=NodeRole.WORKER,
+        cpu_percent=cpu_percent,
+        ram_used_mb=ram_used_mb,
+        active_jobs=0,
+        capabilities=list(WORKER_CAPABILITIES),
+        local_ip=hw["local_ip"],
+        cpu_model=hw["cpu_model"],
+        gpu_model=hw["gpu_model"],
+        ram_total_mb=hw["ram_total_mb"],
+        active_tasks_count=0,
+        os_info=hw["os_info"],
+    )
+    key = f"nexus:heartbeat:{WORKER_ID}"
+    await redis.set(key, heartbeat.model_dump_json(), ex=120)
+    log.debug("worker_heartbeat_published", node_id=WORKER_ID, ip=hw["local_ip"])
+
+
+# ── Redis settings factory ─────────────────────────────────────────────────────
+
+def _build_redis_settings() -> RedisSettings:
+    """
+    Smart Redis connection resolver.
+
+    Priority order:
+      1. ``REDIS_URL``  — full DSN string, explicit override (e.g. from .env)
+      2. ``REDIS_HOST`` — explicit hostname, port defaults to REDIS_PORT / 6379
+      3. Auto-detect environment:
+           - Inside Docker  → ``host.docker.internal``  (Windows / Mac host loopback)
+           - Direct Python  → ``127.0.0.1``
+
+    Detection heuristic: Linux Docker containers always have ``/.dockerenv``.
+    The ``DOCKER_CONTAINER=1`` env var can be set to force Docker mode on any OS.
+    """
+    if redis_url := os.getenv("REDIS_URL"):
+        log.debug("redis_url_from_env", url=redis_url)
+        return RedisSettings.from_dsn(redis_url)
+
+    redis_host = os.getenv("REDIS_HOST")
+    if not redis_host:
+        in_docker = os.path.exists("/.dockerenv") or bool(os.getenv("DOCKER_CONTAINER"))
+        redis_host = "host.docker.internal" if in_docker else "127.0.0.1"
+        log.debug("redis_host_autodetected", host=redis_host, in_docker=in_docker)
+    else:
+        log.debug("redis_host_from_env", host=redis_host)
+
+    redis_port = int(os.getenv("REDIS_PORT", "6379"))
+    redis_db   = int(os.getenv("REDIS_DB", "0"))
+    return RedisSettings(host=redis_host, port=redis_port, database=redis_db)
 
 
 # ── ARQ WorkerSettings ─────────────────────────────────────────────────────────
-# ARQ discovers configuration by importing this class.
-# Run the worker with:
-#   arq nexus.worker.listener.WorkerSettings
-# or via scripts/start_worker.py which calls arq programmatically.
 
 class WorkerSettings:
-    # The async functions ARQ is allowed to execute.
     functions = [execute_task]
-
-    # Lifecycle hooks.
     on_startup = startup
     on_shutdown = shutdown
 
-    # Redis connection — reads REDIS_URL from environment.
-    redis_settings = RedisSettings.from_dsn(
-        os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    )
+    redis_settings = _build_redis_settings()
 
-    # Queue to consume from — must match the queue the master enqueues onto.
     queue_name = "nexus:tasks"
 
-    # Maximum concurrent jobs per worker process.
-    # Set via WORKER_MAX_JOBS env var; default 4.
     max_jobs: int = int(os.getenv("WORKER_MAX_JOBS", "4"))
-
-    # How long (seconds) a job may run before ARQ hard-cancels it.
     job_timeout: int = int(os.getenv("TASK_DEFAULT_TIMEOUT", "300"))
-
-    # How long (seconds) to keep job results in Redis after completion.
+    max_tries: int = 3
     keep_result: int = 86400  # 24 hours
-
-    # Retry policy: attempt each job once by default.
-    # Increase max_tries for tasks that are safe to retry on transient errors.
-    max_tries: int = 1

@@ -1,0 +1,66 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Nexus Orchestrator — Worker Node Container
+#
+# Build:
+#   docker build -f Dockerfile.worker -t nexus-worker:latest .
+#
+# Run (single worker):
+#   docker run -d --name nexus-worker-1 \
+#     --env-file .env \
+#     -e NODE_ID=worker-docker-1 \
+#     -e WORKER_CAPABILITIES=any \
+#     -v "C:/Users/Yarin/Desktop/Mangement Ahu:/mangement-ahu:ro" \
+#     nexus-worker:latest
+#
+# Scale (3 workers):
+#   docker compose up --scale worker=3
+#
+# Notes
+# -----
+# - The container mounts Mangement Ahu as read-only so the scraper subprocess
+#   can access sessions and the SQLite DB.
+# - Redis must be accessible from the container (use host.docker.internal on
+#   Windows/Mac, or a Docker network on Linux).
+# - Set REDIS_URL=redis://host.docker.internal:6379/0 in .env for Docker Desktop.
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM python:3.11-slim
+
+# System dependencies for Telethon, psutil, and GPUtil
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libssl-dev \
+    libffi-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy dependency files first (layer cache)
+COPY pyproject.toml ./
+COPY nexus/ ./nexus/
+COPY scripts/ ./scripts/
+
+# Install Nexus + all dependencies
+RUN pip install --no-cache-dir -e ".[dev]" \
+    && pip install --no-cache-dir \
+        telethon>=1.36 \
+        GPUtil>=1.4 \
+        cryptography>=42.0
+
+# Mangement Ahu project is mounted at runtime (read-only)
+# The scraper subprocess helper adds it to sys.path dynamically.
+ENV MANGEMENT_AHU_PATH=/mangement-ahu
+
+# Worker defaults — override via docker run -e or .env
+ENV NODE_ID=worker-docker
+ENV WORKER_CAPABILITIES=any
+ENV WORKER_MAX_JOBS=4
+ENV TASK_DEFAULT_TIMEOUT=300
+ENV LOG_LEVEL=INFO
+
+# Health check — verify Redis is reachable
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD python -c "import redis; r=redis.from_url('$REDIS_URL'); r.ping()" || exit 1
+
+CMD ["python", "scripts/start_worker.py"]

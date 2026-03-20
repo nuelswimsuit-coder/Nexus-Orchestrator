@@ -171,7 +171,7 @@ in `.env` with no code changes required.
 
 | Variable | Default | Description |
 |---|---|---|
-| `REDIS_URL` | `redis://localhost:6379/0` | Shared broker URL |
+| `REDIS_URL` | `redis://127.0.0.1:6379/0` | Shared broker URL |
 | `NODE_ID` | `master` | Unique name for this node |
 | `MASTER_CPU_CAP_PERCENT` | `25` | Max CPU % for master process |
 | `MASTER_RAM_CAP_MB` | `512` | Max RAM MB for master process |

@@ -1,0 +1,20 @@
+"""Worker task implementations — imported by listener.py to register handlers."""
+
+# OpenClaw browser scraping (Phase 19) — Linux worker only
+# Import is guarded so the master process doesn't fail if playwright is absent
+try:
+    from nexus.worker.tasks import openclaw as _openclaw  # noqa: F401
+except Exception:
+    pass
+
+# Phase 11: Archivist — full Telegram backup with worker media offload
+try:
+    from nexus.worker.tasks import archivist as _archivist  # noqa: F401
+except Exception:
+    pass
+
+# Phase 12: Sentinel — mass-reporter using Telethon session rotation
+try:
+    from nexus.worker.tasks import sentinel as _sentinel  # noqa: F401
+except Exception:
+    pass
