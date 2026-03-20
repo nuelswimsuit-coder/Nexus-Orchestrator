@@ -4,8 +4,9 @@ Unified launcher for lightweight Nexus core services.
 Starts:
   - scripts/start_api.py
   - scripts/start_telegram_bot.py
+  - scripts/start_worker.py
 
-Both services are launched via multiprocessing and can be stopped together
+All services are launched via multiprocessing and can be stopped together
 with Ctrl-C (SIGINT).
 """
 

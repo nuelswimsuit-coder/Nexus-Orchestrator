@@ -22,6 +22,13 @@ import asyncio
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+elif os.environ.get("ENVIRONMENT", "PRODUCTION").upper() == "PRODUCTION":
+    try:
+        import uvloop  # type: ignore[import-not-found]
+
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except Exception:
+        pass
 
 import uvicorn
 
@@ -64,7 +71,7 @@ def main() -> None:
         host=settings.api_host,
         port=settings.api_port,
         reload=False,
-        log_level="info",
+        log_level="error",
         log_config=None,  # structlog handles all logging
     )
 

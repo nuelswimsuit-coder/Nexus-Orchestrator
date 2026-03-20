@@ -30,15 +30,17 @@ import asyncio
 import json as _json
 import os
 import time
-import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import ccxt
 import httpx
+import redis.asyncio as redis_asyncio
 import structlog
 
+from nexus.shared.config import settings
 from nexus.shared.system_settings import read_system_settings
+from nexus.trading.polymarket_client import KILL_SWITCH_BALANCE_USD
 from nexus.trading.config import (
     PAPER_TRADING,
     PAPER_TRADING_AMOUNT_USD,
@@ -46,6 +48,7 @@ from nexus.trading.config import (
     PAPER_TRADING_MAX_HISTORY,
     PAPER_TRADING_REDIS_KEY,
 )
+from nexus.worker.tasks.live_trade_execution import execute_live_trade, get_live_balance_usd
 from nexus.worker.task_registry import registry
 
 log = structlog.get_logger(__name__)
@@ -55,7 +58,7 @@ ARBITRAGE_TIMESERIES_KEY = "nexus:arbitrage:timeseries"
 TIMESERIES_MAX_POINTS    = 30
 COLLECTOR_INTERVAL_S     = 2.0
 
-# Redis key tracking the timestamp of the last virtual trade (cooldown guard)
+# Redis key tracking the timestamp of the last live execution (cooldown guard)
 _LAST_TRADE_TS_KEY = "nexus:paper_trading:last_trade_ts"
 
 # Performance stats key — aggregated win/loss/pnl counters
@@ -77,6 +80,36 @@ ORDER_BOOK_LIMIT       = 20     # depth levels to pull from Binance
 # providing a tighter confirmation window than the display signal (70 %).
 TRADE_IMBALANCE_THRESHOLD = 0.80   # buy-side fraction required to trigger a trade
 TRADE_MIN_GAP             = 0.03   # minimum arbitrage gap (3 %) required to trade
+
+
+async def _set_node_intent(intent: str, redis_client: Any | None = None) -> None:
+    """Best-effort intent broadcast to Redis for node dashboards."""
+    node_id = settings.node_id or os.getenv("NODE_ID", "master")
+    client = redis_client or redis_asyncio.from_url(settings.redis_url, decode_responses=True)
+    try:
+        await client.set(f"node:{node_id}:intent", intent)
+        await client.set("node:intent", intent)
+    except Exception as exc:
+        log.debug("prediction_intent_publish_failed", error=str(exc))
+    finally:
+        if redis_client is None:
+            await client.aclose()
+
+
+async def _push_node_history(task_line: str, redis_client: Any | None = None) -> None:
+    """Keep a rolling node-local history list for terminal monitors."""
+    node_id = settings.node_id or os.getenv("NODE_ID", "master")
+    client = redis_client or redis_asyncio.from_url(settings.redis_url, decode_responses=True)
+    try:
+        await client.lpush(f"node:{node_id}:history", task_line)
+        await client.ltrim(f"node:{node_id}:history", 0, 4)
+        await client.lpush("node:history", task_line)
+        await client.ltrim("node:history", 0, 4)
+    except Exception as exc:
+        log.debug("prediction_history_publish_failed", error=str(exc))
+    finally:
+        if redis_client is None:
+            await client.aclose()
 
 
 def _prediction_throttle_delay_s() -> float:
@@ -306,66 +339,7 @@ async def run_cross_exchange_analysis(symbol: str = "BTCUSDT") -> dict[str, Any]
     }
 
 
-# ── Paper-trading execution layer ─────────────────────────────────────────────
-
-async def _save_virtual_trade(
-    redis: Any,
-    signal: str,
-    binance_data: dict[str, Any],
-    poly_data: dict[str, Any],
-) -> dict[str, Any]:
-    """
-    Persist a virtual trade entry to Redis under PAPER_TRADING_REDIS_KEY.
-
-    Computes a naïve "potential profit" assuming the YES outcome resolves
-    fully (yes_price → 1.0), sized at PAPER_TRADING_AMOUNT_USD.
-
-    The list is capped at PAPER_TRADING_MAX_HISTORY entries (newest-first via
-    LPUSH + LTRIM).
-    """
-    entry_yes_price      = poly_data.get("yes_price", 0.5) or 0.5
-    virtual_amount       = PAPER_TRADING_AMOUNT_USD
-    # Potential profit if Polymarket YES resolves (price goes to 1.0)
-    potential_profit     = round((1.0 - entry_yes_price) * virtual_amount, 4)
-
-    virtual_shares = round(virtual_amount / entry_yes_price, 1) if entry_yes_price > 0 else 0.0
-
-    trade: dict[str, Any] = {
-        "id":                   str(uuid.uuid4()),
-        "timestamp":            datetime.now(timezone.utc).isoformat(),
-        "signal":               signal,
-        "direction":            "YES",
-        "side":                 "YES",
-        "entry_yes_price":      round(entry_yes_price, 4),
-        "price":                round(entry_yes_price, 4),
-        "shares":               virtual_shares,
-        "entry_binance_price":  round(binance_data.get("price", 0.0), 2),
-        "virtual_amount_usd":   virtual_amount,
-        "spent_usd":            virtual_amount,
-        "potential_profit_usd": potential_profit,
-        "market_question":      poly_data.get("market_question", "BTC Price Market"),
-        "market_id":            poly_data.get("market_id"),
-        "status":               "success",
-        "paper":                True,
-        "log_text": (
-            f"[PAPER] Bought {virtual_shares:.1f} shares of YES "
-            f"@ ${entry_yes_price:.3f}"
-        ),
-    }
-
-    await redis.lpush(PAPER_TRADING_REDIS_KEY, _json.dumps(trade))
-    await redis.ltrim(PAPER_TRADING_REDIS_KEY, 0, PAPER_TRADING_MAX_HISTORY - 1)
-
-    log.info(
-        "virtual_trade_saved",
-        trade_id=trade["id"],
-        signal=signal,
-        entry_yes_price=entry_yes_price,
-        potential_profit_usd=potential_profit,
-        paper_trading=True,
-    )
-    return trade
-
+# ── Live execution layer ───────────────────────────────────────────────────────
 
 async def maybe_execute_trade(
     redis: Any,
@@ -375,12 +349,6 @@ async def maybe_execute_trade(
 ) -> None:
     """
     Gate function between signal detection and order execution.
-
-    If PAPER_TRADING is True  → log a virtual trade with cooldown protection.
-    If PAPER_TRADING is False → forward to polymarket_client.place_order().
-
-    The cooldown prevents flooding Redis with duplicate trades when the same
-    signal persists across multiple 2-second collector cycles.
     """
     # ── Cooldown guard ────────────────────────────────────────────────────────
     last_ts_raw = await redis.get(_LAST_TRADE_TS_KEY)
@@ -397,30 +365,23 @@ async def maybe_execute_trade(
     await redis.set(_LAST_TRADE_TS_KEY, now_iso)
 
     if PAPER_TRADING:
-        await _save_virtual_trade(redis, signal, binance_data, poly_data)
-    else:
-        # Live trading path — kill switch and timeout checks live inside place_order()
-        from nexus.trading.polymarket_client import (  # noqa: PLC0415
-            TradingHalted,
-            place_order,
+        log.error(
+            "paper_trading_enabled_execution_blocked",
+            signal=signal,
+            hint="Set PAPER_TRADING=False for live execution.",
         )
-        try:
-            await place_order(
-                signal=signal,
-                binance_data=binance_data,
-                poly_data=poly_data,
-                redis=redis,
-            )
-        except TradingHalted as exc:
-            log.error(
-                "trading_kill_switch_triggered",
-                reason=str(exc),
-                signal=signal,
-            )
-        except asyncio.TimeoutError:
-            log.error("live_order_timeout", signal=signal)
-        except Exception as exc:
-            log.error("live_order_failed", error=str(exc), signal=signal)
+        return
+    try:
+        await execute_live_trade(
+            redis=redis,
+            signal=signal,
+            binance_data=binance_data,
+            poly_data=poly_data,
+        )
+    except asyncio.TimeoutError:
+        log.error("live_order_timeout", signal=signal)
+    except Exception as exc:
+        log.error("live_order_failed", error=str(exc), signal=signal)
 
 
 # ── Paper-trade settlement ────────────────────────────────────────────────────
@@ -574,6 +535,7 @@ async def collect_arbitrage_datapoint(redis: Any) -> dict[str, Any]:
     ----------
     redis : redis.asyncio.Redis  — shared async Redis client (decode_responses=True)
     """
+    await _set_node_intent("Prediction collector: syncing Binance + Polymarket data", redis)
     binance_price: float | None = None
     poly_price: float | None    = None
 
@@ -599,13 +561,6 @@ async def collect_arbitrage_datapoint(redis: Any) -> dict[str, Any]:
     await redis.rpush(ARBITRAGE_TIMESERIES_KEY, entry)
     await redis.ltrim(ARBITRAGE_TIMESERIES_KEY, -TIMESERIES_MAX_POINTS, -1)
 
-    # ── Paper trade settlement (5-minute mark) ─────────────────────────────
-    if binance_price is not None:
-        try:
-            await _settle_open_trades(redis, binance_price)
-        except Exception as exc:
-            log.warning("paper_trade_settlement_error", error=str(exc))
-
     # ── Automated trade evaluation ─────────────────────────────────────────
     # Only fire when BOTH sources returned valid data AND the stricter trade
     # thresholds are met: buy-side imbalance > 80 % AND gap > 3 %.
@@ -614,9 +569,19 @@ async def collect_arbitrage_datapoint(redis: Any) -> dict[str, Any]:
         and not isinstance(poly_result, Exception)
         and poly_result.get("market_found")
     ):
-        buy_pct       = binance_result.get("buy_pct", 0.0)
-        yes_price     = poly_result.get("yes_price", 1.0) or 1.0
-        arbitrage_gap = max(POLYMARKET_YES_CEILING - yes_price, 0.0)
+        buy_pct   = binance_result.get("buy_pct", 0.0)
+        yes_price = poly_result.get("yes_price", 1.0) or 1.0
+
+        # Production safety: verify live balance before peak opportunity scoring.
+        live_balance = 0.0
+        balance_ok = False
+        try:
+            live_balance = await get_live_balance_usd()
+            balance_ok = live_balance >= max(KILL_SWITCH_BALANCE_USD, PAPER_TRADING_AMOUNT_USD)
+        except Exception as exc:
+            log.error("live_balance_check_failed", error=str(exc))
+
+        arbitrage_gap = max(POLYMARKET_YES_CEILING - yes_price, 0.0) if balance_ok else 0.0
 
         is_high_confidence = (
             buy_pct   > IMBALANCE_THRESHOLD
@@ -627,7 +592,13 @@ async def collect_arbitrage_datapoint(redis: Any) -> dict[str, Any]:
             and arbitrage_gap > TRADE_MIN_GAP
         )
 
-        if is_high_confidence and meets_trade_thresholds:
+        if not balance_ok:
+            log.warning(
+                "trade_skipped_balance_guard",
+                balance_usd=round(live_balance, 2),
+                min_required_usd=round(max(KILL_SWITCH_BALANCE_USD, PAPER_TRADING_AMOUNT_USD), 2),
+            )
+        elif is_high_confidence and meets_trade_thresholds:
             try:
                 await maybe_execute_trade(
                     redis,
@@ -682,6 +653,15 @@ async def cross_exchange(parameters: dict[str, Any]) -> dict[str, Any]:
     symbol : str  — Binance trading pair (default: "BTCUSDT")
     """
     symbol = parameters.get("symbol", "BTCUSDT")
+    await _set_node_intent(f"Prediction task: analyzing cross-exchange signal for {symbol}")
     result = await run_cross_exchange_analysis(symbol)
+    if result.get("status") in {"completed", "partial"}:
+        await _push_node_history(
+            f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}Z] Prediction ({symbol}) "
+            f"{result.get('signal', 'NEUTRAL')} status={result.get('status')}"
+        )
+    await _set_node_intent(
+        f"Prediction task complete: {result.get('signal', 'NEUTRAL')} on {symbol}"
+    )
     await asyncio.sleep(_prediction_throttle_delay_s())
     return result

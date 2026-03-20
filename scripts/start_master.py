@@ -33,6 +33,13 @@ from pathlib import Path
 if sys.platform == "win32":
     # Required for Windows + Python 3.8+ compatibility with aiohttp/arq
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+elif os.environ.get("ENVIRONMENT", "PRODUCTION").upper() == "PRODUCTION":
+    try:
+        import uvloop  # type: ignore[import-not-found]
+
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except Exception:
+        pass
 
 try:
     asyncio.get_running_loop()
@@ -105,7 +112,7 @@ async def _system_settings_sync_loop(
 async def run() -> None:
     sync_runtime_from_system_settings()
     # ── 1. Logging ─────────────────────────────────────────────────────────────
-    configure_logging(level=settings.log_level, node_id=settings.node_id)
+    configure_logging(level="INFO", node_id=settings.node_id)
     print("[START] מוודא שאין מופעים כפולים ומריץ את @sasaNexusBot...")
     log.info("nexus_master_starting", node_id=settings.node_id)
 

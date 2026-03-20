@@ -1,0 +1,6 @@
+{
+  "cpu_limit": 0.9,
+  "ram_limit": 0.9,
+  "gpu_limit": 0.9,
+  "role": "worker"
+}

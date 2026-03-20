@@ -67,8 +67,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 import psutil
+import redis.asyncio as redis
 import structlog
 
+from nexus.shared.config import settings
 from nexus.worker.task_registry import registry
 
 log = structlog.get_logger(__name__)
@@ -101,6 +103,34 @@ FORUM_SOURCES = {
     "reddit":     "https://www.reddit.com/search/?q={query}&sort=new",
     "stackoverflow": "https://stackoverflow.com/search?q={query}",
 }
+
+
+async def _set_node_intent(intent: str) -> None:
+    """Best-effort intent broadcast to Redis for live node dashboards."""
+    node_id = settings.node_id or os.getenv("NODE_ID", "master")
+    client = redis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        await client.set(f"node:{node_id}:intent", intent)
+        await client.set("node:intent", intent)
+    except Exception as exc:
+        log.debug("openclaw_intent_publish_failed", error=str(exc))
+    finally:
+        await client.aclose()
+
+
+async def _push_node_history(task_line: str) -> None:
+    """Keep a rolling node-local history list for terminal monitors."""
+    node_id = settings.node_id or os.getenv("NODE_ID", "master")
+    client = redis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        await client.lpush(f"node:{node_id}:history", task_line)
+        await client.ltrim(f"node:{node_id}:history", 0, 4)
+        await client.lpush("node:history", task_line)
+        await client.ltrim("node:history", 0, 4)
+    except Exception as exc:
+        log.debug("openclaw_history_publish_failed", error=str(exc))
+    finally:
+        await client.aclose()
 
 
 # ── Data models ────────────────────────────────────────────────────────────────
@@ -489,9 +519,12 @@ async def browser_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
     if not query:
         return {"status": "failed", "error": "query parameter is required"}
 
+    await _set_node_intent(f"OpenClaw boot sequence: preparing {mode} scrape for '{query[:60]}'")
+
     # ── Pre-flight: CPU check ──────────────────────────────────────────────────
     cpu = psutil.cpu_percent(interval=1)
     if cpu > CPU_THRESHOLD:
+        await _set_node_intent("OpenClaw paused: CPU pressure above safe threshold")
         log.warning("openclaw_low_resources", cpu=cpu, threshold=CPU_THRESHOLD)
         return {
             "status": "low_resources",
@@ -511,8 +544,10 @@ async def browser_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
     # ── Scrape ─────────────────────────────────────────────────────────────────
     leads: list[Lead] = []
     if mode == "google_maps":
+        await _set_node_intent(f"OpenClaw scanning Google Maps: '{query[:60]}'")
         leads = await _scrape_google_maps(query, location, max_leads)
     elif mode == "social_forums":
+        await _set_node_intent(f"OpenClaw mining social forums: '{query[:60]}'")
         leads = await _scrape_social_forums(query, max_leads)
     else:
         return {"status": "failed", "error": f"Unknown mode: {mode!r}"}
@@ -525,9 +560,11 @@ async def browser_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
     log.info("openclaw_contactable", count=len(contactable))
 
     # ── Telegram verification ──────────────────────────────────────────────────
+    await _set_node_intent("OpenClaw verifying Telegram reachability for scraped leads")
     verified, unverified = await _verify_telegram(contactable, TELEFIX_PROJECT)
 
     # ── Write verified leads to telefix.db ────────────────────────────────────
+    await _set_node_intent("OpenClaw writing verified leads into TeleFix datastore")
     written = await _write_to_telefix(verified, project_id, TELEFIX_DB)
 
     # ── Store unverified leads in Redis for later retry ───────────────────────
@@ -546,6 +583,11 @@ async def browser_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
             log.warning("openclaw_unverified_save_error", error=str(exc))
 
     duration = round(time.monotonic() - t0, 2)
+    await _set_node_intent(f"OpenClaw complete: {written} verified leads persisted")
+    await _push_node_history(
+        f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}Z] OpenClaw ({mode}) "
+        f"completed | verified={len(verified)} written={written}"
+    )
     log.info("openclaw_task_done",
              mode=mode, leads_found=leads_found,
              leads_verified=len(verified), leads_written=written,

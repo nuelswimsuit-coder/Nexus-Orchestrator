@@ -449,9 +449,9 @@ export default function DashboardPage() {
           </div>
         </GlassSection>
 
-        {/* ── Virtual Trade Log ────────────────────────────────────────────── */}
+        {/* ── Live Trade Log ───────────────────────────────────────────────── */}
         <GlassSection>
-          <SectionLabel label="SIMULATION MODE" sub="סימולציה (Sandbox) — הרצה בבדיקה, ללא הון אמיתי" />
+          <SectionLabel label="LIVE OPS - REAL-TIME EXECUTION" sub="Execution telemetry and real trade stream" />
           <VirtualTradeLog />
         </GlassSection>
 

@@ -99,7 +99,7 @@ async def _connect_redis_with_retry(redis_url: str) -> Redis:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage startup and shutdown of shared resources."""
-    configure_logging(level=settings.log_level, node_id=f"{settings.node_id}-api")
+    configure_logging(level="ERROR", node_id=f"{settings.node_id}-api")
 
     redis: Redis = await _connect_redis_with_retry(settings.redis_url)
     app.state.redis = redis

@@ -48,6 +48,13 @@ from urllib.parse import unquote, urlparse
 if sys.platform == "win32":
     # Required for Windows + Python 3.8+ compatibility with aiohttp/arq
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+elif os.environ.get("ENVIRONMENT", "PRODUCTION").upper() == "PRODUCTION":
+    try:
+        import uvloop  # type: ignore[import-not-found]
+
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except Exception:
+        pass
 
 try:
     asyncio.get_running_loop()
@@ -132,7 +139,7 @@ def get_start_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📊 סטטוס מערכת",          callback_data="status"),
-            InlineKeyboardButton(text="🧪 מצב סימולציה (Sandbox)", callback_data="toggle_paper_mode"),
+            InlineKeyboardButton(text="⚡ LIVE OPS - REAL-TIME EXECUTION", callback_data="live_ops"),
         ],
         [
             InlineKeyboardButton(text="🛡️ בדיקת חוסן (Sentinel)", callback_data="check_sentinel"),
@@ -530,10 +537,15 @@ async def handle_status(callback: CallbackQuery) -> None:
         nodes   = cluster_data.get("nodes", [])
         online  = sum(1 for n in nodes if n.get("online"))
         total_n = len(nodes)
+        worker_nodes = [n for n in nodes if str(n.get("role", "")).lower() == "worker"]
+        online_workers = [n for n in worker_nodes if n.get("online")]
+        worker_list = ", ".join(_esc(str(n.get("node_id", "?"))) for n in online_workers[:6]) or "none"
         cluster_icon = "🟢" if online == total_n and total_n > 0 else ("🟡" if online > 0 else "🔴")
         lines += [
             "🖥️ *קלאסטר*",
             f"  {cluster_icon} צמתים מחוברים: `{online}/{total_n}`",
+            f"  💓 Node Heartbeat: `{len(online_workers)}/{len(worker_nodes)}` workers",
+            f"  🧩 Workers: `{worker_list}`",
             "",
         ]
     else:
@@ -548,40 +560,45 @@ async def handle_status(callback: CallbackQuery) -> None:
     )
 
 
-async def handle_toggle_paper_mode(callback: CallbackQuery) -> None:
-    """🧪 מצב סימולציה — display current paper-trading state and offer toggle."""
-    await callback.answer("בודק מצב סימולציה...")
+async def handle_live_ops_status(callback: CallbackQuery) -> None:
+    """⚡ LIVE OPS panel with heartbeat visibility."""
+    await callback.answer("בודק LIVE OPS...")
 
-    # Read the live flag from the prediction endpoint which exposes PAPER_TRADING
-    pred_data = await _api_get("/api/prediction/paper-trading")
+    mode_data = await _api_get("/api/prediction/trading-mode")
+    cluster_data = await _api_get("/api/cluster/status")
+    panic_data = await _api_get("/api/system/panic/state")
 
-    if pred_data is None:
+    if mode_data is None or cluster_data is None:
         await callback.message.edit_text(
-            "⚠️ *שגיאת חיבור*\n\nלא ניתן לקרוא את מצב הסימולציה מהשרת\\.",
+            "⚠️ *שגיאת חיבור*\n\nלא ניתן לקרוא את מצב Live Ops מהשרת\\.",
             parse_mode=ParseMode.MARKDOWN_V2,
             reply_markup=get_start_menu(),
         )
         return
 
-    is_paper = pred_data.get("paper_trading_enabled", True)
-    mode_icon  = "🟢" if is_paper else "🔴"
-    mode_label = "פעיל \\(Sandbox\\)" if is_paper else "כבוי \\(Live \\!\\)"
-    mode_warn  = (
-        "\n\n✅ _המסחר הוירטואלי פעיל\\. אין ביצוע עסקאות אמיתיות\\._"
-        if is_paper
-        else "\n\n⚠️ _*שים לב:* מסחר חי — עסקאות אמיתיות יבוצעו\\!_"
-    )
+    paper_mode = bool(mode_data.get("paper_trading", True))
+    live_mode = not paper_mode
+    mode_icon = "🟢" if live_mode else "🔴"
+    mode_label = "LIVE EXECUTION" if live_mode else "PAPER MODE \\(BLOCKED\\)"
 
-    count = pred_data.get("total_trades", 0)
+    nodes = cluster_data.get("nodes", [])
+    worker_nodes = [n for n in nodes if str(n.get("role", "")).lower() == "worker"]
+    online_workers = [n for n in worker_nodes if n.get("online")]
+    worker_names = ", ".join(_esc(str(n.get("node_id", "?"))) for n in online_workers[:8]) or "none"
+    heartbeat_icon = "🟢" if online_workers else "🔴"
+
+    panic = bool(panic_data and panic_data.get("panic"))
+    panic_label = "PANIC ACTIVE" if panic else "NORMAL"
+    panic_icon = "🚨" if panic else "✅"
 
     lines = [
-        "🧪 *מצב סימולציה \\(Sandbox\\)*",
+        "⚡ *LIVE OPS \\- REAL\\-TIME EXECUTION*",
         "",
-        f"  {mode_icon} סטטוס נוכחי: *{mode_label}*",
-        f"  📦 עסקאות וירטואליות שנרשמו: `{count}`",
-        mode_warn,
+        f"  {mode_icon} מצב ביצוע: *{mode_label}*",
+        f"  {heartbeat_icon} Node Heartbeat: `{len(online_workers)}/{len(worker_nodes)}` workers online",
+        f"  🧩 Workers: `{worker_names}`",
+        f"  {panic_icon} System State: `{panic_label}`",
         "",
-        "ℹ️ _שינוי מצב הסימולציה מצריך עריכת `PAPER_TRADING` ב\\-`.env`_",
         f"🕐 _עודכן: {_esc(_now_utc())}_",
     ]
 
@@ -1328,7 +1345,7 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
 
     # /start control-panel callbacks (4-button 2×2 grid)
     dp.callback_query.register(handle_status,             F.data == "status")
-    dp.callback_query.register(handle_toggle_paper_mode,  F.data == "toggle_paper_mode")
+    dp.callback_query.register(handle_live_ops_status,     F.data == "live_ops")
     dp.callback_query.register(handle_check_sentinel,     F.data == "check_sentinel")
     dp.callback_query.register(handle_panic_stop,         F.data == "panic_stop")
     dp.callback_query.register(handle_panic_confirm,      F.data == "panic_confirm")
@@ -1387,8 +1404,8 @@ async def start_bot_polling(token: str) -> None:
 
 
 async def run() -> None:
-    # Force INFO in runtime launcher path to reduce logging overhead.
-    configure_logging(level="INFO", node_id=f"{settings.node_id}-telegram-bot")
+    # Production bot logs are intentionally concise.
+    configure_logging(level="ERROR", node_id=f"{settings.node_id}-telegram-bot")
 
     print("[START] המערכת מוכנה לפעולה — מריץ בדיקות טרום-הפעלה...")
     log.info("telegram_bot_instance_check")
@@ -1425,7 +1442,7 @@ async def run() -> None:
 
     # /start control-panel callbacks (4-button 2×2 grid)
     dp.callback_query.register(handle_status,            F.data == "status")
-    dp.callback_query.register(handle_toggle_paper_mode, F.data == "toggle_paper_mode")
+    dp.callback_query.register(handle_live_ops_status, F.data == "live_ops")
     dp.callback_query.register(handle_check_sentinel,    F.data == "check_sentinel")
     dp.callback_query.register(handle_panic_stop,        F.data == "panic_stop")
     dp.callback_query.register(handle_panic_confirm,     F.data == "panic_confirm")

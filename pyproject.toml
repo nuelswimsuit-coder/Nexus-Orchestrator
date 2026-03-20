@@ -20,6 +20,7 @@ dependencies = [
 
     # --- Resource monitoring & process management ---
     "psutil>=6.0",
+    "rich>=13.7",
 
     # --- Structured async logging ---
     "structlog>=24.1",
@@ -32,6 +33,7 @@ dependencies = [
 
     # --- Async utilities ---
     "anyio>=4.4",
+    "uvloop>=0.20; platform_system != 'Windows'",
 
     # --- API server ---
     "fastapi>=0.111",

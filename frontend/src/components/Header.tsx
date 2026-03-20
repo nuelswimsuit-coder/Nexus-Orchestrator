@@ -15,7 +15,6 @@ import type {
   ChatOpsStatusResponse,
   ClusterStatusResponse,
   HitlPendingResponse,
-  TradingModeResponse,
   PanicStateResponse,
 } from "@/lib/api";
 
@@ -591,81 +590,6 @@ function ColorModeToggle({ stealth }: { stealth: boolean }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Simulation Mode Badge — shown when PAPER_TRADING is True on the backend
-// ─────────────────────────────────────────────────────────────────────────────
-
-function SimModeBadge({ stealth }: { stealth: boolean }) {
-  const { t } = useI18n();
-  const { isHighContrast } = useTheme();
-
-  const { data } = useSWR<TradingModeResponse>(
-    "/api/prediction/trading-mode",
-    swrFetcher<TradingModeResponse>,
-    { refreshInterval: 60_000 },
-  );
-
-  if (!data?.paper_trading || stealth) return null;
-
-  return (
-    <span
-      title={`${t("paper_trading.sim_mode")} — ${data.virtual_trade_count} ${t("paper_trading.virtual_trade").toLowerCase()}s logged`}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "0.35rem",
-        padding: "3px 9px",
-        borderRadius: "999px",
-        background: isHighContrast ? "#fef3c7" : "rgba(245,158,11,0.12)",
-        border: isHighContrast ? "1px solid #f59e0b" : "1px solid rgba(245,158,11,0.35)",
-        cursor: "default",
-        flexShrink: 0,
-      }}
-    >
-      <span
-        style={{
-          width: 6,
-          height: 6,
-          borderRadius: "50%",
-          background: isHighContrast ? "#f59e0b" : "#f59e0b",
-          display: "inline-block",
-          boxShadow: isHighContrast ? "none" : "0 0 6px #f59e0b",
-          animation: isHighContrast ? "none" : "sim-badge-pulse 1.8s infinite",
-        }}
-      />
-      <span
-        style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: "0.6rem",
-          fontWeight: 700,
-          letterSpacing: "0.1em",
-          color: isHighContrast ? "#92400e" : "#f59e0b",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {t("paper_trading.badge")}
-      </span>
-      <span
-        style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: "0.55rem",
-          letterSpacing: "0.06em",
-          color: isHighContrast ? "#b45309" : "#d97706",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {data.virtual_trade_count > 0 ? `× ${data.virtual_trade_count}` : t("paper_trading.paper_mode_label")}
-      </span>
-      <style>{`
-        @keyframes sim-badge-pulse {
-          0%, 100% { opacity: 1; }
-          50%       { opacity: 0.4; }
-        }
-      `}</style>
-    </span>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // PANIC BUTTON — Global Kill-Switch
 // Big, red, glowing. Double-confirmation modal in Hebrew.
 // Syncs dashboard theme to "Restricted Mode" (gray/red) on activation.
@@ -1221,9 +1145,6 @@ export default function Header() {
           ))}
         </div>
       )}
-
-      {/* Simulation Mode badge — visible when PAPER_TRADING is True */}
-      <SimModeBadge stealth={stealth} />
 
       {/* Language Toggle */}
       <LanguageToggle stealth={stealth} isHighContrast={isHighContrast} />

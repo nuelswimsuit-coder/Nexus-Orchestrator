@@ -4,6 +4,7 @@ Worker Node entrypoint.
 Usage
 -----
     python scripts/start_worker.py
+    python scripts/start_worker.py --master-ip 192.168.1.10
 
 Or via the installed CLI entrypoint (after `pip install -e .`):
     nexus-worker
@@ -21,6 +22,7 @@ What this script does
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
 import sys
@@ -32,6 +34,13 @@ from pathlib import Path
 if sys.platform == "win32":
     # Required for Windows + Python 3.8+ compatibility with aiohttp/arq
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+elif os.environ.get("ENVIRONMENT", "PRODUCTION").upper() == "PRODUCTION":
+    try:
+        import uvloop  # type: ignore[import-not-found]
+
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except Exception:
+        pass
 
 try:
     asyncio.get_running_loop()
@@ -45,7 +54,6 @@ from arq import run_worker
 from nexus.shared.config import settings
 from nexus.shared.logging_config import configure_logging
 from nexus.shared.system_settings import read_system_settings
-from nexus.worker.listener import WorkerSettings
 
 log = structlog.get_logger(__name__)
 
@@ -64,7 +72,32 @@ if _ENV_FILE.exists():
             os.environ[_key] = _val
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Start Nexus ARQ worker node")
+    parser.add_argument(
+        "--master-ip",
+        default=os.getenv("MASTER_IP", "127.0.0.1"),
+        help="Master Redis host/IP (default: 127.0.0.1)",
+    )
+    return parser.parse_args()
+
+
+def _apply_master_redis(master_ip: str) -> None:
+    host = (master_ip or "127.0.0.1").strip()
+    port = os.getenv("REDIS_PORT", "6379")
+    db = os.getenv("REDIS_DB", "0")
+    os.environ["REDIS_HOST"] = host
+    os.environ["REDIS_URL"] = f"redis://{host}:{port}/{db}"
+
+
 def main() -> None:
+    args = _parse_args()
+    _apply_master_redis(args.master_ip)
+
+    # WorkerSettings reads env at import time, so import it only after
+    # --master-ip overrides have been applied.
+    from nexus.worker.listener import WorkerSettings  # noqa: PLC0415
+
     system_runtime = read_system_settings()
     # Keep worker concurrency in a strict low-power envelope (2-3 jobs).
     bounded_jobs = max(2, min(int(system_runtime["max_workers"]), 3))
@@ -72,8 +105,8 @@ def main() -> None:
     # Prediction loops read this env var to avoid CPU spikes.
     os.environ["NEXUS_PREDICTION_THROTTLE_DELAY"] = "1.0"
 
-    # Force production-friendly logging to reduce console I/O overhead.
-    configure_logging(level=str(system_runtime["log_level"]), node_id=settings.node_id)
+    # Production workers keep logs minimal.
+    configure_logging(level="ERROR", node_id=settings.node_id)
     # A slightly higher poll delay lowers idle CPU usage on worker nodes.
     WorkerSettings.poll_delay = float(os.getenv("WORKER_POLL_DELAY", "1.0"))
 

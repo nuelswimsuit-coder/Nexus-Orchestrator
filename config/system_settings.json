@@ -1,5 +1,5 @@
 {
   "power_limit": 30,
   "max_workers": 3,
-  "log_level": "INFO"
+  "log_level": "ERROR"
 }

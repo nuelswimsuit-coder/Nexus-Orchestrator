@@ -1,1005 +1,343 @@
 "use client";
 
-/**
- * TopologyVisual — 2D Technical Network Schematic
- *
- * Premium financial-terminal network diagram with computer/server icons,
- * live WebSocket log streams, self-healing status coloring, and RTL support.
- * Log lines are color-coded: [SUCCESS]=green, [REPAIRING]=amber, [CRITICAL]=red+flash.
- */
-
-import { useEffect, useRef, useState } from "react";
-import useSWR from "swr";
-import { swrFetcher, API_BASE } from "@/lib/api";
+import { motion } from "framer-motion";
+import {
+  Clock4,
+  Cpu,
+  Gem,
+  Headphones,
+  Keyboard,
+  Monitor,
+  Mouse,
+  Smartphone,
+  Watch,
+} from "lucide-react";
+import { useMemo } from "react";
+import type { NodeStatus } from "@/lib/api";
 import { useNexus } from "@/lib/nexus-context";
-import { useStealth } from "@/lib/stealth";
-import { useI18n } from "@/lib/i18n";
-import { useTheme } from "@/lib/theme";
-import type { ClusterStatusResponse } from "@/lib/api";
 
-// ── WebSocket log stream ──────────────────────────────────────────────────────
+const FAN_POSITIONS = [
+  "left-4 top-4",
+  "left-20 top-4",
+  "left-36 top-4",
+  "left-4 top-20",
+  "left-20 top-20",
+  "left-36 top-20",
+  "left-20 top-36",
+];
 
-interface LogLine {
-  timestamp: string;
-  level: string;
-  message: string;
-  id: number;
+function contains(value: string | undefined, needle: string): boolean {
+  return (value ?? "").toLowerCase().includes(needle);
 }
 
-function useWebSocketLogs(url: string, maxLines = 18): LogLine[] {
-  const [logs, setLogs] = useState<LogLine[]>([]);
-  const wsRef  = useRef<WebSocket | null>(null);
-  const lineId = useRef(0);
-
-  useEffect(() => {
-    try {
-      wsRef.current = new WebSocket(url.replace("http", "ws").replace("https", "wss"));
-      wsRef.current.onmessage = (ev) => {
-        try {
-          const data = JSON.parse(ev.data);
-          const entry: LogLine = {
-            timestamp: new Date().toLocaleTimeString("en-GB", { hour12: false }),
-            level:     data.level   || "INFO",
-            message:   data.message || data.event || "event",
-            id:        lineId.current++,
-          };
-          setLogs(prev => [...prev.slice(-(maxLines - 1)), entry]);
-        } catch { /* skip malformed */ }
-      };
-    } catch { /* WS unavailable */ }
-    return () => wsRef.current?.close();
-  }, [url, maxLines]);
-
-  return logs;
-}
-
-// ── Self-repair state machine ─────────────────────────────────────────────────
-// Tracks: none → error → repairing → resolved → none
-
-type RepairPhase = "none" | "error" | "repairing" | "resolved";
-
-function useRepairState(hasError: boolean): RepairPhase {
-  const [phase, setPhase] = useState<RepairPhase>("none");
-  const timer = useRef<ReturnType<typeof setTimeout>>();
-
-  useEffect(() => {
-    if (hasError) {
-      clearTimeout(timer.current);
-      if (phase === "none" || phase === "resolved") {
-        setPhase("error");
-        timer.current = setTimeout(() => setPhase("repairing"), 10_000);
-      }
-    } else if (phase === "error" || phase === "repairing") {
-      clearTimeout(timer.current);
-      setPhase("resolved");
-      timer.current = setTimeout(() => setPhase("none"), 6_000);
-    }
-    return () => clearTimeout(timer.current);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasError]);
-
-  return phase;
-}
-
-// ── SVG Icons ─────────────────────────────────────────────────────────────────
-
-function ServerRackIcon({ size = 36, color }: { size?: number; color: string }) {
+function pickGamingWorker(workers: NodeStatus[]): NodeStatus | null {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
-      style={{ display: "block" }}
-    >
-      <rect x="2" y="2" width="20" height="8" rx="2" />
-      <rect x="2" y="14" width="20" height="8" rx="2" />
-      <circle cx="18" cy="6"  r="1" fill={color} stroke="none" />
-      <circle cx="18" cy="18" r="1" fill={color} stroke="none" />
-      <line x1="6" y1="6"  x2="13" y2="6"  strokeWidth="1.2" />
-      <line x1="6" y1="18" x2="13" y2="18" strokeWidth="1.2" />
-    </svg>
+    workers.find(
+      (worker) =>
+        contains(worker.node_id, "gaming")
+        || contains(worker.node_id, "beast")
+        || contains(worker.os_info, "windows"),
+    )
+    ?? workers[0]
+    ?? null
   );
 }
 
-function MonitorIcon({ size = 34, color }: { size?: number; color: string }) {
+function pickHpWorker(workers: NodeStatus[], excludeId?: string): NodeStatus | null {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
-      style={{ display: "block" }}
-    >
-      <rect x="2" y="3" width="20" height="14" rx="2" />
-      <line x1="8"  y1="21" x2="16" y2="21" />
-      <line x1="12" y1="17" x2="12" y2="21" />
-      <circle cx="12" cy="10" r="2" fill={color} stroke="none" opacity="0.6" />
-    </svg>
+    workers.find(
+      (worker) =>
+        worker.node_id !== excludeId
+        && (contains(worker.node_id, "hp") || contains(worker.os_info, "hp")),
+    )
+    ?? workers.find((worker) => worker.node_id !== excludeId)
+    ?? null
   );
 }
 
-// ── Log line style helper — keyword-based coloring ───────────────────────────
-
-function getLogLineStyle(
-  ln: LogLine,
-  stealth: boolean,
-  isHighContrast: boolean,
-): { color: string; animation: string; fontWeight: string; rowBg?: string } {
-  if (stealth && !isHighContrast) {
-    return { color: "#2a3450", animation: "none", fontWeight: "400" };
-  }
-  const upper = `${ln.message} ${ln.level}`.toUpperCase();
-
-  if (upper.includes("[CRITICAL]") || upper.includes("CRITICAL")) {
-    return {
-      color:      isHighContrast ? "#AA0000" : "#ff3355",
-      animation:  "critical-flash 0.85s step-end infinite",
-      fontWeight: "700",
-      rowBg:      isHighContrast ? "rgba(170,0,0,0.06)" : "rgba(255,30,60,0.08)",
-    };
-  }
-  if (upper.includes("[REPAIRING]") || upper.includes("REPAIRING") || upper.includes("ACTION:")) {
-    return {
-      color:      isHighContrast ? "#7c4e00" : "#ffb800",
-      animation:  "none",
-      fontWeight: "600",
-      rowBg:      isHighContrast ? "rgba(124,78,0,0.05)" : "rgba(255,184,0,0.06)",
-    };
-  }
-  if (upper.includes("[SUCCESS]") || upper.includes("SUCCESS")) {
-    return {
-      color:      isHighContrast ? "#0a6640" : "#00e096",
-      animation:  "none",
-      fontWeight: "600",
-      rowBg:      isHighContrast ? "rgba(10,102,64,0.05)" : "rgba(0,224,150,0.06)",
-    };
-  }
-  if (upper.includes("[RESOLVED]") || upper.includes("RESOLVED")) {
-    return {
-      color:      isHighContrast ? "#166534" : "#10b981",
-      animation:  "none",
-      fontWeight: "700",
-      rowBg:      isHighContrast ? "rgba(22,101,52,0.06)" : "rgba(16,185,129,0.07)",
-    };
-  }
-
-  // Standard level coloring
-  const color =
-    ln.level === "ERROR"   ? (isHighContrast ? "#B91C1C" : "#ef4444") :
-    ln.level === "WARNING" ? (isHighContrast ? "#92400E" : "#f59e0b") :
-    (isHighContrast ? "#166534" : "#10b981");
-  return { color, animation: "none", fontWeight: "400" };
+function Ring({
+  value,
+  color,
+  glow,
+  offline,
+}: {
+  value: number;
+  color: string;
+  glow: string;
+  offline: boolean;
+}) {
+  const safeValue = Math.max(0, Math.min(100, value));
+  return (
+    <div className="relative grid h-20 w-20 place-items-center">
+      <svg className="-rotate-90" width="80" height="80" viewBox="0 0 80 80">
+        <circle cx="40" cy="40" r="34" stroke="rgba(148,163,184,0.2)" strokeWidth="8" fill="none" />
+        <circle
+          cx="40"
+          cy="40"
+          r="34"
+          stroke={offline ? "#6b7280" : color}
+          strokeWidth="8"
+          strokeLinecap="round"
+          strokeDasharray={213.6}
+          strokeDashoffset={213.6 - (213.6 * safeValue) / 100}
+          fill="none"
+          style={{
+            transition: "stroke-dashoffset 0.6s ease",
+            filter: offline ? "none" : `drop-shadow(0 0 10px ${glow})`,
+          }}
+        />
+      </svg>
+      <span className={`absolute text-[11px] font-semibold ${offline ? "text-slate-500" : "text-slate-200"}`}>
+        {safeValue}%
+      </span>
+    </div>
+  );
 }
 
-// ── Log panel ─────────────────────────────────────────────────────────────────
-
-function LogPanel({
-  title, logs, stealth, accent, isHighContrast, terminalBg, borderSubtle, textMuted,
+function NodeBadge({
+  title,
+  node,
+  ringColor,
+  glow,
+  power,
 }: {
   title: string;
-  logs: LogLine[];
-  stealth: boolean;
-  accent: string;
-  isHighContrast: boolean;
-  terminalBg: string;
-  borderSubtle: string;
-  textMuted: string;
+  node: NodeStatus | null;
+  ringColor: string;
+  glow: string;
+  power: number;
 }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [logs]);
-
-  const panelBg = isHighContrast
-    ? "rgba(240,242,245,0.97)"
-    : stealth ? "rgba(20,24,36,0.6)" : "rgba(10,14,22,0.7)";
-  const panelBorder = isHighContrast
-    ? `2px solid ${borderSubtle}`
-    : `1.5px solid ${stealth ? "#21293d" : `${accent}25`}`;
-  const headerBorder = isHighContrast
-    ? `1px solid ${borderSubtle}`
-    : `1px solid ${stealth ? "#21293d" : `${accent}18`}`;
-
-  return (
-    <div style={{
-      flex: 1,
-      background: panelBg,
-      border: panelBorder,
-      borderRadius: "10px",
-      overflow: "hidden",
-      display: "flex",
-      flexDirection: "column",
-      minWidth: 0,
-      boxShadow: isHighContrast ? "0 2px 10px rgba(0,0,0,0.12)" : "none",
-    }}>
-      {/* Panel header */}
-      <div style={{
-        padding: "7px 14px",
-        borderBottom: headerBorder,
-        display: "flex",
-        alignItems: "center",
-        gap: "7px",
-        flexShrink: 0,
-        background: isHighContrast ? "rgba(0,68,187,0.04)" : "transparent",
-      }}>
-        <span style={{
-          width: 7, height: 7, borderRadius: "50%",
-          background: logs.length > 0 && !stealth ? accent : isHighContrast ? "#9CA3AF" : "#2a3450",
-          display: "inline-block",
-          boxShadow: logs.length > 0 && !stealth && !isHighContrast ? `0 0 7px ${accent}` : "none",
-        }} />
-        <span style={{
-          fontFamily: "var(--font-sans)",
-          fontSize: "0.75rem",
-          fontWeight: 700,
-          letterSpacing: "0.1em",
-          color: stealth ? "#2a3450" : accent,
-          textTransform: "uppercase",
-        }}>
-          {title}
-        </span>
-      </div>
-
-      {/* Log lines */}
-      <div
-        ref={scrollRef}
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: "7px 12px",
-          fontFamily: "var(--font-mono)",
-          fontSize: "0.75rem",
-          lineHeight: "1.65",
-          background: isHighContrast ? terminalBg : "transparent",
-        }}
-      >
-        {logs.length === 0 ? (
-          <span style={{ color: isHighContrast ? textMuted : stealth ? "#21293d" : "#2a3450" }}>
-            {">"} waiting...
-          </span>
-        ) : (
-          logs.map((ln, idx) => {
-            const isNew = idx === logs.length - 1;
-            const lineStyle = getLogLineStyle(ln, stealth, isHighContrast);
-            return (
-              <div
-                key={ln.id}
-                style={{
-                  display: "flex",
-                  gap: "9px",
-                  opacity: 0.4 + (idx / logs.length) * 0.6,
-                  animation: lineStyle.animation !== "none"
-                    ? lineStyle.animation
-                    : (isNew && !stealth && !isHighContrast ? "log-flash 0.4s ease-out" : "none"),
-                  borderRadius: "4px",
-                  padding: "1px 4px",
-                  marginBottom: "1px",
-                  background: lineStyle.rowBg ?? "transparent",
-                }}
-              >
-                <span style={{
-                  color: isHighContrast ? textMuted : stealth ? "#21293d" : "#1a2030",
-                  flexShrink: 0,
-                  fontSize: "0.7rem",
-                }}>
-                  {ln.timestamp}
-                </span>
-                <span style={{
-                  color: lineStyle.color,
-                  flexShrink: 0,
-                  minWidth: "40px",
-                  fontWeight: lineStyle.fontWeight,
-                }}>
-                  {ln.level.slice(0, 4)}
-                </span>
-                <span style={{
-                  color: lineStyle.color,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  fontWeight: lineStyle.fontWeight,
-                  opacity: 0.9,
-                }}>
-                  {ln.message}
-                </span>
-              </div>
-            );
-          })
-        )}
-        {logs.length > 0 && !stealth && (
-          <span style={{
-            color: accent,
-            animation: isHighContrast ? "none" : "terminal-blink 1s step-end infinite",
-          }}>
-            {"\u2588"}
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── Node box ──────────────────────────────────────────────────────────────────
-
-function NodeBox({
-  label, id, role, online, cpu, stealth, accent, isRTL, isHighContrast,
-  textSecondary, textMuted, danger,
-}: {
-  label: string;
-  id: string;
-  role: "master" | "worker";
-  online: boolean;
-  cpu?: number;
-  stealth: boolean;
-  accent: string;
-  isRTL: boolean;
-  isHighContrast: boolean;
-  textSecondary: string;
-  textMuted: string;
-  danger: string;
-}) {
-  const statusColor = online
-    ? (stealth && !isHighContrast) ? "#2a3450" : (role === "master" ? accent : (isHighContrast ? "#166534" : "#10b981"))
-    : (stealth && !isHighContrast) ? "#2a3450" : danger;
-
-  const nodeBg = isHighContrast
-    ? (online ? "#FFFFFF" : "#FEF2F2")
-    : stealth ? "rgba(20,24,36,0.7)" : (online ? `rgba(14,165,233,0.05)` : "rgba(239,68,68,0.05)");
-  const nodeBorder = isHighContrast
-    ? (online ? `2px solid ${accent}` : `2px solid ${danger}`)
-    : `1.5px solid ${stealth ? "#21293d" : online ? `${accent}35` : "rgba(239,68,68,0.3)"}`;
-  const nodeBoxShadow = isHighContrast
-    ? (online ? `0 2px 10px rgba(0,0,0,0.12), 0 0 0 1px ${accent}20` : "0 2px 10px rgba(185,28,28,0.18)")
-    : (!stealth && online ? `0 0 0 1px ${accent}12, 0 4px 20px rgba(0,0,0,0.35)` : "0 4px 16px rgba(0,0,0,0.2)");
-
-  const iconColor = (stealth && !isHighContrast) ? "#21293d" : statusColor;
-
-  return (
-    <div style={{
-      background: nodeBg,
-      border: nodeBorder,
-      borderRadius: "10px",
-      padding: "12px 16px 10px",
-      minWidth: role === "master" ? "200px" : "148px",
-      position: "relative",
-      transition: "border-color 0.3s, background 0.25s",
-      boxShadow: nodeBoxShadow,
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      gap: "6px",
-    }}>
-      {/* Status indicator — top-right corner */}
-      <span style={{
-        position: "absolute",
-        top: "9px",
-        [isRTL ? "left" : "right"]: "9px",
-        width: 8, height: 8,
-        borderRadius: "50%",
-        background: statusColor,
-        display: "block",
-        boxShadow: (!stealth && !isHighContrast && online) ? `0 0 8px ${statusColor}` : "none",
-        animation: (!stealth && !isHighContrast && online) ? "rgb-pulse 2s infinite" : "none",
-      }} />
-
-      {/* Computer/Server icon */}
-      <div style={{
-        marginTop: "2px",
-        opacity: (stealth && !isHighContrast) ? 0.3 : 1,
-        filter: (!stealth && !isHighContrast && online)
-          ? `drop-shadow(0 0 6px ${iconColor}60)`
-          : "none",
-      }}>
-        {role === "master"
-          ? <ServerRackIcon size={36} color={iconColor} />
-          : <MonitorIcon size={32} color={iconColor} />
-        }
-      </div>
-
-      {/* Role badge */}
-      <div style={{
-        fontFamily: "var(--font-sans)",
-        fontSize: "0.65rem",
-        fontWeight: 700,
-        letterSpacing: "0.14em",
-        color: (stealth && !isHighContrast) ? "#2a3450" : accent,
-        textTransform: "uppercase",
-        textAlign: "center",
-      }}>
-        {label}
-      </div>
-
-      {/* Node ID */}
-      <div style={{
-        fontFamily: "var(--font-mono)",
-        fontSize: "0.78rem",
-        color: isHighContrast ? textSecondary : (stealth ? "#21293d" : "#6b8fab"),
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-        maxWidth: "155px",
-        textAlign: "center",
-      }}>
-        {id}
-      </div>
-
-      {/* Status + CPU row */}
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "8px",
-        flexDirection: isRTL ? "row-reverse" : "row",
-        justifyContent: "center",
-        width: "100%",
-      }}>
-        <span style={{
-          fontFamily: "var(--font-sans)",
-          fontSize: "0.7rem",
-          fontWeight: 700,
-          color: statusColor,
-          letterSpacing: "0.04em",
-        }}>
-          {online ? "\u25CF ONLINE" : "\u25CB OFFLINE"}
-        </span>
-        {cpu !== undefined && online && (
-          <span style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: "0.68rem",
-            color: isHighContrast ? textMuted : (stealth ? "#21293d" : "#6b8fab"),
-          }}>
-            {cpu.toFixed(1)}% CPU
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── SVG connector lines ───────────────────────────────────────────────────────
-
-function ConnectorSVG({
-  connections, stealth, accent, active,
-}: {
-  connections: { x1: number; y1: number; x2: number; y2: number }[];
-  stealth: boolean;
-  accent: string;
-  active: boolean;
-}) {
-  const lineColor = stealth ? "#21293d" : `${accent}45`;
-  const dashColor = stealth ? "none" : accent;
-
-  return (
-    <svg
-      style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "visible" }}
-      width="100%" height="100%"
-    >
-      <defs>
-        <marker id="dot" markerWidth="4" markerHeight="4" refX="2" refY="2">
-          <circle cx="2" cy="2" r="1.5" fill={lineColor} />
-        </marker>
-      </defs>
-      {connections.map((c, i) => (
-        <g key={i}>
-          <line
-            x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2}
-            stroke={lineColor}
-            strokeWidth="1.5"
-            strokeDasharray="4 3"
-          />
-          {active && !stealth && (
-            <line
-              x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2}
-              stroke={dashColor}
-              strokeWidth="2"
-              strokeDasharray="6 20"
-              strokeLinecap="round"
-              style={{ animation: "flow-dash 1.4s linear infinite" }}
-            />
-          )}
-        </g>
-      ))}
-    </svg>
-  );
-}
-
-// ── Main component ────────────────────────────────────────────────────────────
-
-export default function TopologyVisual() {
-  const { stealth } = useStealth();
-  const { cluster } = useNexus();
-  const { t, isRTL, language } = useI18n();
-  const { isHighContrast, tokens } = useTheme();
-
-  const masterLogs = useWebSocketLogs(`${API_BASE}/ws/logs/master`, 18);
-  const workerLogs = useWebSocketLogs(`${API_BASE}/ws/logs/worker`, 18);
-
-  const { data: clusterData } = useSWR<ClusterStatusResponse>(
-    "/api/cluster/status",
-    swrFetcher<ClusterStatusResponse>,
-    { refreshInterval: 5_000 }
-  );
-
-  const master  = clusterData?.nodes.find(n => n.role === "master") ?? null;
-  const workers = clusterData?.nodes.filter(n => n.role === "worker") ?? [];
-
-  const masterOnline = master?.online ?? false;
-  const workerOnline = workers.some(w => w.online);
-  const logActivity  = masterLogs.length + workerLogs.length;
-
-  const hasSystemError = clusterData !== undefined && (!masterOnline || !workerOnline);
-  const repairPhase = useRepairState(hasSystemError);
-
-  const ACCENT = (stealth && !isHighContrast) ? "#21293d" : tokens.accent;
-
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // Hardcoded bilingual titles to guarantee visibility regardless of i18n state
-  const topologyTitle    = language === "he" ? "טופולוגיית אשכול" : t("topology_title");
-  const topologySubtitle = language === "he" ? "מיפוי פיזי של הרשת" : t("topology_subtitle");
-  const masterNodeLabel  = language === "he" ? "צומת מאסטר" : t("widgets.master_node");
-  const workerNodeLabel  = language === "he" ? "צומת מעבד (Worker)" : t("widgets.worker_node");
-  const masterLogLabel   = language === "he" ? "יומן אירועים — מאסטר" : t("widgets.master_log");
-  const workerLogLabel   = language === "he" ? "יומן אירועים — מעבד" : t("widgets.worker_log");
-  const clusterHudLabel  = language === "he" ? "מצב אשכול" : t("widgets.cluster_hud");
-
+  const online = !!node?.online;
   return (
     <div
-      className="glass"
-      style={{
-        width: "100%",
-        borderRadius: "18px",
-        padding: "1.75rem",
-        position: "relative",
-        overflow: "hidden",
-        border: isHighContrast
-          ? "2.5px solid #000000"
-          : `2px solid ${stealth ? "#21293d" : `${ACCENT}28`}`,
-        boxShadow: isHighContrast
-          ? "0 4px 20px rgba(0,0,0,0.15), 4px 4px 0 rgba(0,0,0,0.06)"
-          : `0 0 0 1px ${ACCENT}08, 0 8px 48px rgba(0,0,0,0.6), 0 0 32px ${ACCENT}08`,
-      }}
+      className={`rounded-xl border px-3 py-2 ${
+        online
+          ? "border-cyan-300/40 bg-slate-950/70 text-cyan-50"
+          : "border-slate-700/80 bg-slate-900/90 text-slate-400"
+      }`}
     >
-      {/* Dot-grid background */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.2em]">{title}</span>
+        <span className={`text-[10px] font-bold uppercase tracking-wider ${online ? "text-emerald-300" : "text-slate-500"}`}>
+          {online ? "ONLINE" : "OFFLINE"}
+        </span>
+      </div>
+      <div className="mt-2 flex items-center gap-3">
+        <Ring value={online ? power : 0} color={ringColor} glow={glow} offline={!online} />
+        <div className="space-y-1 text-[11px] text-slate-300">
+          <p className="max-w-[180px] truncate font-mono text-cyan-200/90">
+            {node?.node_id ?? "node_unassigned"}
+          </p>
+          <p className="font-mono text-slate-400">
+            CPU {node?.cpu_percent?.toFixed(1) ?? "0.0"}% | JOBS {node?.active_jobs ?? 0}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function TopologyVisual() {
+  const { cluster } = useNexus();
+
+  const { master, gamingWorker, hpWorker, liveNodes } = useMemo(() => {
+    const masterNode = cluster?.nodes.find((node) => node.role === "master") ?? null;
+    const workers = cluster?.nodes.filter((node) => node.role === "worker") ?? [];
+    const gaming = pickGamingWorker(workers);
+    const hp = pickHpWorker(workers, gaming?.node_id);
+    const onlineCount = [masterNode, gaming, hp].filter((node) => node?.online).length;
+    return { master: masterNode, gamingWorker: gaming, hpWorker: hp, liveNodes: onlineCount };
+  }, [cluster]);
+
+  const masterOnline = !!master?.online;
+  const gamingOnline = !!gamingWorker?.online;
+  const hpOnline = !!hpWorker?.online;
+
+  return (
+    <div className="relative w-full overflow-hidden rounded-2xl border border-cyan-300/20 bg-black p-5 text-white shadow-[0_0_60px_rgba(14,165,233,0.14)] md:p-7">
       <div
-        className="dot-grid"
+        className="pointer-events-none absolute inset-0 opacity-[0.05]"
         style={{
-          position: "absolute",
-          inset: 0,
-          opacity: stealth ? 0.3 : isHighContrast ? 0.8 : 0.6,
-          borderRadius: "inherit",
-          pointerEvents: "none",
+          backgroundImage:
+            "linear-gradient(rgba(34,211,238,0.35) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,0.35) 1px, transparent 1px)",
+          backgroundSize: "44px 44px",
         }}
       />
 
-      {/* Section header */}
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "1rem",
-        flexDirection: isRTL ? "row-reverse" : "row",
-        marginBottom: "2rem",
-        position: "relative",
-      }}>
-        {/* Accent rule */}
-        <span style={{
-          display: "inline-block",
-          width: "5px",
-          height: "36px",
-          borderRadius: "3px",
-          background: (stealth && !isHighContrast)
-            ? "#21293d"
-            : isHighContrast
-              ? "#0044BB"
-              : `linear-gradient(180deg, ${ACCENT} 0%, ${ACCENT}22 100%)`,
-          flexShrink: 0,
-          alignSelf: "center",
-          boxShadow: (stealth || isHighContrast) ? "none" : `0 0 16px ${ACCENT}80`,
-        }} />
-        <div style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: "0.2rem",
-          textAlign: isRTL ? "right" : "left",
-        }}>
-          <h2 style={{
-            fontFamily: "var(--font-sans)",
-            fontSize: "1.875rem",
-            fontWeight: 900,
-            letterSpacing: "0.04em",
-            color: isHighContrast ? tokens.textPrimary : stealth ? "#2a3450" : "#e8f2ff",
-            textTransform: "uppercase",
-            margin: 0,
-            lineHeight: 1.15,
-            direction: isRTL ? "rtl" : "ltr",
-          }}>
-            {topologyTitle}
+      <div className="relative z-20 mb-6 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="font-mono text-lg font-bold uppercase tracking-[0.28em] text-cyan-200 md:text-xl">
+            LIVE OPS - REAL-TIME EXECUTION
           </h2>
-          <span style={{
-            fontFamily: "var(--font-sans)",
-            fontSize: "1.0rem",
-            fontWeight: 500,
-            color: isHighContrast ? tokens.textMuted : stealth ? "#21293d" : "#7da8cc",
-            direction: isRTL ? "rtl" : "ltr",
-          }}>
-            {topologySubtitle}
-          </span>
+          <p className="mt-1 text-xs uppercase tracking-[0.24em] text-slate-400">
+            Nexus Physical Topology Vision 2026
+          </p>
+        </div>
+        <div className="rounded-lg border border-cyan-400/25 bg-slate-950/70 px-3 py-2 text-right">
+          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Live Nodes</p>
+          <p className="font-mono text-sm font-bold text-cyan-200">{liveNodes}/3 ONLINE</p>
         </div>
       </div>
 
-      {/* ── System Error / Self-Repair Banner ── */}
-      {repairPhase !== "none" && !stealth && (() => {
-        const phaseConfig = {
-          error:     { bg: isHighContrast ? "#FFE4E4" : "rgba(255,51,85,0.10)", border: isHighContrast ? "#AA0000" : "#ff3355", color: isHighContrast ? "#AA0000" : "#ff3355", badge: isHighContrast ? "#AA0000" : "#ff3355", badgeBg: isHighContrast ? "rgba(170,0,0,0.1)" : "rgba(255,51,85,0.18)", animation: "error-pulse 1.5s ease-in-out infinite" },
-          repairing: { bg: isHighContrast ? "#FFF8DC" : "rgba(255,184,0,0.08)",  border: isHighContrast ? "#7c4e00" : "#ffb800", color: isHighContrast ? "#7c4e00" : "#ffb800", badge: isHighContrast ? "#7c4e00" : "#ffb800", badgeBg: isHighContrast ? "rgba(124,78,0,0.1)" : "rgba(255,184,0,0.18)",   animation: "none" },
-          resolved:  { bg: isHighContrast ? "#DCFCE7" : "rgba(0,224,150,0.07)",  border: isHighContrast ? "#0a6640" : "#00e096", color: isHighContrast ? "#0a6640" : "#00e096", badge: isHighContrast ? "#0a6640" : "#00e096", badgeBg: isHighContrast ? "rgba(10,102,64,0.1)" : "rgba(0,224,150,0.15)",   animation: "none" },
-        };
-        const cfg = phaseConfig[repairPhase];
-        const phaseBadge  = { error: "[ERROR]", repairing: "[REPAIRING]", resolved: "[RESOLVED]" }[repairPhase];
-        const heText      = { error: "שגיאת מערכת — פרוטוקול תיקון עצמי הופעל", repairing: "שגיאת מערכת — פרוטוקול תיקון עצמי הופעל", resolved: "המערכת שוחזרה — פרוטוקול תיקון הושלם" }[repairPhase];
-        const enText      = { error: "SYSTEM ERROR — Self-Repair Protocol Activated", repairing: "SYSTEM ERROR — Self-Repair Protocol Activated", resolved: "SYSTEM RECOVERED — Self-Repair Protocol Complete" }[repairPhase];
-        const displayText = language === "he" ? heText : enText;
+      <div className="relative z-10 h-[760px] w-full overflow-hidden rounded-2xl border border-slate-800 bg-black md:h-[640px]">
+        <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full" viewBox="0 0 1200 640">
+          <defs>
+            <linearGradient id="fiberLeft" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.9" />
+              <stop offset="55%" stopColor="#67e8f9" stopOpacity="0.95" />
+              <stop offset="100%" stopColor="#a855f7" stopOpacity="0.25" />
+            </linearGradient>
+            <linearGradient id="fiberRight" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.9" />
+              <stop offset="50%" stopColor="#67e8f9" stopOpacity="1" />
+              <stop offset="100%" stopColor="#06b6d4" stopOpacity="0.28" />
+            </linearGradient>
+          </defs>
 
-        return (
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "0.75rem",
-            padding: "0.65rem 1rem",
-            borderRadius: "10px",
-            background: cfg.bg,
-            border: `1.5px solid ${cfg.border}`,
-            boxShadow: cfg.animation !== "none" ? `0 0 0 0 ${cfg.border}` : "none",
-            animation: cfg.animation,
-            marginBottom: "1.25rem",
-            position: "relative",
-            flexDirection: isRTL ? "row-reverse" : "row",
-          }}>
-            {/* Phase badge */}
-            <span style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "0.68rem",
-              fontWeight: 800,
-              letterSpacing: "0.08em",
-              color: cfg.badge,
-              background: cfg.badgeBg,
-              padding: "2px 7px",
-              borderRadius: "5px",
-              flexShrink: 0,
-              border: `1px solid ${cfg.border}40`,
-            }}>
-              {phaseBadge}
-            </span>
-            {/* Main message */}
-            <span style={{
-              fontFamily: "var(--font-sans)",
-              fontSize: "0.82rem",
-              fontWeight: 700,
-              color: cfg.color,
-              letterSpacing: "0.02em",
-              direction: isRTL ? "rtl" : "ltr",
-            }}>
-              {displayText}
-            </span>
-            {/* State progression arrow */}
-            {repairPhase !== "resolved" && (
-              <span style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "0.6rem",
-                color: cfg.color,
-                opacity: 0.55,
-                marginLeft: isRTL ? 0 : "auto",
-                marginRight: isRTL ? "auto" : 0,
-                flexShrink: 0,
-                letterSpacing: "0.04em",
-              }}>
-                [ERROR] → [REPAIRING] → [RESOLVED]
-              </span>
-            )}
-          </div>
-        );
-      })()}
-
-      {/* Network diagram */}
-      <div
-        ref={containerRef}
-        style={{
-          position: "relative",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: "2.25rem",
-          paddingBottom: "0.5rem",
-        }}
-      >
-        {/* Master row */}
-        <div style={{ display: "flex", justifyContent: "center" }}>
-          <NodeBox
-            label={masterNodeLabel}
-            id={master?.node_id ?? "nexus-master"}
-            role="master"
-            online={masterOnline}
-            cpu={master?.cpu_percent}
-            stealth={stealth}
-            accent={ACCENT}
-            isRTL={isRTL}
-            isHighContrast={isHighContrast}
-            textSecondary={tokens.textSecondary}
-            textMuted={tokens.textMuted}
-            danger={tokens.danger}
+          <path
+            d="M 530 300 C 690 270, 820 255, 935 230"
+            fill="none"
+            stroke={masterOnline && gamingOnline ? "url(#fiberLeft)" : "rgba(100,116,139,0.42)"}
+            strokeWidth={masterOnline && gamingOnline ? 6 : 3}
+            strokeLinecap="round"
+            className={masterOnline && gamingOnline ? "animate-[fiberFlow_1.8s_linear_infinite]" : ""}
+            strokeDasharray={masterOnline && gamingOnline ? "14 18" : "8 10"}
           />
-        </div>
+          <path
+            d="M 530 320 C 705 320, 850 330, 955 360"
+            fill="none"
+            stroke={masterOnline && hpOnline ? "url(#fiberRight)" : "rgba(100,116,139,0.42)"}
+            strokeWidth={masterOnline && hpOnline ? 6 : 3}
+            strokeLinecap="round"
+            className={masterOnline && hpOnline ? "animate-[fiberFlow_1.8s_linear_infinite]" : ""}
+            strokeDasharray={masterOnline && hpOnline ? "14 18" : "8 10"}
+          />
+        </svg>
 
-        {/* Connector visual — vertical + horizontal branches */}
-        <div style={{
-          position: "relative",
-          width: "100%",
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "flex-start",
-          gap: "1.25rem",
-          flexWrap: "wrap",
-        }}>
-          {/* Vertical trunk line */}
-          {workers.length > 0 && (
-            <div style={{
-              position: "absolute",
-              top: "-2.25rem",
-              left: "50%",
-              transform: "translateX(-50%)",
-              width: isHighContrast ? "3px" : "2px",
-              height: "2.25rem",
-              background: (stealth && !isHighContrast) ? "#21293d"
-                : masterOnline
-                  ? (isHighContrast ? ACCENT : `linear-gradient(180deg, ${ACCENT}70, ${ACCENT}22)`)
-                  : (isHighContrast ? tokens.danger : "rgba(239,68,68,0.35)"),
-            }}>
-              {masterOnline && !stealth && !isHighContrast && (
-                <div style={{
-                  position: "absolute",
-                  top: 0,
-                  left: "-1px",
-                  width: "4px",
-                  height: "10px",
-                  background: ACCENT,
-                  borderRadius: "2px",
-                  animation: "flow-down 1.2s linear infinite",
-                  boxShadow: `0 0 8px ${ACCENT}`,
-                }} />
-              )}
-            </div>
-          )}
-
-          {/* Worker nodes */}
-          {workers.length === 0 ? (
-            <div style={{
-              fontFamily: "var(--font-sans)",
-              fontSize: "0.85rem",
-              color: isHighContrast ? tokens.textMuted : (stealth ? "#21293d" : "#2a3450"),
-              padding: "1rem",
-            }}>
-              No workers registered
-            </div>
-          ) : (
-            workers.map((w, i) => {
-              const workerAccent = (stealth && !isHighContrast)
-                ? "#21293d"
-                : (isHighContrast ? "#166534" : "#10b981");
-              return (
-                <div key={w.node_id} style={{ position: "relative" }}>
-                  {/* Branch connector */}
-                  <div style={{
-                    position: "absolute",
-                    top: "-1.5rem",
-                    left: "50%",
-                    transform: "translateX(-50%)",
-                    width: isHighContrast ? "2.5px" : "1.5px",
-                    height: "1.5rem",
-                    background: (stealth && !isHighContrast) ? "#21293d"
-                      : w.online ? (isHighContrast ? `${ACCENT}90` : `${ACCENT}50`) : (isHighContrast ? tokens.danger : "rgba(239,68,68,0.28)"),
-                    animation: masterOnline && w.online && !stealth && !isHighContrast
-                      ? "flow-dash 2s linear infinite" : "none",
-                  }} />
-                  <NodeBox
-                    label={`${workerNodeLabel} ${String(i + 1).padStart(2, "0")}`}
-                    id={w.node_id}
-                    role="worker"
-                    online={w.online}
-                    cpu={w.cpu_percent}
-                    stealth={stealth}
-                    accent={workerAccent}
-                    isRTL={isRTL}
-                    isHighContrast={isHighContrast}
-                    textSecondary={tokens.textSecondary}
-                    textMuted={tokens.textMuted}
-                    danger={tokens.danger}
-                  />
-                </div>
-              );
-            })
-          )}
-        </div>
-      </div>
-
-      {/* Log panels */}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 1fr",
-        gap: "0.875rem",
-        marginTop: "1.5rem",
-        height: "155px",
-      }}>
-        <LogPanel
-          title={masterLogLabel}
-          logs={masterLogs}
-          stealth={stealth}
-          accent={ACCENT}
-          isHighContrast={isHighContrast}
-          terminalBg={tokens.terminalBg}
-          borderSubtle={tokens.borderSubtle}
-          textMuted={tokens.textMuted}
-        />
-        <LogPanel
-          title={workerLogLabel}
-          logs={workerLogs}
-          stealth={stealth}
-          accent={(stealth && !isHighContrast) ? "#21293d" : (isHighContrast ? "#166534" : "#10b981")}
-          isHighContrast={isHighContrast}
-          terminalBg={tokens.terminalBg}
-          borderSubtle={tokens.borderSubtle}
-          textMuted={tokens.textMuted}
-        />
-      </div>
-
-      {/* Live HUD overlay */}
-      <div style={{
-        position: "absolute",
-        top: "1.75rem",
-        [isRTL ? "left" : "right"]: "1.75rem",
-        background: isHighContrast
-          ? "rgba(255,255,255,0.98)"
-          : stealth ? "rgba(20,24,36,0.92)" : "rgba(10,14,22,0.85)",
-        backdropFilter: isHighContrast ? "none" : "blur(14px)",
-        WebkitBackdropFilter: isHighContrast ? "none" : "blur(14px)",
-        border: isHighContrast
-          ? `2px solid ${tokens.borderDefault}`
-          : `1.5px solid ${stealth ? "#21293d" : `${ACCENT}25`}`,
-        borderRadius: "12px",
-        padding: "0.875rem 1.125rem",
-        minWidth: "180px",
-        boxShadow: isHighContrast ? "0 2px 10px rgba(0,0,0,0.12)" : `0 4px 20px rgba(0,0,0,0.4)`,
-      }}>
-        <div style={{
-          fontFamily: "var(--font-sans)",
-          fontSize: "0.65rem",
-          fontWeight: 700,
-          letterSpacing: "0.14em",
-          color: (stealth && !isHighContrast) ? "#2a3450" : ACCENT,
-          textTransform: "uppercase",
-          textAlign: isRTL ? "right" : "left",
-          marginBottom: "0.7rem",
-        }}>
-          {clusterHudLabel}
-        </div>
-
-        {[
-          {
-            label: language === "he" ? "סטטוס מאסטר" : t("widgets.master_status"),
-            value: masterOnline
-              ? (language === "he" ? "מחובר" : t("status.online"))
-              : (language === "he" ? "מנותק" : t("status.offline")),
-            color: masterOnline
-              ? (stealth && !isHighContrast) ? "#2a3450" : tokens.success
-              : tokens.danger,
-          },
-          {
-            label: language === "he" ? "מעבדים פעילים" : t("widgets.active_workers"),
-            value: `${workers.filter(w => w.online).length}/${workers.length}`,
-            color: workerOnline
-              ? (stealth && !isHighContrast) ? "#2a3450" : tokens.success
-              : tokens.textMuted,
-          },
-          {
-            label: language === "he" ? "זרם נתונים" : t("widgets.data_stream"),
-            value: `${logActivity} msg/m`,
-            color: logActivity > 5
-              ? (stealth && !isHighContrast) ? "#2a3450" : tokens.warning
-              : tokens.textMuted,
-          },
-          {
-            label: language === "he" ? "עומס מעבד" : t("widgets.cpu_load"),
-            value: `${(master?.cpu_percent ?? 0).toFixed(1)}%`,
-            color: (master?.cpu_percent ?? 0) > 70
-              ? tokens.danger
-              : (stealth && !isHighContrast) ? "#2a3450" : tokens.success,
-          },
-        ].map(({ label, value, color }, i) => (
-          <div
-            key={i}
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              flexDirection: isRTL ? "row-reverse" : "row",
-              marginBottom: "0.4rem",
-            }}
-          >
-            <span style={{
-              fontFamily: "var(--font-sans)",
-              fontSize: "0.7rem",
-              color: isHighContrast
-                ? tokens.textMuted
-                : (stealth ? "#2a3450" : "#6b8fab"),
-            }}>
-              {label}
-            </span>
-            <span style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "0.7rem",
-              fontWeight: 700,
-              color: (stealth && !isHighContrast) ? "#21293d" : color,
-            }}>
-              {value}
-            </span>
+        <motion.div
+          initial={{ opacity: 0.7, y: 0 }}
+          animate={{ opacity: 1, y: [0, -6, 0] }}
+          transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
+          className={`absolute left-5 top-20 z-20 h-[420px] w-[65%] rounded-3xl border border-slate-700/60 p-6 shadow-[0_30px_70px_rgba(0,0,0,0.65)] md:left-8 ${
+            masterOnline ? "bg-gradient-to-br from-zinc-100/95 via-zinc-300/75 to-zinc-200/65" : "bg-slate-700/50"
+          }`}
+        >
+          <div className="pointer-events-none absolute inset-x-8 bottom-5 h-4 rounded-full bg-black/40 blur-md" />
+          <div className="mb-4 flex items-center justify-between">
+            <p className="text-xs font-bold uppercase tracking-[0.22em] text-slate-900">Main Station - White Desk</p>
+            <p className="text-[11px] font-mono font-semibold text-slate-700">MASTER / ASUS VG10Q 27"</p>
           </div>
-        ))}
 
-        {/* Activity pulse */}
-        <div style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "7px",
-          marginTop: "0.7rem",
-          padding: "5px 8px",
-          borderRadius: "6px",
-          background: isHighContrast
-            ? tokens.accentSubtle
-            : (stealth ? "rgba(20,24,36,0.4)" : `${ACCENT}08`),
-          border: `1px solid ${isHighContrast ? tokens.accentDim : (stealth ? "#21293d" : `${ACCENT}20`)}`,
-          flexDirection: isRTL ? "row-reverse" : "row",
-        }}>
-          <span style={{
-            width: 7, height: 7,
-            borderRadius: "50%",
-            background: logActivity > 0 && !stealth ? tokens.success : (isHighContrast ? "#9CA3AF" : (stealth ? "#21293d" : "#2a3450")),
-            display: "inline-block",
-            boxShadow: logActivity > 0 && !stealth && !isHighContrast ? `0 0 7px ${tokens.success}` : "none",
-            animation: logActivity > 0 && !stealth && !isHighContrast ? "rgb-pulse 1s infinite" : "none",
-          }} />
-          <span style={{
-            fontFamily: "var(--font-sans)",
-            fontSize: "0.65rem",
-            color: isHighContrast
-              ? (logActivity > 0 ? tokens.success : tokens.textMuted)
-              : (stealth ? "#2a3450" : (logActivity > 0 ? "#10b981" : "#2a3450")),
-          }}>
-            {language === "he" ? "רשת פעילה" : t("widgets.network_active")}
-          </span>
+          <div className="grid grid-cols-[1.1fr_0.9fr] gap-4">
+            <div className="relative h-[300px] rounded-2xl border border-cyan-300/30 bg-slate-950/80 p-4">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-cyan-200">Crystal Clear Gaming Case</p>
+                  <p className="mt-1 text-[11px] font-mono text-slate-400">ASUS Z490-WIFI • RTX 3080 TUF</p>
+                </div>
+                <Cpu className="h-5 w-5 text-cyan-300" />
+              </div>
+
+              <div className="relative mt-3 h-[220px] rounded-xl border border-cyan-500/25 bg-black/80">
+                {FAN_POSITIONS.map((position, index) => (
+                  <motion.div
+                    key={position}
+                    className={`absolute ${position} h-12 w-12 rounded-full border border-cyan-300/35 bg-slate-900/90`}
+                    animate={{ boxShadow: ["0 0 6px rgba(34,211,238,0.35)", "0 0 20px rgba(168,85,247,0.6)", "0 0 10px rgba(14,165,233,0.55)"] }}
+                    transition={{ duration: 2.2 + index * 0.12, repeat: Infinity, ease: "linear" }}
+                  >
+                    <div className="grid h-full w-full place-items-center text-cyan-200/80">
+                      <div className="h-3 w-3 rounded-full bg-cyan-200/80" />
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+              {!masterOnline && <div className="absolute inset-0 rounded-2xl bg-slate-600/55 backdrop-blur-[1px]" />}
+            </div>
+
+            <div className="space-y-3">
+              <div className="rounded-xl border border-cyan-400/20 bg-black/70 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-200">Peripherals</p>
+                <div className="mt-2 space-y-2 text-[11px] text-slate-300">
+                  <div className="flex items-center gap-2"><Keyboard className="h-4 w-4 text-cyan-300" /> SteelSeries Apex Pro</div>
+                  <div className="flex items-center gap-2"><Mouse className="h-4 w-4 text-purple-300" /> Razer Basilisk + Dock</div>
+                  <div className="flex items-center gap-2"><Monitor className="h-4 w-4 text-amber-300" /> ASUS VG10Q 27"</div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-emerald-400/20 bg-black/75 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-200">Charging Station</p>
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-200">
+                  <motion.span
+                    className="inline-flex items-center gap-1 rounded-md bg-emerald-400/10 px-2 py-1"
+                    animate={{ boxShadow: ["0 0 0 rgba(16,185,129,0)", "0 0 12px rgba(16,185,129,0.55)", "0 0 0 rgba(16,185,129,0)"] }}
+                    transition={{ duration: 1.8, repeat: Infinity }}
+                  >
+                    <Smartphone className="h-4 w-4 text-emerald-300" /> iPhone 17 Pro
+                  </motion.span>
+                  <span className="inline-flex items-center gap-1 rounded-md bg-slate-700/60 px-2 py-1"><Watch className="h-4 w-4 text-amber-200" /> Rolex</span>
+                  <span className="inline-flex items-center gap-1 rounded-md bg-slate-700/60 px-2 py-1"><Headphones className="h-4 w-4 text-cyan-200" /> AirPods</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0.8 }}
+          animate={{ opacity: 1, y: [0, -4, 0] }}
+          transition={{ duration: 4.4, repeat: Infinity, ease: "easeInOut" }}
+          className="absolute right-7 top-[180px] z-20 h-[320px] w-[31%] rounded-full border border-cyan-200/25 bg-gradient-to-br from-slate-100/25 to-slate-300/5 p-4 backdrop-blur-sm"
+        >
+          <div className="mb-2 text-center text-[11px] font-bold uppercase tracking-[0.2em] text-cyan-100">
+            Secondary Station - Round Glass Table
+          </div>
+          <div className="grid h-[260px] grid-cols-2 gap-3 rounded-full border border-cyan-100/15 bg-slate-950/35 p-4">
+            <div className="relative rounded-2xl border border-purple-400/35 bg-black/70 p-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-purple-200">Gaming Beast</p>
+              <p className="mt-1 text-[10px] font-mono text-slate-400">High Performance Node</p>
+              <div className="mt-3 rounded-lg border border-purple-400/25 bg-slate-900/90 p-2">
+                <div className="mb-2 h-8 rounded bg-gradient-to-r from-slate-800 to-slate-700" />
+                <motion.div
+                  className="h-3 rounded bg-gradient-to-r from-purple-500/65 via-pink-500/70 to-cyan-400/70"
+                  animate={{ opacity: [0.45, 1, 0.5] }}
+                  transition={{ duration: 1.2, repeat: Infinity }}
+                />
+              </div>
+              {!gamingOnline && <div className="absolute inset-0 rounded-2xl bg-slate-600/55 backdrop-blur-[1px]" />}
+            </div>
+
+            <div className="relative rounded-2xl border border-cyan-400/35 bg-black/70 p-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-cyan-200">HP Silver</p>
+              <p className="mt-1 text-[10px] font-mono text-slate-400">Office/Home Node</p>
+              <div className="mt-3 rounded-lg border border-cyan-400/25 bg-gradient-to-br from-slate-300/35 to-slate-100/15 p-2">
+                <div className="mb-2 h-8 rounded bg-slate-800/80" />
+                <div className="h-3 rounded bg-cyan-400/55" />
+              </div>
+              {!hpOnline && <div className="absolute inset-0 rounded-2xl bg-slate-600/55 backdrop-blur-[1px]" />}
+            </div>
+          </div>
+        </motion.div>
+
+        <div className="absolute inset-x-4 bottom-4 z-30 grid gap-2 md:grid-cols-3">
+          <NodeBadge title="Master Node" node={master} ringColor="#f59e0b" glow="rgba(245,158,11,0.75)" power={50} />
+          <NodeBadge title="Gaming Beast" node={gamingWorker} ringColor="#a855f7" glow="rgba(168,85,247,0.8)" power={95} />
+          <NodeBadge title="HP Silver" node={hpWorker} ringColor="#06b6d4" glow="rgba(6,182,212,0.75)" power={90} />
+        </div>
+
+        <div className="absolute left-4 top-4 z-30 rounded-lg border border-emerald-400/25 bg-slate-950/70 px-3 py-2 text-xs text-emerald-200">
+          <p className="font-mono uppercase tracking-[0.18em]">Execution Feed</p>
+          <p className="mt-1 inline-flex items-center gap-1 text-[11px] text-slate-300">
+            <Clock4 className="h-3.5 w-3.5 text-emerald-300" />
+            {cluster?.timestamp ?? "awaiting cluster heartbeat"}
+          </p>
         </div>
       </div>
 
       <style>{`
-        @keyframes rgb-pulse {
-          0%, 100% { opacity: 1; }
-          50%       { opacity: 0.35; }
-        }
-        @keyframes terminal-blink {
-          0%, 100% { opacity: 1; }
-          50%       { opacity: 0; }
-        }
-        @keyframes log-flash {
-          0%   { background: rgba(14, 165, 233, 0.14); }
-          100% { background: transparent; }
-        }
-        @keyframes flow-dash {
-          from { stroke-dashoffset: 26; }
-          to   { stroke-dashoffset: 0; }
-        }
-        @keyframes flow-down {
-          0%   { top: 0; opacity: 1; }
-          100% { top: 100%; opacity: 0; }
-        }
-        @keyframes critical-flash {
-          0%,  49% { opacity: 1;   background: rgba(255, 30, 60, 0.12); }
-          50%, 100% { opacity: 0.55; background: transparent; }
-        }
-        @keyframes error-pulse {
-          0%, 100% { box-shadow: 0 0 0 0   rgba(255, 51, 85, 0.5); }
-          50%       { box-shadow: 0 0 0 8px rgba(255, 51, 85, 0); }
+        @keyframes fiberFlow {
+          0% { stroke-dashoffset: 60; }
+          100% { stroke-dashoffset: 0; }
         }
       `}</style>
     </div>
