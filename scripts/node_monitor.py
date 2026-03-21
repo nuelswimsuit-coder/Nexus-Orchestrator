@@ -46,6 +46,7 @@ SOFT_WHITE = "#EAF7FF"
 
 DEFAULT_INTENT = "Awaiting node intent stream from Redis"
 DEFAULT_VISION = "Expand autonomous execution quality and reliability"
+DEFAULT_GLOBAL_MISSION = "— (set via nexus_core --task / global_mission key) —"
 SLEEP_GUARD_ENV = "NEXUS_SLEEP_GUARD_ACTIVE"
 SKIP_INHIBIT_ENV = "NEXUS_SKIP_INHIBIT"
 
@@ -393,6 +394,11 @@ def _collect_snapshot(state: RuntimeState) -> dict[str, Any]:
     state.previous_net_recv = net.bytes_recv
     state.previous_net_ts = now
 
+    global_mission = _redis_get_first(
+        state.redis,
+        ["global_mission"],
+        DEFAULT_GLOBAL_MISSION,
+    )
     intent = _redis_get_first(
         state.redis,
         ["node:intent", f"node:{state.node_id}:intent"],
@@ -452,6 +458,7 @@ def _collect_snapshot(state: RuntimeState) -> dict[str, Any]:
         "ram": ram,
         "upload_bps": upload_bps,
         "download_bps": download_bps,
+        "global_mission": global_mission,
         "intent": intent,
         "vision": vision,
         "history": history,
@@ -488,6 +495,10 @@ def _build_hardware_panel(snapshot: dict[str, Any]) -> Panel:
 def _build_ai_thinking_panel(snapshot: dict[str, Any]) -> Panel:
     rows = snapshot["intent_stream"][:4] or ["[boot] waiting for intent stream"]
     text_rows = [
+        Text(
+            f"Global mission: {snapshot.get('global_mission', DEFAULT_GLOBAL_MISSION)}",
+            style=f"bold {NEON_MAGENTA}",
+        ),
         Text(f"Current Intent: {snapshot['intent']}", style=f"bold {SOFT_WHITE}"),
         Text(" ", style=SOFT_WHITE),
         *[Text(entry, style=f"dim {NEON_GREEN}") for entry in rows],
