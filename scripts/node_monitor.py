@@ -332,7 +332,8 @@ def _render_dashboard(state: RuntimeState, snapshot: dict[str, Any]) -> Layout:
 
 
 def main() -> None:
-    reexec_code = _maybe_reexec_with_systemd_inhibit()
+    # reexec_code = _maybe_reexec_with_systemd_inhibit()
+    reexec_code = None  # ביטול זמני של המנגנון התקוע
     if reexec_code is not None:
         raise SystemExit(reexec_code)
 
