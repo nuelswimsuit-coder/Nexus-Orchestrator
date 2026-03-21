@@ -25,6 +25,10 @@ class NodeResourceConfig:
     role: str = "worker"
 
 
+MASTER_HYBRID_NODE_ID = "master-hybrid-node"
+MASTER_HYBRID_LIMIT = 0.5
+
+
 def _clamp_fraction(value: Any, default: float) -> float:
     try:
         parsed = float(value)
@@ -59,6 +63,7 @@ def load_node_config(config_path: Path | None = None) -> NodeResourceConfig:
         gpu_limit=_clamp_fraction(data.get("gpu_limit"), 1.0),
         role=str(data.get("role", "worker")),
     )
+    cfg = enforce_hybrid_master_caps(cfg)
     log.info(
         "node_config_loaded",
         path=str(config_path),
@@ -68,6 +73,26 @@ def load_node_config(config_path: Path | None = None) -> NodeResourceConfig:
         gpu_limit=cfg.gpu_limit,
     )
     return cfg
+
+
+def enforce_hybrid_master_caps(config: NodeResourceConfig) -> NodeResourceConfig:
+    """
+    Hard cap the hybrid master node to 50% CPU/RAM/GPU usage.
+
+    This guard prevents accidental over-allocation if a config file drifts from
+    production-safe limits.
+    """
+    is_hybrid = str(config.role).strip().lower() == "hybrid"
+    is_master_node = os.environ.get("NODE_ID", "").strip() == MASTER_HYBRID_NODE_ID
+    if not (is_hybrid or is_master_node):
+        return config
+
+    return NodeResourceConfig(
+        cpu_limit=min(_clamp_fraction(config.cpu_limit, 1.0), MASTER_HYBRID_LIMIT),
+        ram_limit=min(_clamp_fraction(config.ram_limit, 1.0), MASTER_HYBRID_LIMIT),
+        gpu_limit=min(_clamp_fraction(config.gpu_limit, 1.0), MASTER_HYBRID_LIMIT),
+        role="hybrid",
+    )
 
 
 class GlobalResourceManager:

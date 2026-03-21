@@ -60,9 +60,12 @@ Output
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import json
 import os
 import time
+from itertools import cycle
 from datetime import datetime, timezone
 from typing import Any
 
@@ -87,6 +90,10 @@ MAX_LEADS_CAP    = int(os.getenv("OPENCLAW_MAX_LEADS", "100"))
 OPENCLAW_STATUS_KEY     = "nexus:openclaw:status"
 OPENCLAW_UNVERIFIED_KEY = "nexus:openclaw:unverified:{project_id}"
 OPENCLAW_STATUS_TTL     = 3600  # 1 hour
+
+# Telegram / news pipeline → 5m scalper (score 0–10, higher = more bullish)
+OPENCLAW_NEWS_SENTIMENT_KEY = "nexus:openclaw:news_sentiment"
+OPENCLAW_NEWS_SENTIMENT_TTL = 900  # 15 minutes
 
 # Playwright timeout (ms)
 PW_TIMEOUT = 30_000
@@ -118,6 +125,72 @@ async def _set_node_intent(intent: str) -> None:
         await client.aclose()
 
 
+async def _set_node_vision(vision: str) -> None:
+    """Best-effort near-term vision broadcast to Redis for worker dashboards."""
+    node_id = settings.node_id or os.getenv("NODE_ID", "master")
+    client = redis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        await client.set(f"node:{node_id}:vision", vision)
+        await client.set("node:vision", vision)
+    except Exception as exc:
+        log.debug("openclaw_vision_publish_failed", error=str(exc))
+    finally:
+        await client.aclose()
+
+
+def _predict_openclaw_vision(mode: str, leads_found: int = 0, verified: int = 0) -> str:
+    """Heuristic forecast of what OpenClaw will focus on in the next 5 minutes."""
+    if mode == "google_maps":
+        if leads_found <= 0:
+            return "Next 5m: expand map crawl depth to discover fresh business leads."
+        if verified <= 0:
+            return "Next 5m: verify scraped map contacts against Telegram identity graph."
+        return "Next 5m: persist verified map leads and queue unverified retries."
+
+    if mode == "social_forums":
+        if leads_found <= 0:
+            return "Next 5m: deepen forum search to capture complaint-driven prospects."
+        if verified <= 0:
+            return "Next 5m: resolve forum usernames and map them to Telegram identities."
+        return "Next 5m: enrich verified forum prospects and write into TeleFix datastore."
+
+    return "Next 5m: coordinate scraping, verification, and persistence pipelines."
+
+
+async def _publish_openclaw_status(
+    *,
+    active: bool,
+    stage: str,
+    detail: str,
+    mode: str = "",
+    query: str = "",
+) -> None:
+    """
+    Broadcast OpenClaw runtime health to Redis for dashboard/Telegram surfaces.
+    """
+    node_id = settings.node_id or os.getenv("NODE_ID", "master")
+    client = redis.from_url(settings.redis_url, decode_responses=True)
+    proc = psutil.Process()
+    try:
+        payload = {
+            "module": "openclaw",
+            "active": active,
+            "stage": stage,
+            "detail": detail,
+            "mode": mode,
+            "query": query,
+            "node_id": node_id,
+            "cpu_percent": round(proc.cpu_percent(interval=None), 2),
+            "rss_mb": round(proc.memory_info().rss / (1024 * 1024), 2),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await client.set(OPENCLAW_STATUS_KEY, json.dumps(payload), ex=OPENCLAW_STATUS_TTL)
+    except Exception as exc:
+        log.debug("openclaw_status_publish_failed", error=str(exc))
+    finally:
+        await client.aclose()
+
+
 async def _push_node_history(task_line: str) -> None:
     """Keep a rolling node-local history list for terminal monitors."""
     node_id = settings.node_id or os.getenv("NODE_ID", "master")
@@ -131,6 +204,75 @@ async def _push_node_history(task_line: str) -> None:
         log.debug("openclaw_history_publish_failed", error=str(exc))
     finally:
         await client.aclose()
+
+
+async def publish_openclaw_news_sentiment(
+    *,
+    score: float,
+    channel_title: str,
+    excerpt: str = "",
+    source: str = "telegram",
+    agent_fingerprint: str | None = None,
+) -> None:
+    """
+    Persist the latest Telegram / news sentiment for the Ultimate Scalper
+    and Nexus dashboards. ``score`` is 0–10 (breaking positive → high values).
+
+    Optional ``agent_fingerprint`` (channel hash, session id, etc.) feeds the
+    Strategy Brain swarm consensus grid when ``excerpt`` matches salient keywords.
+    """
+    client = redis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        payload = {
+            "score":          float(score),
+            "channel_title":  channel_title[:500],
+            "excerpt":        excerpt[:1200],
+            "source":         source[:120],
+            "updated_at":     datetime.now(timezone.utc).isoformat(),
+        }
+        await client.set(
+            OPENCLAW_NEWS_SENTIMENT_KEY,
+            json.dumps(payload),
+            ex=OPENCLAW_NEWS_SENTIMENT_TTL,
+        )
+        fp = agent_fingerprint or hashlib.sha256(
+            f"{channel_title}|{source}".encode("utf-8", errors="ignore")
+        ).hexdigest()[:20]
+        from nexus.shared.swarm_signals import ingest_text_for_swarm
+
+        blob = f"{channel_title}\n{excerpt}"
+        counts = await ingest_text_for_swarm(client, blob, fp)
+        if counts:
+            log.info("openclaw_swarm_keywords", matches=list(counts.keys()))
+    except Exception as exc:
+        log.debug("openclaw_news_sentiment_publish_failed", error=str(exc))
+    finally:
+        await client.aclose()
+
+
+async def _intent_heartbeat(stop_event: asyncio.Event) -> None:
+    """Push rotating node intent updates every 30 seconds while task runs."""
+    statuses = cycle(
+        (
+            "OpenClaw heartbeat: Scanning...",
+            "OpenClaw heartbeat: Optimizing...",
+            "OpenClaw heartbeat: Resting...",
+        )
+    )
+    while not stop_event.is_set():
+        await _set_node_intent(next(statuses))
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=30.0)
+        except asyncio.TimeoutError:
+            continue
+
+
+async def _stop_intent_heartbeat(stop_event: asyncio.Event, heartbeat_task: asyncio.Task[Any]) -> None:
+    """Stop heartbeat task without surfacing cancellation noise."""
+    stop_event.set()
+    heartbeat_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await heartbeat_task
 
 
 # ── Data models ────────────────────────────────────────────────────────────────
@@ -493,6 +635,7 @@ async def _write_to_telefix(
 # ── Main task handler ──────────────────────────────────────────────────────────
 
 @registry.register("openclaw.browser_scrape")
+@registry.register("scraper.openclaw")
 async def browser_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
     """
     OpenClaw browser scraping task.
@@ -515,17 +658,43 @@ async def browser_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
     project_id = parameters.get("project_id", "default")
     max_leads  = min(int(parameters.get("max_leads", 50)), MAX_LEADS_CAP)
     location   = parameters.get("location", "")
+    await _set_node_intent("OpenClaw validating task parameters")
 
     if not query:
+        await _publish_openclaw_status(
+            active=False,
+            stage="failed",
+            detail="query parameter is required",
+            mode=mode,
+        )
         return {"status": "failed", "error": "query parameter is required"}
 
+    await _publish_openclaw_status(
+        active=True,
+        stage="boot",
+        detail="OpenClaw boot sequence initiated",
+        mode=mode,
+        query=query,
+    )
     await _set_node_intent(f"OpenClaw boot sequence: preparing {mode} scrape for '{query[:60]}'")
+    await _set_node_vision(_predict_openclaw_vision(mode))
+    heartbeat_stop = asyncio.Event()
+    heartbeat_task = asyncio.create_task(_intent_heartbeat(heartbeat_stop))
 
     # ── Pre-flight: CPU check ──────────────────────────────────────────────────
     cpu = psutil.cpu_percent(interval=1)
     if cpu > CPU_THRESHOLD:
         await _set_node_intent("OpenClaw paused: CPU pressure above safe threshold")
+        await _set_node_vision("Next 5m: waiting for CPU headroom before resuming scrape cycle.")
+        await _publish_openclaw_status(
+            active=False,
+            stage="low_resources",
+            detail=f"CPU pressure too high ({cpu:.1f}%)",
+            mode=mode,
+            query=query,
+        )
         log.warning("openclaw_low_resources", cpu=cpu, threshold=CPU_THRESHOLD)
+        await _stop_intent_heartbeat(heartbeat_stop, heartbeat_task)
         return {
             "status": "low_resources",
             "mode": mode,
@@ -545,31 +714,75 @@ async def browser_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
     leads: list[Lead] = []
     if mode == "google_maps":
         await _set_node_intent(f"OpenClaw scanning Google Maps: '{query[:60]}'")
+        await _set_node_vision("Next 5m: harvesting map listings and extracting contact metadata.")
+        await _publish_openclaw_status(
+            active=True,
+            stage="scraping",
+            detail="Scanning Google Maps",
+            mode=mode,
+            query=query,
+        )
         leads = await _scrape_google_maps(query, location, max_leads)
     elif mode == "social_forums":
         await _set_node_intent(f"OpenClaw mining social forums: '{query[:60]}'")
+        await _set_node_vision("Next 5m: mining forum threads for high-intent complaint signals.")
+        await _publish_openclaw_status(
+            active=True,
+            stage="scraping",
+            detail="Scanning social forums",
+            mode=mode,
+            query=query,
+        )
         leads = await _scrape_social_forums(query, max_leads)
     else:
+        await _publish_openclaw_status(
+            active=False,
+            stage="failed",
+            detail=f"Unknown mode: {mode!r}",
+            mode=mode,
+            query=query,
+        )
+        await _stop_intent_heartbeat(heartbeat_stop, heartbeat_task)
         return {"status": "failed", "error": f"Unknown mode: {mode!r}"}
 
     leads_found = len(leads)
     log.info("openclaw_scrape_complete", mode=mode, leads_found=leads_found)
 
     # ── Filter leads that have some contact info ───────────────────────────────
+    await _set_node_intent("OpenClaw filtering scraped leads for contactable entries")
     contactable = [l for l in leads if l.has_contact()]
     log.info("openclaw_contactable", count=len(contactable))
 
     # ── Telegram verification ──────────────────────────────────────────────────
     await _set_node_intent("OpenClaw verifying Telegram reachability for scraped leads")
+    await _set_node_vision(_predict_openclaw_vision(mode, leads_found=leads_found, verified=0))
+    await _publish_openclaw_status(
+        active=True,
+        stage="verifying",
+        detail="Verifying Telegram reachability",
+        mode=mode,
+        query=query,
+    )
     verified, unverified = await _verify_telegram(contactable, TELEFIX_PROJECT)
 
     # ── Write verified leads to telefix.db ────────────────────────────────────
     await _set_node_intent("OpenClaw writing verified leads into TeleFix datastore")
+    await _set_node_vision(
+        _predict_openclaw_vision(mode, leads_found=leads_found, verified=len(verified))
+    )
+    await _publish_openclaw_status(
+        active=True,
+        stage="persisting",
+        detail="Persisting verified leads",
+        mode=mode,
+        query=query,
+    )
     written = await _write_to_telefix(verified, project_id, TELEFIX_DB)
 
     # ── Store unverified leads in Redis for later retry ───────────────────────
     # (We don't have direct Redis access here; store in a file the master can pick up)
     if unverified:
+        await _set_node_intent("OpenClaw archiving unverified leads for retry pipeline")
         unverified_path = os.path.join(
             os.path.dirname(TELEFIX_DB),
             f"openclaw_unverified_{project_id}_{int(time.time())}.json",
@@ -584,6 +797,16 @@ async def browser_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
 
     duration = round(time.monotonic() - t0, 2)
     await _set_node_intent(f"OpenClaw complete: {written} verified leads persisted")
+    await _set_node_vision(
+        "Next 5m: cool down browser workload, then launch the next lead-acquisition pass."
+    )
+    await _publish_openclaw_status(
+        active=False,
+        stage="completed",
+        detail=f"Completed with {written} verified leads persisted",
+        mode=mode,
+        query=query,
+    )
     await _push_node_history(
         f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}Z] OpenClaw ({mode}) "
         f"completed | verified={len(verified)} written={written}"
@@ -592,6 +815,7 @@ async def browser_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
              mode=mode, leads_found=leads_found,
              leads_verified=len(verified), leads_written=written,
              leads_unverified=len(unverified), duration_s=duration)
+    await _stop_intent_heartbeat(heartbeat_stop, heartbeat_task)
 
     return {
         "status":           "completed",

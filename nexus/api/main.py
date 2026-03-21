@@ -14,6 +14,8 @@ Production features
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -29,7 +31,27 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from nexus.api.hitl_store import HitlStore
-from nexus.api.routers import business, cluster, config, content, deploy, evolution, flight_mode, hitl, incubator, modules, notifications, prediction, projects, sentinel, system
+from nexus.api.routers import (
+    business,
+    cluster,
+    config,
+    content,
+    deploy,
+    evolution,
+    flight_mode,
+    hitl,
+    incubator,
+    modules,
+    notifications,
+    prediction,
+    projects,
+    scalper,
+    sentinel,
+    sessions,
+    swarm,
+    system,
+)
+from nexus.shared import redis_util
 from nexus.shared.config import settings
 from nexus.shared.logging_config import configure_logging
 
@@ -68,23 +90,41 @@ def _build_redis_client(redis_url: str) -> Redis:
     )
 
 
-async def _connect_redis_with_retry(redis_url: str) -> Redis:
+async def _connect_redis_with_retry(redis_url: str) -> tuple[Redis, bool]:
     """
-    Connect to Redis with bounded retry/backoff and reduced warning noise.
+    Connect to Redis with backoff, Windows WSL auto-start, then optional degraded mode.
+
+    Returns ``(client, degraded)`` where ``degraded`` means an in-memory fakeredis
+    broker (``NEXUS_ALLOW_DEGRADED=1``) after real Redis stays unreachable.
     """
+    url = redis_util.coerce_redis_url_for_platform(redis_url)
+    settings.redis_url = url
+
     attempt = 0
     delay_s = 1.0
-    while True:
+    wsl_tried = False
+    max_attempts = 14
+
+    while attempt < max_attempts:
         attempt += 1
-        client = _build_redis_client(redis_url)
+        client = _build_redis_client(url)
         try:
             await client.ping()
             if attempt > 1:
                 log.info("api_redis_recovered", attempts=attempt)
-            return client
+            return client, False
         except Exception as exc:
             await client.aclose()
-            # Log only first, every 5th, and the immediate retry attempt.
+            if sys.platform == "win32" and not wsl_tried and attempt >= 2:
+                wsl_tried = True
+                log.warning(
+                    "api_redis_wsl_autofix",
+                    cmd="wsl redis-server start",
+                )
+                redis_util.try_start_redis_via_wsl_windows()
+                await asyncio.sleep(3.0)
+                delay_s = 1.0
+                continue
             if attempt == 1 or attempt == 2 or attempt % 5 == 0:
                 log.warning(
                     "api_redis_connect_retry",
@@ -95,15 +135,28 @@ async def _connect_redis_with_retry(redis_url: str) -> Redis:
             await asyncio.sleep(delay_s)
             delay_s = min(delay_s * 1.7, 10.0)
 
+    redis_util.mark_degraded_mode()
+    log.error(
+        "api_redis_degraded",
+        detail="in-memory fakeredis; start real broker to recover",
+    )
+    fake = redis_util.create_degraded_async_redis()
+    return fake, True
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage startup and shutdown of shared resources."""
     configure_logging(level="ERROR", node_id=f"{settings.node_id}-api")
 
-    redis: Redis = await _connect_redis_with_retry(settings.redis_url)
+    redis, redis_degraded = await _connect_redis_with_retry(settings.redis_url)
     app.state.redis = redis
-    log.info("api_redis_connected", url=settings.redis_url)
+    app.state.redis_degraded = redis_degraded
+    log.info(
+        "api_redis_connected",
+        url=settings.redis_url,
+        degraded=redis_degraded,
+    )
 
     hitl_store = HitlStore(redis)
     app.state.hitl_store = hitl_store
@@ -127,6 +180,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         name="stability_monitor",
     )
 
+    scalper_task: asyncio.Task[None] | None = None
+    if os.getenv("NEXUS_POLY_SCALPER_ENABLED", "").strip().lower() in ("1", "true", "yes", "on"):
+        from nexus.master.services.poly_5m_scalper import run_poly_scalper_loop
+
+        scalper_task = asyncio.create_task(
+            run_poly_scalper_loop(redis),
+            name="poly_5m_scalper",
+        )
+        log.info("poly_scalper_background_task_started")
+
     log.info("nexus_api_started", docs="/docs", rate_limit="100/min")
 
     yield
@@ -142,6 +205,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await collector_task
     except asyncio.CancelledError:
         pass
+
+    if scalper_task is not None:
+        scalper_task.cancel()
+        try:
+            await scalper_task
+        except asyncio.CancelledError:
+            pass
 
     await hitl_store.stop()
     await redis.aclose()
@@ -223,7 +293,10 @@ def create_app() -> FastAPI:
     app.include_router(projects.router, prefix="/api")
     app.include_router(modules.router, prefix="/api")
     app.include_router(prediction.router, prefix="/api")
+    app.include_router(scalper.router, prefix="/api")
     app.include_router(sentinel.router, prefix="/api")
+    app.include_router(sessions.router, prefix="/api")
+    app.include_router(swarm.router, prefix="/api")
     app.include_router(system.router, prefix="/api")
     app.include_router(flight_mode.router, prefix="/api")
 
@@ -241,7 +314,11 @@ def create_app() -> FastAPI:
     async def ready(request: Request) -> dict[str, str]:
         try:
             await request.app.state.redis.ping()
-            return {"status": "ready", "redis": "ok"}
+            degraded = bool(getattr(request.app.state, "redis_degraded", False))
+            return {
+                "status": "ready",
+                "redis": "degraded" if degraded else "ok",
+            }
         except Exception:
             return JSONResponse(  # type: ignore[return-value]
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

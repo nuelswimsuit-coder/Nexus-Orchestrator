@@ -1,15 +1,30 @@
 """
 Centralised settings loaded from environment variables / .env file.
 
-Both master and worker import from here.  pydantic-settings automatically
-reads from a .env file in the working directory and from real env vars,
-with env vars taking precedence.
+Both master and worker import from here.  pydantic-settings reads from env
+vars; we also call ``load_dotenv`` once for the repository ``.env`` so
+imports behave the same no matter which working directory launched the process.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from nexus.shared.redis_util import (
+    apply_redis_url_to_environment,
+    coerce_redis_url_for_platform,
+    default_redis_url_string,
+)
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_ENV_FILE = _REPO_ROOT / ".env"
+if _ENV_FILE.is_file():
+    load_dotenv(_ENV_FILE, override=False)
+apply_redis_url_to_environment()
 
 
 class Settings(BaseSettings):
@@ -21,7 +36,7 @@ class Settings(BaseSettings):
     )
 
     # ── Broker ────────────────────────────────────────────────────────────────
-    redis_url: str = Field(default="redis://127.0.0.1:6379/0")
+    redis_url: str = Field(default_factory=default_redis_url_string)
 
     # ── Node identity ─────────────────────────────────────────────────────────
     node_id: str = Field(default="master")
@@ -53,9 +68,14 @@ class Settings(BaseSettings):
     # ── Notifications — Telegram ──────────────────────────────────────────────
     # BotFather token for the Nexus bot.
     telegram_bot_token: str = Field(default="")
+    # my.telegram.org — MTProto credentials for Telethon user sessions (session factory).
+    telegram_api_id: int = Field(default=0)
+    telegram_api_hash: str = Field(default="")
     # Your personal chat ID or a group/channel ID.
     # Find yours by messaging @userinfobot on Telegram.
     telegram_admin_chat_id: str = Field(default="")
+    # Numeric Telegram *user* id for /terminate_nexus_now (not chat id). @userinfobot
+    telegram_admin_user_id: str = Field(default="")
     # URL shown in HITL messages — set to your LAN IP for remote access.
     telegram_dashboard_url: str = Field(default="http://localhost:3000")
 
@@ -64,6 +84,9 @@ class Settings(BaseSettings):
     # image generation (imagen-4.0).  Get yours at:
     # https://aistudio.google.com/app/apikey
     gemini_api_key: str = Field(default="")
+
+    # OpenAI — optional; required only for task types that inject OPENAI_API_KEY.
+    openai_api_key: str = Field(default="")
 
     # ── Logging ───────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
@@ -103,3 +126,4 @@ class Settings(BaseSettings):
 
 # Module-level singleton — import `settings` everywhere.
 settings = Settings()
+settings.redis_url = coerce_redis_url_for_platform(settings.redis_url)

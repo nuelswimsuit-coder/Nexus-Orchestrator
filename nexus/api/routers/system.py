@@ -34,19 +34,35 @@ from typing import Any
 
 import psutil
 import structlog
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 
 from nexus.api.dependencies import RedisDep
+from nexus.shared.kill_switch import (
+    MSG_FORCE_STOP,
+    MSG_RESUME,
+    MSG_TERMINATE,
+    PANIC_CHANNEL,
+    PANIC_KEY,
+    PANIC_META,
+    clear_kill_switch_aux_flags,
+    engage_immediate,
+    schedule_kill_switch_completion,
+    verify_kill_switch_http_auth,
+)
+from nexus.shared.power_profile import (
+    REDIS_OVERRIDE_KEY,
+    REDIS_SNAPSHOT_KEY,
+    decide_power_profile,
+    parse_snapshot,
+)
+from nexus.shared.retention_redis import RETENTION_HEALTH_SNAPSHOT_KEY
 from nexus.utils.blackbox import BLACKBOX_DIR
 
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/system", tags=["system"])
-
-PANIC_KEY     = "SYSTEM_STATE:PANIC"
-PANIC_META    = "SYSTEM_STATE:PANIC_META"
-PANIC_CHANNEL = "nexus:system:control"
 
 
 # ── Engage panic ───────────────────────────────────────────────────────────────
@@ -78,8 +94,9 @@ async def trigger_panic(redis: RedisDep) -> dict[str, Any]:
         }),
     )
 
-    # ── 2. Broadcast TERMINATE to all worker subscribers ──────────────────────
-    await redis.publish(PANIC_CHANNEL, "TERMINATE")
+    # ── 2. Broadcast TERMINATE + FORCE_STOP (worker listener treats both as panic)
+    await redis.publish(PANIC_CHANNEL, MSG_TERMINATE)
+    await redis.publish(PANIC_CHANNEL, MSG_FORCE_STOP)
 
     # ── 3. Collect system stats (non-blocking) ─────────────────────────────────
     cpu_percent  = psutil.cpu_percent(interval=None)
@@ -143,6 +160,45 @@ async def trigger_panic(redis: RedisDep) -> dict[str, Any]:
     }
 
 
+class KillSwitchRequest(BaseModel):
+    """Exact phrase required — prevents accidental scripted triggers."""
+
+    confirm: str = ""
+    evacuate: bool = False
+
+
+@router.post(
+    "/kill-switch",
+    summary="NEXUS full emergency kill-switch (trading halt, workers, exposure, env wipe)",
+)
+async def trigger_full_kill_switch(
+    redis: RedisDep,
+    body: KillSwitchRequest,
+    x_nexus_kill_auth: str | None = Header(default=None, alias="X-Nexus-Kill-Auth"),
+) -> dict[str, Any]:
+    if body.confirm.strip() != "TERMINATE_NEXUS_NOW":
+        raise HTTPException(status_code=400, detail="Invalid confirmation phrase")
+    if not verify_kill_switch_http_auth(x_nexus_kill_auth):
+        raise HTTPException(status_code=401, detail="Kill-switch auth required")
+
+    phase1 = await engage_immediate(
+        redis,
+        reason="Full kill-switch (API)",
+        source="api_kill_switch",
+    )
+    schedule_kill_switch_completion(
+        redis,
+        phase1=phase1,
+        evacuate=bool(body.evacuate),
+    )
+    log.critical("kill_switch_api_phase1_returned", elapsed_ms=phase1.get("elapsed_ms"))
+    return {
+        "status": "KILL_SWITCH_ENGAGED",
+        "message": "Phase-1 complete; flatten/evac/Telegram running in background",
+        **phase1,
+    }
+
+
 # ── Reset panic ────────────────────────────────────────────────────────────────
 
 @router.post("/panic/reset", summary="Clear panic state — admin only")
@@ -152,7 +208,8 @@ async def reset_panic(redis: RedisDep) -> dict[str, str]:
     worker subscribers so they accept new tasks again.
     """
     await redis.delete(PANIC_KEY, PANIC_META)
-    await redis.publish(PANIC_CHANNEL, "RESUME")
+    await redis.publish(PANIC_CHANNEL, MSG_RESUME)
+    await clear_kill_switch_aux_flags(redis)
     log.info("system_panic_reset")
     return {
         "status":  "PANIC_CLEARED",
@@ -175,6 +232,83 @@ async def get_panic_state(redis: RedisDep) -> dict[str, Any]:
             except Exception:
                 pass
     return {"panic": is_panic, **meta}
+
+
+@router.get("/retention-health", summary="Retention Guardian snapshot (Telegram groups)")
+async def get_retention_health(redis: RedisDep) -> dict[str, Any]:
+    """
+    Latest JSON written by ``retention.guardian.monitor`` (worker).
+    Used by the dashboard *Group Health* widget.
+    """
+    raw = await redis.get(RETENTION_HEALTH_SNAPSHOT_KEY)
+    if not raw:
+        return {
+            "ok": True,
+            "empty": True,
+            "groups": [],
+            "invite_tracking": [],
+            "checked_at": None,
+            "message": (
+                "No retention snapshot yet — run worker task or set RETENTION_GROUPS_JSON"
+            ),
+        }
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {
+            "ok": False,
+            "empty": True,
+            "groups": [],
+            "invite_tracking": [],
+            "error": "invalid snapshot",
+        }
+    if isinstance(data, dict):
+        data.setdefault("empty", False)
+        return data
+    return {"ok": False, "empty": True, "error": "unexpected snapshot shape"}
+
+
+@router.get("/power-profile", summary="Master dynamic power profile + next schedule shift")
+async def get_power_profile(redis: RedisDep) -> dict[str, Any]:
+    """
+    Reads the live snapshot written by the Master (``nexus:power:snapshot``).
+    If the Master has not published yet, derives a preview from Redis override + local clock.
+    """
+    raw = await redis.get(REDIS_SNAPSHOT_KEY)
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    snap = parse_snapshot(raw) if raw else None
+    if snap:
+        return {"ok": True, "source": "redis_snapshot", **snap}
+
+    raw_ov = await redis.get(REDIS_OVERRIDE_KEY)
+    ov = (
+        (raw_ov or "auto").strip().lower()
+        if isinstance(raw_ov, str)
+        else "auto"
+    )
+    d = decide_power_profile(override_raw=ov)
+    n_cpu = psutil.cpu_count(logical=True)
+    return {
+        "ok": True,
+        "source": "computed_preview",
+        "effective_mode": d.effective,
+        "display_label": d.display_line,
+        "cpu_cap_percent": d.cpu_cap_percent,
+        "affinity_cores": d.affinity_cores,
+        "affinity_applied": False,
+        "logical_cores": int(n_cpu) if n_cpu is not None else None,
+        "override": d.override,
+        "scheduled_night": d.scheduled_night,
+        "idle_dropped_to_active": d.idle_dropped_to_active,
+        "seconds_since_input": d.seconds_idle,
+        "poly5m_cycle_seconds": d.poly5m_cycle_seconds,
+        "master_pid": None,
+        "updated_at": None,
+        "next_shift_local": d.next_shift_local_iso,
+        "seconds_until_shift": d.seconds_until_shift,
+        "message": "Master snapshot not in Redis yet — values are local preview only.",
+    }
 
 
 # ── Telegram notification (background) ────────────────────────────────────────
@@ -209,7 +343,7 @@ async def _send_panic_telegram(
             "",
             "⚠️ _Emergency kill\\-switch triggered\\. All trading halted immediately\\._",
             "",
-            f"📋 *Reason:* `Manual Trigger`",
+            "📋 *Reason:* `Manual Trigger`",
             f"⏰ *Time:* `{_esc(ts)} UTC`",
             f"💰 *Last Trade Price:* `{_esc(last_trade_price)}`",
             f"🖥️ *Active Workers:* `{_esc(workers_str)}`",
@@ -273,7 +407,12 @@ async def blackbox_download() -> FileResponse:
     if latest is None:
         return JSONResponse(
             status_code=404,
-            content={"detail": "No Black Box dump file found. Trigger a crash or wait for a critical failure."},
+            content={
+                "detail": (
+                    "No Black Box dump file found. "
+                    "Trigger a crash or wait for a critical failure."
+                ),
+            },
         )  # type: ignore[return-value]
 
     log.info("blackbox_download_served", filename=latest.name, size_bytes=latest.stat().st_size)

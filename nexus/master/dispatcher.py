@@ -48,7 +48,25 @@ from nexus.master.resource_guard import ResourceGuard
 from nexus.master.services.vault import Vault
 from nexus.shared.constants import TASK_DEFAULT_TIMEOUT
 from nexus.shared.notifications.service import NotificationService
-from nexus.shared.schemas import NodeHeartbeat, NodeRole, TaskPayload, TaskResult, TaskStatus
+from nexus.shared.fleet_redis import (
+    FLEET_SCAN_TASK_TYPES,
+    get_fleet_counter_snapshot,
+    parse_fleet_audit_from_task_output,
+    persist_fleet_audit_latest,
+    persist_fleet_audit_sqlite,
+    publish_fleet_scan_event,
+    reset_fleet_member_counters,
+)
+from nexus.shared.schemas import (
+    FleetAuditResults,
+    FleetScanEvent,
+    FleetScanPhase,
+    NodeHeartbeat,
+    NodeRole,
+    TaskPayload,
+    TaskResult,
+    TaskStatus,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -243,12 +261,13 @@ class Dispatcher:
         # ── Step 4: Enqueue onto ARQ ───────────────────────────────────────────
         # Use model_dump_for_wire() to include injected_secrets in the payload
         # (they are excluded from the default model_dump() to prevent logging).
+        job_ttl = task.job_expires_seconds or TASK_DEFAULT_TIMEOUT
         job = await self._arq.enqueue_job(
             "execute_task",
             task_payload=task.model_dump_for_wire(),
             _job_id=task.task_id,
             _queue_name="nexus:tasks",
-            _expires=TASK_DEFAULT_TIMEOUT,
+            _expires=job_ttl,
         )
 
         if job is None:
@@ -262,6 +281,20 @@ class Dispatcher:
             job_id=job.job_id,
             project_id=task.project_id,
         )
+
+        # Fleet scan: reset global member counters and notify dashboards (SSE / Redis status).
+        if task.task_type in FLEET_SCAN_TASK_TYPES:
+            await reset_fleet_member_counters(self._arq)
+            await publish_fleet_scan_event(
+                self._arq,
+                FleetScanEvent(
+                    phase=FleetScanPhase.STARTED,
+                    task_id=task.task_id,
+                    task_type=task.task_type,
+                    detail="Fleet scan dispatched to worker queue",
+                ),
+            )
+
         return job.job_id
 
     async def get_result(
@@ -283,7 +316,7 @@ class Dispatcher:
         raw: dict = await job.result(timeout=timeout, poll_delay=poll_interval)
         info: JobResult | None = await job.result_info()
 
-        self._in_flight.pop(task_id, None)
+        original_task = self._in_flight.pop(task_id, None)
 
         worker_id = "unknown"
         started_at = None
@@ -300,16 +333,55 @@ class Dispatcher:
 
         # Fire failure notification if the task failed and we have a notifier.
         if error and self._notifier:
-            original = self._in_flight.get(task_id)
             asyncio.create_task(
                 self._notifier.notify_task_failed(
                     task_id=task_id,
-                    task_type=original.task_type if original else "unknown",
+                    task_type=original_task.task_type if original_task else "unknown",
                     error=error,
                     attempt=1,
                     max_tries=3,
                 ),
                 name=f"notify-fail-{task_id}",
+            )
+
+        # Persist fleet audit + publish scan-ended when this task was a fleet scan.
+        if (
+            self._arq
+            and original_task
+            and original_task.task_type in FLEET_SCAN_TASK_TYPES
+        ):
+            snap = await get_fleet_counter_snapshot(self._arq)
+            audit = parse_fleet_audit_from_task_output(output)
+            if audit is None:
+                audit = FleetAuditResults(
+                    task_id=task_id,
+                    worker_id=worker_id,
+                    source="dispatcher",
+                    groups=[],
+                    total_managed_members=snap["total_managed_members"],
+                    total_premium_members=snap["total_premium_members"],
+                )
+            else:
+                audit = audit.model_copy(
+                    update={
+                        "task_id": task_id,
+                        "worker_id": worker_id,
+                        "total_managed_members": snap["total_managed_members"],
+                        "total_premium_members": snap["total_premium_members"],
+                    }
+                )
+            await persist_fleet_audit_latest(self._arq, audit)
+            await persist_fleet_audit_sqlite(audit)
+            await publish_fleet_scan_event(
+                self._arq,
+                FleetScanEvent(
+                    phase=FleetScanPhase.ENDED,
+                    task_id=task_id,
+                    task_type=original_task.task_type,
+                    detail="completed" if not error else (error or "failed"),
+                    managed_members_total=snap["total_managed_members"],
+                    premium_members_total=snap["total_premium_members"],
+                ),
             )
 
         return TaskResult(

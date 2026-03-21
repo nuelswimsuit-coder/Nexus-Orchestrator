@@ -99,7 +99,15 @@ class EnvVaultBackend(VaultBackend):
     def get(self, key: str) -> str | None:
         if key in self._overlay:
             return self._overlay[key]
-        return os.environ.get(f"{self.PREFIX}{key}")
+        prefixed = os.environ.get(f"{self.PREFIX}{key}")
+        if prefixed is not None and prefixed.strip() != "":
+            return prefixed
+        # Fall back to the conventional name (e.g. OPENAI_API_KEY in .env) so
+        # operators are not forced to duplicate keys as NEXUS_SECRET_* only.
+        plain = os.environ.get(key)
+        if plain is not None and plain.strip() != "":
+            return plain
+        return None
 
     def set(self, key: str, value: str) -> None:
         self._overlay[key] = value
@@ -258,6 +266,13 @@ TASK_SECRET_KEYS: dict[str, list[str]] = {
     # Content Factory — Gemini API key injected at dispatch time
     "telegram.content_factory": ["GEMINI_API_KEY", "TELEFIX_BOT_TOKEN",
                                   "TELEFIX_API_ID", "TELEFIX_API_HASH"],
+    "retention.guardian": [
+        "TELEFIX_API_ID",
+        "TELEFIX_API_HASH",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_ADMIN_CHAT_ID",
+    ],
+    "swarm": ["GEMINI_API_KEY", "TELEFIX_API_ID", "TELEFIX_API_HASH"],
 }
 
 

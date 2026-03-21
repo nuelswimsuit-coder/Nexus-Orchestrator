@@ -15,6 +15,7 @@ Safety layers
 Required environment variables
 ──────────────────────────────
 POLYMARKET_RELAYER_KEY       0x-prefixed private key for EIP-712 signing
+POLY_PRIVATE_KEY             alias for POLYMARKET_RELAYER_KEY (optional)
 POLYMARKET_SIGNER_ADDRESS    Funder / EOA address
 POLYMARKET_API_KEY           L2 API key  (optional — for authenticated routes)
 POLYMARKET_API_SECRET        L2 API secret
@@ -41,7 +42,10 @@ from nexus.trading.config import (
     PAPER_TRADING_COOLDOWN_S,
     PAPER_TRADING_MAX_HISTORY,
     PAPER_TRADING_REDIS_KEY,
+    PREDICTION_MANUAL_HALT_KEY,
 )
+from nexus.trading.runtime_mode import effective_paper_trading
+from nexus.trading.wallet_manager import get_polymarket_funder_address, get_polymarket_private_key
 
 log = structlog.get_logger(__name__)
 
@@ -74,20 +78,22 @@ class TradeResult:
     order_id: str | None = None
     error: str | None = None
     paper: bool = PAPER_TRADING
+    order_action: Literal["BUY", "SELL"] = "BUY"
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
     def to_log_text(self) -> str:
         prefix = "[PAPER] " if self.paper else ""
+        verb = "Sold" if self.order_action == "SELL" else "Bought"
         if self.success:
-            return f"{prefix}Bought {self.shares:.1f} shares of {self.side} @ ${self.price:.3f}"
+            return f"{prefix}{verb} {self.shares:.1f} shares of {self.side} @ ${self.price:.3f}"
         return f"{prefix}Trade FAILED: {self.error}"
 
     def to_redis_entry(self) -> dict[str, Any]:
         return {
             "timestamp":       self.timestamp,
-            "action":          "BUY",
+            "action":          self.order_action,
             "side":            self.side,
             "price":           self.price,
             "shares":          self.shares,
@@ -159,8 +165,8 @@ class PolymarketClient:
 
     def __init__(self) -> None:
         self.builder_id: str = os.getenv("POLYMARKET_BUILDER_ID", "Nexus")
-        self._private_key: str = os.getenv("POLYMARKET_RELAYER_KEY", "")
-        self._funder: str = os.getenv("POLYMARKET_SIGNER_ADDRESS", "")
+        self._private_key: str = get_polymarket_private_key()
+        self._funder: str = get_polymarket_funder_address()
         self._clob: Any | None = None
         self._try_init_sdk()
 
@@ -282,6 +288,8 @@ class PolymarketClient:
         budget_usd: float = PAPER_TRADING_AMOUNT_USD,
         *,
         tick_size: str = "0.01",
+        force_live: bool = False,
+        redis: Any = None,
     ) -> TradeResult:
         """Check kill switch then place a limit order.
 
@@ -290,6 +298,10 @@ class PolymarketClient:
 
         In live mode (``PAPER_TRADING = False``) the order is submitted via
         the CLOB API with a 15-second timeout.
+
+        When ``force_live=True``, the CLOB path is used even if
+        ``PAPER_TRADING`` is enabled (for isolated live modules such as the
+        5m scalper).
 
         Args:
             token_id:        Polymarket CLOB outcome token ID.
@@ -307,6 +319,9 @@ class PolymarketClient:
 
         shares = round(budget_usd / price, 2) if price > 0 else 0.0
 
+        ep = await effective_paper_trading(redis)
+        paper_mode = ep and not force_live
+
         base = TradeResult(
             success=False,
             token_id=token_id,
@@ -315,10 +330,10 @@ class PolymarketClient:
             shares=shares,
             spent_usd=0.0,
             market_question=market_question,
-            paper=PAPER_TRADING,
+            paper=paper_mode,
         )
 
-        if PAPER_TRADING:
+        if paper_mode:
             log.info(
                 "polymarket.paper_trade_executed",
                 side=side,
@@ -369,6 +384,90 @@ class PolymarketClient:
             raise
         except Exception as exc:
             log.error("polymarket.place_order_error", error=str(exc), token_id=token_id)
+            base.error = str(exc)[:200]
+            return base
+
+    async def place_sell_async(
+        self,
+        token_id: str,
+        price: float,
+        size: float,
+        market_question: str = "",
+        *,
+        tick_size: str = "0.01",
+        redis: Any = None,
+        force_live: bool = False,
+    ) -> TradeResult:
+        """
+        SELL limit for outcome tokens (e.g. stop-loss on YES).
+
+        Skips the USDC kill-switch so positions can be flattened when balance is low.
+        ``force_live=True`` submits to CLOB even when paper mode is active (emergency flatten).
+        """
+        ep = await effective_paper_trading(redis)
+        if force_live:
+            ep = False
+        base = TradeResult(
+            success=False,
+            token_id=token_id,
+            side="YES",
+            price=price,
+            shares=round(size, 4),
+            spent_usd=round(price * size, 4),
+            market_question=market_question,
+            paper=ep,
+            order_action="SELL",
+        )
+
+        if size <= 0 or price <= 0:
+            base.error = "Invalid sell size or price"
+            return base
+
+        if ep:
+            log.info(
+                "polymarket.paper_sell_executed",
+                price=price,
+                shares=size,
+                market_question=market_question,
+            )
+            base.success = True
+            base.order_id = f"PAPER-SELL-{int(datetime.now(timezone.utc).timestamp())}"
+            return base
+
+        if self._clob is None:
+            base.error = "Polymarket SDK not initialised (py-clob-client missing)"
+            return base
+
+        loop = asyncio.get_event_loop()
+        try:
+            resp = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: self._place_limit_order_sync(
+                        token_id=token_id,
+                        price=price,
+                        size=size,
+                        side=SELL,
+                        tick_size=tick_size,
+                    ),
+                ),
+                timeout=15.0,
+            )
+            order_id = resp.get("orderID") if isinstance(resp, dict) else str(resp)
+            log.info(
+                "polymarket.live_sell_placed",
+                price=price,
+                shares=size,
+                order_id=order_id,
+            )
+            base.success = True
+            base.order_id = order_id
+            return base
+        except asyncio.TimeoutError:
+            log.error("polymarket.place_sell_timeout", token_id=token_id)
+            raise
+        except Exception as exc:
+            log.error("polymarket.place_sell_error", error=str(exc), token_id=token_id)
             base.error = str(exc)[:200]
             return base
 
@@ -458,6 +557,11 @@ async def place_order(
                 raise TradingHalted(
                     "Kill switch engaged: SYSTEM PANIC active — all trading halted"
                 )
+            halt = await redis.get(PREDICTION_MANUAL_HALT_KEY)
+            if halt:
+                raise TradingHalted(
+                    "Prediction manual override active — automated Polymarket orders halted"
+                )
         except TradingHalted:
             raise
         except Exception:
@@ -478,6 +582,7 @@ async def place_order(
         side="YES",
         price=yes_price,
         market_question=market_question,
+        redis=redis,
     )
 
     if redis is not None:

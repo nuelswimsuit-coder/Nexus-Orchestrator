@@ -25,7 +25,9 @@ import asyncio
 import os
 import signal as _signal
 import sys
+import time as _time
 from pathlib import Path
+from typing import Any
 
 # Windows / Python 3.10+ fix: the default ProactorEventLoop does not support
 # all asyncio features used by ARQ.  Switch to SelectorEventLoop and ensure a
@@ -64,31 +66,40 @@ if _ENV_FILE.exists():
         if _key and _key not in os.environ:          # don't override real env vars
             os.environ[_key] = _val
 
+import importlib as _importlib
+
+# Inline import — avoids a circular-import risk; the bot module is scripts-level.
+import sys as _sys  # noqa: E402
+
 import structlog  # noqa: E402
 from arq.connections import RedisSettings  # noqa: E402
 
 from nexus.master.dispatcher import Dispatcher  # noqa: E402
 from nexus.master.hitl_gate import TaskRejectedError  # noqa: E402
 from nexus.master.resource_guard import ResourceGuard, apply_low_priority  # noqa: E402
-from nexus.master.supervisor import ProcessSupervisor  # noqa: E402
-from nexus.master.supervisor import Supervisor  # noqa: E402
+from nexus.master.sentinel import SentinelEngine  # noqa: E402
 from nexus.master.services.architect import ArchitectService  # noqa: E402
+from nexus.master.services.daily_reporter import DailyPnLReporter  # noqa: E402
 from nexus.master.services.decision_engine import AutonomousOrchestrator  # noqa: E402
 from nexus.master.services.evolution import EvolutionEngine  # noqa: E402
 from nexus.master.services.feedback_loop import FeedbackLoopService  # noqa: E402
+from nexus.master.services.polymarket_bot import PolymarketBotService  # noqa: E402
 from nexus.master.services.reporting import MultiReportingService, ReportingService  # noqa: E402
 from nexus.master.services.scout import ScoutService  # noqa: E402
-from nexus.master.sentinel import SentinelEngine  # noqa: E402
+from nexus.master.services.strategy_brain import StrategyBrainService  # noqa: E402
 from nexus.master.services.vault import Vault  # noqa: E402
+from nexus.master.supervisor import (
+    ProcessSupervisor,  # noqa: E402
+    Supervisor,  # noqa: E402
+)
 from nexus.shared.config import settings  # noqa: E402
-from nexus.shared.paths import get_telefix_path  # noqa: E402
 from nexus.shared.logging_config import configure_logging  # noqa: E402
 from nexus.shared.notifications.providers.telegram import TelegramProvider  # noqa: E402
 from nexus.shared.notifications.providers.whatsapp import WhatsAppProvider  # noqa: E402
+from nexus.shared.paths import get_telefix_path  # noqa: E402
+from nexus.shared.reporting import DailyHustleReporter  # noqa: E402
 from nexus.shared.system_settings import sync_runtime_from_system_settings  # noqa: E402
 
-# Inline import — avoids a circular-import risk; the bot module is scripts-level.
-import sys as _sys, importlib as _importlib  # noqa: E402
 _sys.path.insert(0, str(Path(__file__).resolve().parent))  # ensure scripts/ is on path
 from nexus.shared.notifications.service import NotificationService  # noqa: E402
 from nexus.shared.schemas import TaskPayload  # noqa: E402
@@ -96,21 +107,115 @@ from nexus.shared.schemas import TaskPayload  # noqa: E402
 log = structlog.get_logger(__name__)
 
 
+def _dynamic_power_enabled() -> bool:
+    return os.getenv("NEXUS_DYNAMIC_POWER", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
 async def _system_settings_sync_loop(
     guard: ResourceGuard,
     interval_s: float = 10.0,
 ) -> None:
     """
-    Keep master runtime caps synced from config/system_settings.json.
+    Keep master runtime synced from config/system_settings.json.
+    CPU cap is owned by the power-profile loop when dynamic power is on.
     """
+    dyn = _dynamic_power_enabled()
     while True:
         await asyncio.sleep(interval_s)
-        dynamic = sync_runtime_from_system_settings()
-        guard.cpu_cap = float(dynamic["power_limit"])
+        dynamic = sync_runtime_from_system_settings(apply_power_limit=not dyn)
+        if not dyn:
+            guard.cpu_cap = float(dynamic["power_limit"])
+
+
+async def _power_profile_loop(
+    guard: ResourceGuard,
+    redis: Any,
+    *,
+    poll_s: float = 30.0,
+    full_reconcile_s: float = 300.0,
+) -> None:
+    """
+    Polls local time / idle / Redis override every ``poll_s`` seconds (default 30s).
+    Schedule-based night window is re-evaluated each tick; ``full_reconcile_s`` is
+    the minimum interval between *info* logs when nothing changed.
+    """
+    from nexus.shared.power_profile import (
+        REDIS_OVERRIDE_KEY,
+        REDIS_POLY_CYCLE_KEY,
+        REDIS_SNAPSHOT_KEY,
+        apply_power_to_process,
+        decide_power_profile,
+        snapshot_json,
+    )
+
+    pid = os.getpid()
+    last_sig: tuple[Any, ...] | None = None
+    last_log = 0.0
+    first = True
+    while True:
+        if not first:
+            await asyncio.sleep(poll_s)
+        first = False
+        try:
+            raw_ov = await redis.get(REDIS_OVERRIDE_KEY)
+            ov = (
+                (raw_ov or "auto").strip().lower()
+                if isinstance(raw_ov, str)
+                else "auto"
+            )
+            d = decide_power_profile(override_raw=ov)
+            sig = (
+                d.effective,
+                round(d.cpu_cap_percent, 4),
+                tuple(d.affinity_cores),
+                d.poly5m_cycle_seconds,
+                ov,
+            )
+            now_m = _time.monotonic()
+            guard.cpu_cap = float(d.cpu_cap_percent)
+            object.__setattr__(settings, "master_cpu_cap_percent", float(d.cpu_cap_percent))
+            st = apply_power_to_process(pid, d, set_affinity=True)
+            await redis.set(REDIS_POLY_CYCLE_KEY, str(d.poly5m_cycle_seconds), ex=86400)
+            await redis.set(
+                REDIS_SNAPSHOT_KEY,
+                snapshot_json(pid, d, bool(st.get("affinity_ok"))),
+                ex=7200,
+            )
+            changed = sig != last_sig
+            last_sig = sig
+            if changed or (now_m - last_log) >= full_reconcile_s:
+                last_log = now_m
+                log.info(
+                    "power_profile_applied",
+                    effective=d.effective,
+                    cpu_cap=d.cpu_cap_percent,
+                    affinity_cores=d.affinity_cores,
+                    override=d.override,
+                    next_shift_s=d.seconds_until_shift,
+                )
+        except Exception as exc:
+            log.warning("power_profile_tick_failed", error=str(exc))
 
 
 async def run() -> None:
-    sync_runtime_from_system_settings()
+    _dyn = _dynamic_power_enabled()
+    sync_runtime_from_system_settings(apply_power_limit=not _dyn)
+    # Master brain split: cap total master CPU so API/UI stay responsive (static mode only).
+    if (
+        not _dyn
+        and os.getenv("NEXUS_MASTER_BRAIN_SPLIT", "1").lower() in {"1", "true", "yes", "on"}
+    ):
+        mgmt_cap = float(os.getenv("NEXUS_MASTER_MANAGEMENT_CPU_PCT", "50"))
+        object.__setattr__(
+            settings,
+            "master_cpu_cap_percent",
+            min(float(settings.master_cpu_cap_percent), mgmt_cap),
+        )
     # ── 1. Logging ─────────────────────────────────────────────────────────────
     configure_logging(level="INFO", node_id=settings.node_id)
     print("[START] מוודא שאין מופעים כפולים ומריץ את @sasaNexusBot...")
@@ -273,6 +378,34 @@ async def run() -> None:
     )
     await dispatcher.start()
 
+    if _dynamic_power_enabled():
+        asyncio.create_task(
+            _power_profile_loop(
+                guard,
+                dispatcher._arq,
+                poll_s=30.0,
+                full_reconcile_s=300.0,
+            ),
+            name="power-profile-loop",
+        )
+
+    from nexus.master.services.retention_guardian_loop import (  # noqa: PLC0415
+        run_retention_guardian_loop,
+    )
+
+    asyncio.create_task(
+        run_retention_guardian_loop(dispatcher),
+        name="retention-guardian-loop",
+    )
+
+    log.info(
+        "nexus_kill_switch_wired",
+        module="nexus.shared.kill_switch",
+        api="POST /api/system/kill-switch",
+        telegram_command="/terminate_nexus_now",
+        hint="Set TELEGRAM_ADMIN_USER_ID for secret Telegram trigger; optional NEXUS_KILL_SWITCH_API_TOKEN.",
+    )
+
     # ── 5a. Sentinel AI (Autonomous Error Management) ─────────────────────────
     # The SentinelEngine is the self-healing layer: it monitors Binance latency,
     # RAM, and worker heartbeats, calls Gemini AI to diagnose crashes, and
@@ -365,6 +498,33 @@ async def run() -> None:
         schedule="09:00 (Morning) · 14:00 (Afternoon) · 21:00 (Evening)",
     )
 
+    strategy_brain = StrategyBrainService(redis=dispatcher._arq)
+    asyncio.create_task(strategy_brain.run_loop(), name="strategy-brain")
+    log.info("strategy_brain_registered", hint="War-room intel + Kelly / swarm strike logic")
+
+    daily_hustle = DailyHustleReporter(notifier=notifier, redis=dispatcher._arq)
+    asyncio.create_task(daily_hustle.run_loop(), name="daily-hustle-telegram")
+    log.info("daily_hustle_registered", at="00:00 local — operator bottom-line summary")
+
+    # ── 5c-i. Daily PnL — Race to 1,000% (Hebrew Telegram digest) ────────────
+    # Local wall-clock default 07:30, or set NEXUS_DAILY_PNL_INTERVAL_S=86400 for
+    # fixed-period loop. Disable with NEXUS_DAILY_PNL_REPORT_ENABLED=0.
+    if os.getenv("NEXUS_DAILY_PNL_REPORT_ENABLED", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        daily_pnl_race = DailyPnLReporter(redis=dispatcher._arq, telegram=tg_provider)
+        asyncio.create_task(daily_pnl_race.run_loop(), name="daily-pnl-race-report")
+        log.info(
+            "daily_pnl_race_report_registered",
+            hint=(
+                "NEXUS_DAILY_PNL_HOUR / NEXUS_DAILY_PNL_MINUTE (local) "
+                "or NEXUS_DAILY_PNL_INTERVAL_S"
+            ),
+        )
+
     # ── 5c-ii. Evolution Engine — First-Birth Protocol (Phase 14) ─────────────
     # The EvolutionEngine is the Phase 14 Scout+Architect+BirthGate.
     # It runs every 30 minutes, picks the highest-confidence niche from the
@@ -398,6 +558,17 @@ async def run() -> None:
     )
     asyncio.create_task(scout.run_loop(), name="scout-service")
     log.info("scout_service_registered", interval_hours=24)
+
+    poly_bot = PolymarketBotService(dispatcher=dispatcher)
+    asyncio.create_task(poly_bot.run_loop(), name="polymarket-bot-service")
+    log.info("polymarket_bot_service_registered")
+
+    if os.getenv("POLY5M_SCALPER_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
+        from nexus.master.services.poly_5m_scalper import Poly5mScalperService
+
+        _poly5m = Poly5mScalperService(redis=dispatcher._arq)
+        asyncio.create_task(_poly5m.run_loop(), name="poly5m-scalper")
+        log.info("poly5m_scalper_registered", env="POLY5M_SCALPER_ENABLED")
 
     architect = ArchitectService(
         redis=dispatcher._arq,
@@ -438,6 +609,14 @@ async def run() -> None:
     )
     dispatcher.cron.add(hour=2, minute=0, task=nightly_scrape, name="nightly-scrape")
     log.info("cron_nightly_scrape_registered", at="02:00 local")
+
+    # Swarm Social Synthesis — AI group warmer + community classification
+    if os.getenv("SWARM_SOCIAL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}:
+        from nexus.master.services.swarm_social_scheduler import SwarmSocialScheduler
+
+        _swarm_sched = SwarmSocialScheduler(dispatcher, dispatcher._arq)
+        asyncio.create_task(_swarm_sched.run_loop(60.0), name="swarm-social-scheduler")
+        log.info("swarm_social_scheduler_registered", interval_s=60)
 
     # Also update the docstring
     log.info(

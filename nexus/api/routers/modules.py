@@ -25,15 +25,27 @@ GET  /api/modules/widgets/financial-pulse
 
 from __future__ import annotations
 
+import json
+import os
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict
 
+import arq
 import structlog
 from fastapi import APIRouter, HTTPException
+from arq.connections import RedisSettings
 from pydantic import BaseModel
 
 from nexus.api.dependencies import RedisDep
 from nexus.modules import module_manager
+from nexus.modules.moltbot import build_moltbot_parameters
+from nexus.modules.openclaw import build_openclaw_parameters
+from nexus.shared.config import settings
+from nexus.shared.schemas import TaskPayload, WorkerCapability
+from nexus.trading.poly_bot_state import POLY_BOT_STATUS_KEY
+from nexus.worker.tasks.moltbot import MOLTBOT_STATUS_KEY
+from nexus.worker.tasks.openclaw import OPENCLAW_STATUS_KEY
 
 log = structlog.get_logger(__name__)
 
@@ -79,6 +91,83 @@ class FinancialPulseResponse(BaseModel):
     status: str = "Unknown"
 
 
+class OpenclawLaunchRequest(BaseModel):
+    mode: str = "google_maps"
+    query: str
+    project_id: str = "telefix"
+    location: str = ""
+    max_leads: int = 50
+
+
+class MoltbotLaunchRequest(BaseModel):
+    action: str = "launch_scrape"
+    query: str = ""
+    max_items: int = 100
+    session_file: str | None = None
+
+
+class ModuleLaunchResponse(BaseModel):
+    task_id: str
+    task_type: str
+    module: str
+    message: str
+
+
+class ModuleRuntimeHealth(BaseModel):
+    module: str
+    active: bool = False
+    stage: str = "idle"
+    detail: str = ""
+    node_id: str = ""
+    cpu_percent: float = 0.0
+    rss_mb: float = 0.0
+    updated_at: str = ""
+
+
+class ModuleHealthResponse(BaseModel):
+    modules: Dict[str, ModuleRuntimeHealth]
+    queried_at: str
+
+
+async def _enqueue_task(task: TaskPayload) -> str:
+    pool = await arq.create_pool(
+        RedisSettings.from_dsn(settings.redis_url),
+        default_queue_name="nexus:tasks",
+    )
+    try:
+        job = await pool.enqueue_job(
+            "execute_task",
+            task_payload=task.model_dump_for_wire(),
+            _job_id=task.task_id,
+            _queue_name="nexus:tasks",
+        )
+        if job is None:
+            raise HTTPException(status_code=409, detail="Task already queued with same id")
+        return task.task_id
+    finally:
+        await pool.aclose()
+
+
+async def _read_health(redis: RedisDep, key: str, module: str) -> ModuleRuntimeHealth:
+    raw = await redis.get(key)
+    if not raw:
+        return ModuleRuntimeHealth(module=module)
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return ModuleRuntimeHealth(module=module)
+    return ModuleRuntimeHealth(
+        module=module,
+        active=bool(data.get("active", False)),
+        stage=str(data.get("stage", "idle")),
+        detail=str(data.get("detail", "")),
+        node_id=str(data.get("node_id", "")),
+        cpu_percent=float(data.get("cpu_percent", 0.0) or 0.0),
+        rss_mb=float(data.get("rss_mb", 0.0) or 0.0),
+        updated_at=str(data.get("updated_at", "")),
+    )
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=ModulesResponse, summary="List all TeleFix modules")
@@ -118,6 +207,84 @@ async def get_module(module_id: str, redis: RedisDep) -> ModuleInfo:
         )
     
     return ModuleInfo(**module_data)
+
+
+@router.post("/openclaw/launch", response_model=ModuleLaunchResponse, status_code=202)
+async def launch_openclaw(body: OpenclawLaunchRequest, redis: RedisDep) -> ModuleLaunchResponse:
+    """
+    Launch an OpenClaw scrape job, routed to the high-power Windows worker.
+    """
+    task_id = str(uuid.uuid4())
+    task = TaskPayload(
+        task_id=task_id,
+        task_type="scraper.openclaw",
+        parameters=build_openclaw_parameters(
+            mode=body.mode,
+            query=body.query,
+            project_id=body.project_id,
+            max_leads=body.max_leads,
+            location=body.location,
+        ),
+        project_id=body.project_id,
+        priority=2,
+        required_capabilities=[WorkerCapability.WINDOWS],
+    )
+    await _enqueue_task(task)
+    return ModuleLaunchResponse(
+        task_id=task_id,
+        task_type="scraper.openclaw",
+        module="openclaw",
+        message="OpenClaw launch dispatched to ARQ cluster queue",
+    )
+
+
+@router.post("/moltbot/launch", response_model=ModuleLaunchResponse, status_code=202)
+async def launch_moltbot(body: MoltbotLaunchRequest, redis: RedisDep) -> ModuleLaunchResponse:
+    """
+    Launch a Moltbot task; runnable on any worker with a valid session file.
+    """
+    task_id = str(uuid.uuid4())
+    session_file = (body.session_file or os.getenv("MOLTBOT_SESSION_FILE", "")).strip()
+    if not session_file:
+        raise HTTPException(
+            status_code=400,
+            detail="session_file is required (body.session_file or MOLTBOT_SESSION_FILE env var)",
+        )
+
+    task = TaskPayload(
+        task_id=task_id,
+        task_type="bot.moltbot",
+        parameters=build_moltbot_parameters(
+            session_file=session_file,
+            action=body.action,
+            query=body.query,
+            max_items=body.max_items,
+        ),
+        project_id="telefix",
+        priority=2,
+    )
+    await _enqueue_task(task)
+    return ModuleLaunchResponse(
+        task_id=task_id,
+        task_type="bot.moltbot",
+        module="moltbot",
+        message="Moltbot launch dispatched to ARQ cluster queue",
+    )
+
+
+@router.get("/widgets/module-health", response_model=ModuleHealthResponse, summary="Runtime health for core modules")
+async def get_module_health(redis: RedisDep) -> ModuleHealthResponse:
+    openclaw = await _read_health(redis, OPENCLAW_STATUS_KEY, "openclaw")
+    moltbot = await _read_health(redis, MOLTBOT_STATUS_KEY, "moltbot")
+    poly_bot = await _read_health(redis, POLY_BOT_STATUS_KEY, "polymarket_bot")
+    return ModuleHealthResponse(
+        modules={
+            "openclaw": openclaw,
+            "moltbot": moltbot,
+            "polymarket_bot": poly_bot,
+        },
+        queried_at=datetime.now(timezone.utc).isoformat(),
+    )
 
 
 @router.post("/{module_id}/action", summary="Control TeleFix module")

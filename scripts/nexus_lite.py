@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 import threading
+from collections.abc import Awaitable, Callable
 
 import uvicorn
 
@@ -28,14 +29,17 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
-def _configure_low_overhead_logging() -> None:
+def _configure_logging(*, verbose: bool) -> None:
     """
-    Force WARNING logs globally to reduce CPU/IO pressure.
+    Default: WARNING everywhere (low RAM / CPU). Verbose: INFO on the root
+    logger so `bot.py` startup lines remain visible while keeping hot paths quiet.
     """
     dynamic = read_system_settings()
-    configure_logging(level=str(dynamic["log_level"]), node_id=f"{settings.node_id}-lite")
-    logging.getLogger().setLevel(logging.WARNING)
-    for name in (
+    base_level = "INFO" if verbose else str(dynamic["log_level"])
+    configure_logging(level=base_level, node_id=f"{settings.node_id}-lite")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO if verbose else logging.WARNING)
+    noisy = (
         "uvicorn",
         "uvicorn.error",
         "uvicorn.access",
@@ -44,7 +48,8 @@ def _configure_low_overhead_logging() -> None:
         "httpx",
         "httpcore",
         "asyncio",
-    ):
+    )
+    for name in noisy:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
@@ -74,8 +79,13 @@ def _start_api_thread() -> tuple[uvicorn.Server, threading.Thread]:
     return server, thread
 
 
-async def run() -> None:
-    _configure_low_overhead_logging()
+async def run(
+    *,
+    verbose: bool = False,
+    after_api_ready: Callable[[], Awaitable[None]] | None = None,
+    before_telegram_poll: Callable[[], Awaitable[None]] | None = None,
+) -> None:
+    _configure_logging(verbose=verbose)
     dynamic = read_system_settings()
     # Keep lite mode explicitly constrained for stability on low-RAM hosts.
     os.environ["WORKER_MAX_JOBS"] = str(max(2, min(int(dynamic["max_workers"]), 3)))
@@ -96,6 +106,12 @@ async def run() -> None:
             raise RuntimeError("API thread exited during startup.")
         await asyncio.sleep(0.1)
 
+    if after_api_ready is not None:
+        await after_api_ready()
+
+    if before_telegram_poll is not None:
+        await before_telegram_poll()
+
     try:
         await start_bot_polling(token)
     finally:
@@ -108,7 +124,7 @@ async def run() -> None:
 
 def main() -> None:
     try:
-        asyncio.run(run())
+        asyncio.run(run(verbose=False))
     except KeyboardInterrupt:
         pass
 

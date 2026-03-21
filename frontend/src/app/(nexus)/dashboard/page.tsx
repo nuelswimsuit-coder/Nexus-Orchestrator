@@ -1,28 +1,42 @@
 "use client";
 
 import React from "react";
+import useSWR from "swr";
 import AgentThinkingLog from "@/components/AgentThinkingLog";
 import CyberGrid from "@/components/CyberGrid";
 import FlightModeOverlay from "@/components/FlightModeOverlay";
 import ArbitrageGraph from "@/components/ArbitrageGraph";
 import AutonomyControl from "@/components/AutonomyControl";
 import BudgetWidget from "@/components/BudgetWidget";
-import ClusterStatus from "@/components/ClusterStatus";
+import CommunityIdentity from "@/components/CommunityIdentity";
+import FleetStatus from "@/components/FleetStatus";
+import MatrixOpsFooter from "@/components/MatrixOpsFooter";
+import FleetScanProgress from "@/components/FleetScanProgress";
 import ContentPreview from "@/components/ContentPreview";
 import DeployTerminal from "@/components/DeployTerminal";
+import EmergencyKillSwitch from "@/components/EmergencyKillSwitch";
 import FinancialPulseWidget from "@/components/FinancialPulseWidget";
 import HitlManager from "@/components/HitlManager";
 import IntelDashboard from "@/components/IntelDashboard";
+import GroupHealth from "@/components/GroupHealth";
+import ModuleHealth from "@/components/ModuleHealth";
 import PageTransition from "@/components/PageTransition";
+import PolymarketBotPnL from "@/components/PolymarketBotPnL";
+import Poly5mScalperWidget from "@/components/Poly5mScalperWidget";
+import PowerProfileBar from "@/components/PowerProfileBar";
 import PredictorWidget from "@/components/PredictorWidget";
+import PredictionMarketWidget from "@/components/PredictionMarketWidget";
 import ProfitHeatmap from "@/components/ProfitHeatmap";
 import SessionHealthGauge from "@/components/SessionHealthGauge";
 import StabilityGauge from "@/components/StabilityGauge";
 import TopologyVisual from "@/components/TopologyVisual";
+import UltimateScalperPanel from "@/components/UltimateScalperPanel";
 import VirtualTradeLog from "@/components/VirtualTradeLog";
+import WarRoomIntel from "@/components/WarRoomIntel";
 import WinRateWidget from "@/components/WinRateWidget";
 import { motion } from "framer-motion";
 import { useState } from "react";
+import { API_BASE, swrFetcher, type PanicStateResponse } from "@/lib/api";
 import { useStealth } from "@/lib/stealth";
 
 // ── Stagger animation helpers ─────────────────────────────────────────────────
@@ -50,11 +64,14 @@ function PanicButtonPanel() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
-  const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
+  const { data: panicState } = useSWR<PanicStateResponse>(
+    `${API_BASE}/api/system/panic/state`,
+    swrFetcher<PanicStateResponse>,
+    { refreshInterval: 3_000 },
+  );
 
-  // Poll Redis panic flag via a lightweight GET on the same panic endpoint
   const [localPanic, setLocalPanic] = useState(false);
-  const isPanic = localPanic;
+  const isPanic = localPanic || Boolean(panicState?.panic);
 
   async function handlePanic() {
     if (!armed) { setArmed(true); return; }
@@ -150,7 +167,7 @@ function PanicButtonPanel() {
         lineHeight: 1.5,
       }}>
         {isPanic
-          ? `מערכת הופסקה · ${panicState?.activated_at?.slice(0, 19).replace("T", " ") ?? ""} UTC`
+          ? `מערכת הופסקה · ${(panicState?.activated_at ?? panicState?.ts ?? "").slice(0, 19).replace("T", " ") || "—"} UTC`
           : armed
             ? "לחץ שוב לאישור — כל המשימות יופסקו"
             : "מערכת פעילה · לחץ להפעלת חירום"}
@@ -386,6 +403,8 @@ export default function DashboardPage() {
           gap: "2rem",
         }}
       >
+        <PowerProfileBar />
+
         {/* ── System Resilience ────────────────────────────────────────────── */}
         <GlassSection accent>
           <SectionLabel
@@ -394,13 +413,25 @@ export default function DashboardPage() {
           />
           <div style={{
             display: "grid",
-            gridTemplateColumns: "minmax(320px, 1.6fr) minmax(220px, 1fr)",
+            gridTemplateColumns: "minmax(320px, 1.6fr) minmax(240px, 1fr)",
             gap: "1.25rem",
             alignItems: "start",
           }}>
             <StabilityGauge />
-            <PanicButtonPanel />
+            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+              <PanicButtonPanel />
+              <EmergencyKillSwitch />
+            </div>
           </div>
+        </GlassSection>
+
+        {/* ── War Room — Master Trader intel ───────────────────────────────── */}
+        <GlassSection accent>
+          <SectionLabel
+            label="WAR ROOM"
+            sub="Master confidence · Race to 1000% · Fleet sentiment heatmap"
+          />
+          <WarRoomIntel />
         </GlassSection>
 
         {/* ── Network Topology ─────────────────────────────────────────────── */}
@@ -413,6 +444,15 @@ export default function DashboardPage() {
         <GlassSection>
           <SectionLabel label="HUMAN-IN-THE-LOOP" sub="Pending approvals" />
           <HitlManager />
+        </GlassSection>
+
+        {/* ── Swarm Social Synthesis — community identity + AI warmer state ─ */}
+        <GlassSection accent>
+          <SectionLabel
+            label="SWARM SOCIAL SYNTHESIS"
+            sub="Community identity · group description · emerging vibe (Gemini 1.5 Flash)"
+          />
+          <CommunityIdentity />
         </GlassSection>
 
         {/* ── Financial Engine ─────────────────────────────────────────────── */}
@@ -432,7 +472,44 @@ export default function DashboardPage() {
         {/* ── Cross-Exchange Predictor ──────────────────────────────────────── */}
         <GlassSection>
           <SectionLabel label="CROSS-EXCHANGE PREDICTOR" sub="Binance order flow vs Polymarket odds" />
-          <PredictorWidget />
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "minmax(280px, 1.2fr) minmax(260px, 1fr)",
+              gap: "1.25rem",
+              alignItems: "start",
+            }}
+          >
+            <PredictorWidget />
+            <PolymarketBotPnL />
+          </div>
+        </GlassSection>
+
+        {/* ── Prediction Market (BTC vs Poly + CI + manual kill) ─────────────── */}
+        <GlassSection accent>
+          <SectionLabel
+            label="PREDICTION MARKET"
+            sub="BTC spot vs Polymarket YES · AI confidence band · volatility override"
+          />
+          <PredictionMarketWidget />
+        </GlassSection>
+
+        {/* ── Ultimate Scalper (5m) ─────────────────────────────────────────── */}
+        <GlassSection>
+          <SectionLabel
+            label="ULTIMATE SCALPER · 5M"
+            sub="Simulation vs real · Binance velocity + OpenClaw news · Race to 1000%"
+          />
+          <UltimateScalperPanel />
+        </GlassSection>
+
+        {/* ── NEXUS-POLY-SCALPER-5M (dedicated event + Telefix + WS velocity) ─ */}
+        <GlassSection accent>
+          <SectionLabel
+            label="POLY 5M SCALPER"
+            sub="Binance WS velocity · telefix.db · CLOB · max $5 / cycle · 3-loss panic"
+          />
+          <Poly5mScalperWidget />
         </GlassSection>
 
         {/* ── Arbitrage Visualizer + Win-Rate Tracker ───────────────────────── */}
@@ -484,11 +561,18 @@ export default function DashboardPage() {
           <AgentThinkingLog />
         </GlassSection>
 
-        {/* ── Digital Twin ─────────────────────────────────────────────────── */}
+        {/* ── Digital Twin / Hardware grid (Matrix ops) ───────────────────── */}
         <GlassSection>
-          <SectionLabel label="DIGITAL TWIN" sub="Hardware cluster monitor" />
-          <ClusterStatus />
+          <SectionLabel label="DIGITAL TWIN" sub="Hardware grid · Redis probes · live CPU" />
+          <FleetStatus />
+          <FleetScanProgress />
+          <GroupHealth />
+          <ModuleHealth />
         </GlassSection>
+
+        <div style={{ width: "100%" }}>
+          <MatrixOpsFooter />
+        </div>
       </motion.div>
     </PageTransition>
     </>

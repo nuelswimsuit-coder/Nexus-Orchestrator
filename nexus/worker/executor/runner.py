@@ -36,10 +36,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from datetime import datetime, timezone
 from typing import Any
 
 import structlog
+import psutil
 
 from nexus.worker.task_registry import registry
 
@@ -47,6 +49,15 @@ log = structlog.get_logger(__name__)
 
 _RAW_CAPS = os.getenv("WORKER_CAPABILITIES", "any")
 WORKER_CAPABILITIES: set[str] = {c.strip() for c in _RAW_CAPS.split(",") if c.strip()}
+
+# Auto-augment capabilities so routing works even when env vars are minimal.
+if sys.platform.startswith("win"):
+    WORKER_CAPABILITIES.add("windows-only")
+else:
+    WORKER_CAPABILITIES.add("linux-only")
+
+if (psutil.virtual_memory().total / (1024 * 1024 * 1024)) >= 12:
+    WORKER_CAPABILITIES.add("high-ram")
 
 # Errors that should NOT be retried (configuration / logic errors)
 _NON_RETRYABLE = (KeyError, ValueError, TypeError, NotImplementedError)

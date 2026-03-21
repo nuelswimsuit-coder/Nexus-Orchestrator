@@ -145,6 +145,9 @@ def get_start_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🛡️ בדיקת חוסן (Sentinel)", callback_data="check_sentinel"),
             InlineKeyboardButton(text="🛑 עצירת חירום (PANIC)",   callback_data="panic_stop"),
         ],
+        [
+            InlineKeyboardButton(text="🚀 Launch Moltbot Scrape", callback_data="launch_moltbot"),
+        ],
     ])
 
 
@@ -159,6 +162,24 @@ async def _api_get(path: str) -> dict | None:
             return resp.json()
     except Exception as exc:
         log.warning("telegram_bot_api_error", path=path, error=str(exc))
+        return None
+
+
+async def _api_post(
+    path: str,
+    payload: dict | None = None,
+    *,
+    extra_headers: dict[str, str] | None = None,
+) -> dict | None:
+    """POST JSON to the FastAPI server. Returns None on error."""
+    try:
+        hdrs = {"Content-Type": "application/json", **(extra_headers or {})}
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(f"{API_BASE}{path}", json=payload or {}, headers=hdrs)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:
+        log.warning("telegram_bot_api_post_error", path=path, error=str(exc))
         return None
 
 
@@ -752,6 +773,37 @@ async def handle_panic_cancel(callback: CallbackQuery) -> None:
     )
 
 
+async def handle_launch_moltbot(callback: CallbackQuery) -> None:
+    """
+    Dispatch a bot.moltbot ARQ job directly from Telegram control panel.
+    """
+    await callback.answer("Dispatching Moltbot scrape...")
+    payload = {
+        "action": "launch_scrape",
+        "query": "telegram scrape via command center",
+        "max_items": 120,
+    }
+    data = await _api_post("/api/modules/moltbot/launch", payload)
+    if not data:
+        await callback.message.edit_text(
+            "❌ *Moltbot dispatch failed*\n\nCould not reach the API or enqueue the task\\.",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=get_start_menu(),
+        )
+        return
+
+    task_id = _esc(str(data.get("task_id", "")))
+    msg = _esc(str(data.get("message", "Moltbot dispatch accepted")))
+    await callback.message.edit_text(
+        "🚀 *Moltbot Scrape Launched*\n\n"
+        f"Task ID: `{task_id}`\n"
+        f"Queue: `nexus:tasks`\n"
+        f"{msg}",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=get_start_menu(),
+    )
+
+
 # ── V2 Menu Handlers ──────────────────────────────────────────────────────────
 
 async def handle_menu_stats(callback: CallbackQuery) -> None:
@@ -853,6 +905,7 @@ async def cmd_help(message: Message) -> None:
         "/start — Show the main menu\n"
         "/dashboard — Open the dashboard link\n"
         "/killswitch — 🚨 KILL all autonomous projects instantly\n"
+        "/terminate\\_nexus\\_now — 🔒 *Full* emergency kill\\-switch \\(user ID + API/Redis\\)\n"
         "/godmode\\_on — Enable GOD MODE \\(auto\\-deploy\\)\n"
         "/godmode\\_off — Disable GOD MODE\n"
         "/incubator — Show Evolution Engine status\n"
@@ -910,6 +963,79 @@ async def cmd_killswitch(message: Message) -> None:
     except Exception as exc:
         await message.answer(f"❌ Kill Switch error: {_esc(str(exc))}")
         log.error("telegram_killswitch_error", error=str(exc))
+
+
+async def cmd_terminate_nexus_now(message: Message) -> None:
+    """
+    Full NEXUS kill-switch: trading halt, workers (TERMINATE+FORCE_STOP), exposure flatten, env wipe.
+
+    Only the Telegram user id in TELEGRAM_ADMIN_USER_ID may invoke this (not chat id).
+    """
+    allowed = (os.environ.get("TELEGRAM_ADMIN_USER_ID") or "").strip()
+    uid = str(message.from_user.id) if message.from_user else ""
+    if not allowed or uid != allowed:
+        await message.answer("⛔ Unauthorized\\. Set `TELEGRAM_ADMIN_USER_ID` to your numeric user id\\.")
+        return
+
+    await message.answer(
+        "🔒 NEXUS KILL-SWITCH\n\n"
+        "Phase 1: Redis + worker TERMINATE/FORCE_STOP. Then flatten exposure + secure report.",
+    )
+
+    extra: dict[str, str] = {}
+    tok = (os.environ.get("NEXUS_KILL_SWITCH_API_TOKEN") or "").strip()
+    if tok:
+        extra["X-Nexus-Kill-Auth"] = tok
+
+    data = await _api_post(
+        "/api/system/kill-switch",
+        {"confirm": "TERMINATE_NEXUS_NOW", "evacuate": False},
+        extra_headers=extra or None,
+    )
+    if data:
+        await message.answer(
+            "✅ *Kill\\-switch engaged*\n\n"
+            f"`status`: {_esc(data.get('status', ''))}\n"
+            f"`elapsed_ms`: {_esc(str(data.get('elapsed_ms', '')))}\n\n"
+            "_Background: close exposure, env wipe, Telegram secure report\\._",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        log.critical("telegram_full_kill_switch_api_ok", user_id=uid)
+        return
+
+    redis_url = (os.environ.get("REDIS_URL") or "").strip()
+    if not redis_url:
+        await message.answer(
+            "❌ API request failed and `REDIS_URL` is not set\\.\n"
+            "Start the Control Center API or set `REDIS_URL` for direct Redis mode\\.",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        return
+
+    try:
+        from redis.asyncio import from_url as redis_from_url
+
+        from nexus.shared.kill_switch import run_full_kill_switch
+
+        rcli = redis_from_url(redis_url, decode_responses=True)
+        try:
+            rep = await run_full_kill_switch(
+                rcli,
+                reason="telegram_direct_redis",
+                source=f"tg:{uid}",
+                evacuate=False,
+            )
+        finally:
+            await rcli.aclose()
+        await message.answer(
+            "✅ *Kill\\-switch via direct Redis*\n\n"
+            f"`activated`: {_esc(str(rep.get('activated_at', ''))[:24])}",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        log.critical("telegram_full_kill_switch_redis_ok", user_id=uid)
+    except Exception as exc:
+        await message.answer(f"❌ Direct Redis kill\\-switch failed: {_esc(str(exc))}", parse_mode=ParseMode.MARKDOWN_V2)
+        log.error("telegram_full_kill_switch_redis_error", error=str(exc))
 
 
 async def cmd_godmode_on(message: Message) -> None:
@@ -1339,6 +1465,7 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     dp.message.register(cmd_dashboard, Command("dashboard"))
     dp.message.register(cmd_help, Command("help"))
     dp.message.register(cmd_killswitch, Command("killswitch"))
+    dp.message.register(cmd_terminate_nexus_now, Command("terminate_nexus_now"))
     dp.message.register(cmd_godmode_on, Command("godmode_on"))
     dp.message.register(cmd_godmode_off, Command("godmode_off"))
     dp.message.register(cmd_incubator, Command("incubator"))
@@ -1350,6 +1477,7 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     dp.callback_query.register(handle_panic_stop,         F.data == "panic_stop")
     dp.callback_query.register(handle_panic_confirm,      F.data == "panic_confirm")
     dp.callback_query.register(handle_panic_cancel,       F.data == "panic_cancel")
+    dp.callback_query.register(handle_launch_moltbot,     F.data == "launch_moltbot")
 
     # V2 Hebrew menu handlers
     dp.callback_query.register(handle_menu_stats,  F.data == "menu_stats")
@@ -1430,6 +1558,7 @@ async def run() -> None:
     dp.message.register(cmd_dashboard, Command("dashboard"))
     dp.message.register(cmd_help, Command("help"))
     dp.message.register(cmd_killswitch, Command("killswitch"))
+    dp.message.register(cmd_terminate_nexus_now, Command("terminate_nexus_now"))
     dp.message.register(cmd_godmode_on, Command("godmode_on"))
     dp.message.register(cmd_godmode_off, Command("godmode_off"))
     dp.message.register(cmd_incubator, Command("incubator"))
@@ -1447,6 +1576,7 @@ async def run() -> None:
     dp.callback_query.register(handle_panic_stop,        F.data == "panic_stop")
     dp.callback_query.register(handle_panic_confirm,     F.data == "panic_confirm")
     dp.callback_query.register(handle_panic_cancel,      F.data == "panic_cancel")
+    dp.callback_query.register(handle_launch_moltbot,    F.data == "launch_moltbot")
 
     # V2 Hebrew menu callbacks
     dp.callback_query.register(handle_menu_stats,  F.data == "menu_stats")

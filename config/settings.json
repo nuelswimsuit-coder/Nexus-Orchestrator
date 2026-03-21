@@ -1,4 +1,5 @@
 {
   "ENVIRONMENT": "PRODUCTION",
-  "PAPER_TRADING": false
+  "PAPER_TRADING": true,
+  "SIMULATION_MODE": true
 }

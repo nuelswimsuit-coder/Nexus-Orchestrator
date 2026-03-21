@@ -66,6 +66,41 @@ export interface ClusterStatusResponse {
   timestamp: string;
 }
 
+/** GET /api/cluster/health — fleet grid + swarm tail + target heatmap */
+export interface ClusterHealthNode {
+  node_id: string;
+  role: NodeRole;
+  online: boolean;
+  status: string;
+  probe_latency_ms: number;
+  cpu_percent: number;
+  ram_used_mb: number;
+  active_jobs: number;
+  last_seen: string;
+  local_ip?: string;
+  cpu_model?: string;
+  gpu_model?: string;
+  ram_total_mb?: number;
+  os_info?: string;
+  display_label: string;
+}
+
+export interface TargetHeatCell {
+  id: string;
+  label: string;
+  intensity: number;
+}
+
+export interface ClusterHealthResponse {
+  redis_ok: boolean;
+  redis_ping_ms: number | null;
+  nodes: ClusterHealthNode[];
+  workers_online: number;
+  swarm_activity: string[];
+  targets: TargetHeatCell[];
+  timestamp: string;
+}
+
 export interface HitlPendingItem {
   request_id: string;
   task_id: string;
@@ -132,7 +167,88 @@ export function forceRunTask(
   });
 }
 
+/** Full NEXUS kill-switch — see `nexus.shared.kill_switch` */
+export async function postFullKillSwitch(opts: {
+  confirmPhrase: string;
+  evacuate?: boolean;
+  authToken?: string;
+}): Promise<Record<string, unknown>> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (opts.authToken) headers["X-Nexus-Kill-Auth"] = opts.authToken;
+  const res = await fetch(`${API_BASE}/api/system/kill-switch`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      confirm: opts.confirmPhrase,
+      evacuate: !!opts.evacuate,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`API ${res.status}: ${body}`);
+  }
+  return res.json() as Promise<Record<string, unknown>>;
+}
+
 // ── Business / Operational Intelligence ──────────────────────────────────────
+
+export interface FleetGroupAssetRow {
+  group_id: string;
+  group_name: string;
+  member_count: number;
+  premium_count: number;
+  owner_session: string | null;
+  status: string;
+  last_automation: string | null;
+}
+
+/** Staged-session Telethon mapper — reach & premium density per account */
+export interface MapperFleetSessionRow {
+  session_id: string;
+  session_label: string;
+  phone: string | null;
+  total_groups: number;
+  total_reach: number;
+  premium_density: number | null;
+  mapper_status: string;
+}
+
+export interface FleetAssetsResponse {
+  groups: FleetGroupAssetRow[];
+  db_available: boolean;
+  queried_at: string;
+  mapper_fleet?: MapperFleetSessionRow[];
+  mapper_available?: boolean;
+  mapper_generated_at?: string | null;
+}
+
+export interface WarRoomIntelResponse {
+  updated_at: string;
+  master_confidence_pct: number;
+  openclaw_sentiment: number;
+  top_alpha_channel: string;
+  paper: {
+    virtual_pnl: number;
+    wins: number;
+    losses: number;
+    total_trades: number;
+    win_rate: number;
+  };
+  real_pnl_usd: number;
+  sim_pnl_usd: number;
+  race_to_1000_pct: number;
+  race_target_profit_usd: number;
+  kelly_fraction: number;
+  swarm_workers_seen: number;
+  swarm_whale_hits: number;
+  aggressive_strike: boolean;
+  strike_reinvest_pct: number;
+  sentiment_heatmap: number[][];
+}
+
+export function getWarRoomIntel(): Promise<WarRoomIntelResponse> {
+  return apiFetch<WarRoomIntelResponse>("/api/business/war-room");
+}
 
 export interface BusinessStatsResponse {
   // Groups & targets
@@ -853,8 +969,32 @@ export function getArbitrageChartData(): Promise<ArbitrageChartDataResponse> {
 export interface PanicStateResponse {
   panic:        boolean;
   activated_at?: string;
+  /** Wallet brake / kill-switch metadata may use ``ts`` instead of ``activated_at``. */
+  ts?:          string;
   reason?:       string;
   activated_by?: string;
+}
+
+/** GET /api/system/power-profile */
+export interface PowerProfileResponse {
+  ok: boolean;
+  source?: string;
+  effective_mode?: string;
+  display_label?: string;
+  cpu_cap_percent?: number;
+  affinity_cores?: number[];
+  affinity_applied?: boolean;
+  logical_cores?: number | null;
+  override?: string;
+  scheduled_night?: boolean;
+  idle_dropped_to_active?: boolean;
+  seconds_since_input?: number | null;
+  poly5m_cycle_seconds?: number;
+  master_pid?: number | null;
+  updated_at?: string | null;
+  next_shift_local?: string;
+  seconds_until_shift?: number;
+  message?: string;
 }
 
 export interface PanicEngageResponse {

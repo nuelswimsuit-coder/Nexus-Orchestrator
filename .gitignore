@@ -1,4 +1,5 @@
 .env
+config/night_watch_manifest.json
 __pycache__/
 *.py[cod]
 *.egg-info/

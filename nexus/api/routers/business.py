@@ -22,14 +22,21 @@ from __future__ import annotations
 
 import json
 import uuid
+from typing import Any
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
-from nexus.api.services.telefix_bridge import get_operational_stats, get_windowed_stats
+from nexus.api.services.telefix_bridge import (
+    get_fleet_group_assets,
+    get_operational_stats,
+    get_windowed_stats,
+)
+from nexus.shared.reporting import load_mapper_fleet_snapshot
 from nexus.master.services.decision_engine import run_decision_engine
 from nexus.master.services.reporting import LAST_REPORT_KEY, REPORT_SENDING_KEY
+from nexus.master.services.strategy_brain import WAR_ROOM_KEY, compute_war_room_payload
 from nexus.shared.schemas import NodeHeartbeat
 from nexus.worker.tasks.auto_scrape import SCRAPE_STATUS_KEY, SCRAPE_STATUS_TTL
 
@@ -70,6 +77,81 @@ class BusinessStatsResponse(BaseModel):
 
 
 # ── Endpoint ───────────────────────────────────────────────────────────────────
+
+# ── Fleet intelligence (group asset table) ────────────────────────────────────
+
+
+class FleetGroupAssetRow(BaseModel):
+    group_id: str
+    group_name: str
+    member_count: int
+    premium_count: int
+    owner_session: str | None
+    status: str
+    last_automation: str | None
+
+
+class MapperFleetSessionRow(BaseModel):
+    """Per-session power stats from the Telethon account-mapper (staged sessions)."""
+
+    session_id: str
+    session_label: str = ""
+    phone: str | None = None
+    total_groups: int = 0
+    total_reach: int = 0
+    premium_density: float | None = None
+    mapper_status: str = "ok"
+
+
+class FleetAssetsResponse(BaseModel):
+    groups: list[FleetGroupAssetRow]
+    db_available: bool
+    queried_at: str
+    mapper_fleet: list[MapperFleetSessionRow] = []
+    mapper_available: bool = False
+    mapper_generated_at: str | None = None
+
+
+@router.get(
+    "/fleet-assets",
+    response_model=FleetAssetsResponse,
+    summary="Managed Telegram groups with scraped member and premium counts",
+)
+async def get_fleet_assets() -> FleetAssetsResponse:
+    """
+    Read-only snapshot for the Fleet Intelligence dashboard: each row is a
+    managed group with linked scraped_users aggregates (matched by title,
+    username, or group id in source_group).
+    """
+    raw = await get_fleet_group_assets()
+    snap = load_mapper_fleet_snapshot()
+    mapper_rows: list[MapperFleetSessionRow] = []
+    for r in snap.get("sessions") or []:
+        if not isinstance(r, dict):
+            continue
+        pd = r.get("premium_density")
+        mapper_rows.append(
+            MapperFleetSessionRow(
+                session_id=str(r.get("session_id", "")),
+                session_label=str(r.get("session_label", "")),
+                phone=r.get("phone"),
+                total_groups=int(r.get("total_groups") or 0),
+                total_reach=int(r.get("total_reach") or 0),
+                premium_density=float(pd) if pd is not None else None,
+                mapper_status=str(r.get("mapper_status", "ok")),
+            )
+        )
+    gen_at = snap.get("generated_at")
+    gen_at_str = str(gen_at) if gen_at else None
+    return FleetAssetsResponse(
+        groups=[FleetGroupAssetRow(**g) for g in raw["groups"]],
+        db_available=raw["db_available"],
+        queried_at=raw["queried_at"],
+        mapper_fleet=mapper_rows,
+        mapper_available=bool(snap.get("mapper_available")),
+        mapper_generated_at=gen_at_str,
+    )
+
 
 @router.get(
     "/stats",
@@ -665,7 +747,12 @@ async def force_run_task(body: ForceRunRequest, request: Request) -> ForceRunRes
     from arq.connections import RedisSettings
 
     from nexus.shared.config import settings as nexus_settings
-    from nexus.shared.schemas import TaskPayload
+    from nexus.shared.schemas import TaskPayload, WorkerCapability
+
+    required_caps: list[str] = []
+    if body.task_type in {"scraper.openclaw", "openclaw.browser_scrape"}:
+        # Browser-heavy OpenClaw jobs are pinned to the 95% power Windows worker.
+        required_caps = [WorkerCapability.WINDOWS]
 
     task_id = str(uuid.uuid4())
     task = TaskPayload(
@@ -674,6 +761,7 @@ async def force_run_task(body: ForceRunRequest, request: Request) -> ForceRunRes
         parameters={**body.task_params, "force": True},
         project_id="telefix",
         priority=1,   # highest priority
+        required_capabilities=required_caps,
     )
 
     try:
@@ -858,3 +946,25 @@ async def supervisor_manual_reset(
         success=False,
         message=f"מעבד (Worker) '{worker_name}' לא נמצא או אין פקודת הפעלה מחדש.",
     )
+
+
+# ── War Room — Master Trader dashboard intel ───────────────────────────────────
+
+
+@router.get(
+    "/war-room",
+    summary="Master confidence, race-to-1000%, sentiment heatmap",
+)
+async def get_war_room(request: Request) -> dict[str, Any]:
+    """
+    Prefer cached ``nexus:war_room:intel`` from StrategyBrainService; if
+    missing or stale, compute a fresh snapshot (OpenClaw + paper stats).
+    """
+    redis = request.app.state.redis
+    raw = await redis.get(WAR_ROOM_KEY)
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+    return await compute_war_room_payload(redis)

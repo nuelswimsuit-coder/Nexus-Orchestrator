@@ -1,0 +1,43 @@
+{
+  "_comment": "Copy to night_watch_manifest.json (gitignored) or set NIGHT_WATCH_MANIFEST. Four groups + four primary Telethon session paths (no .session suffix).",
+  "primary_actor_session_paths": [
+    "/path/to/telefix/sessions/actor_1",
+    "/path/to/telefix/sessions/actor_2",
+    "/path/to/telefix/sessions/actor_3",
+    "/path/to/telefix/sessions/actor_4"
+  ],
+  "groups": [
+    {
+      "group_id": -1000000000001,
+      "group_key": "-1000000000001",
+      "group_title": "Group A",
+      "timezone": "UTC",
+      "engagement_mode": "high",
+      "extra_sessions": []
+    },
+    {
+      "group_id": -1000000000002,
+      "group_key": "-1000000000002",
+      "group_title": "Group B",
+      "timezone": "UTC",
+      "engagement_mode": "high",
+      "extra_sessions": []
+    },
+    {
+      "group_id": -1000000000003,
+      "group_key": "-1000000000003",
+      "group_title": "Group C",
+      "timezone": "UTC",
+      "engagement_mode": "high",
+      "extra_sessions": []
+    },
+    {
+      "group_id": -1000000000004,
+      "group_key": "-1000000000004",
+      "group_title": "Group D",
+      "timezone": "UTC",
+      "engagement_mode": "high",
+      "extra_sessions": []
+    }
+  ]
+}

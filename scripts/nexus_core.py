@@ -12,6 +12,7 @@ with Ctrl-C (SIGINT).
 
 from __future__ import annotations
 
+import argparse
 import os
 import runpy
 import socket
@@ -27,6 +28,17 @@ BASE_DIR = Path(__file__).resolve().parent
 API_SCRIPT = BASE_DIR / "start_api.py"
 BOT_SCRIPT = BASE_DIR / "start_telegram_bot.py"
 WORKER_SCRIPT = BASE_DIR / "start_worker.py"
+MASTER_NODE_ID = "master-hybrid-node"
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Start Nexus master-hybrid core services")
+    parser.add_argument(
+        "--master-ip",
+        default=os.getenv("MASTER_IP", "127.0.0.1"),
+        help="Redis host/IP for local and remote workers (default: 127.0.0.1)",
+    )
+    return parser.parse_args()
 
 
 def _run_script(script_path: str, env_overrides: dict[str, str] | None = None) -> None:
@@ -76,17 +88,23 @@ def _check_redis_socket(host: str = "127.0.0.1", port: int = 6379) -> bool:
 
 
 def main() -> None:
+    args = _parse_args()
+    master_ip = (args.master_ip or "127.0.0.1").strip()
     missing = [p for p in (API_SCRIPT, BOT_SCRIPT, WORKER_SCRIPT) if not p.exists()]
     if missing:
         for path in missing:
             print(f"[nexus_core] Missing required script: {path}")
         sys.exit(1)
-    if not _check_redis_socket():
-        print("\033[1m[!] Redis is unreachable. Run 'wsl service redis-server start'\033[0m")
+    if not _check_redis_socket(host=master_ip):
+        print(
+            f"\033[1m[!] Redis is unreachable at {master_ip}:6379. "
+            "Run 'wsl service redis-server start' (or verify host).\033[0m"
+        )
 
     # Master-hybrid identity is inherited by API/Bot and enforced explicitly
     # for the colocated worker process below.
-    os.environ["NODE_ID"] = "master-hybrid-node"
+    os.environ["NODE_ID"] = MASTER_NODE_ID
+    os.environ["MASTER_IP"] = master_ip
 
     # Apply node-level resource controls from node_config.json.
     node_cfg = load_node_config()
@@ -105,9 +123,10 @@ def main() -> None:
             args=(
                 str(WORKER_SCRIPT),
                 {
-                    "NODE_ID": "master-hybrid-node",
-                    "REDIS_URL": "redis://127.0.0.1:6379/0",
-                    "REDIS_HOST": "127.0.0.1",
+                    "NODE_ID": MASTER_NODE_ID,
+                    "MASTER_IP": master_ip,
+                    "REDIS_URL": f"redis://{master_ip}:6379/0",
+                    "REDIS_HOST": master_ip,
                 },
             ),
             name="nexus-local-worker",

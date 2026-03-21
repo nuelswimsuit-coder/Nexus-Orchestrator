@@ -15,10 +15,10 @@ all three can run simultaneously on this machine.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import pathlib
 import sys
-import asyncio
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -31,8 +31,19 @@ elif os.environ.get("ENVIRONMENT", "PRODUCTION").upper() == "PRODUCTION":
         pass
 
 import uvicorn
+from dotenv import load_dotenv
 
-from nexus.shared.config import settings
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+load_dotenv(_PROJECT_ROOT / ".env", override=False)
+
+from nexus.shared.redis_util import apply_redis_url_to_environment  # noqa: E402
+
+apply_redis_url_to_environment()
+
+from nexus.shared.config import settings  # noqa: E402
 
 
 def _patch_redis_for_environment() -> None:

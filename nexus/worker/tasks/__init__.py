@@ -18,3 +18,30 @@ try:
     from nexus.worker.tasks import sentinel as _sentinel  # noqa: F401
 except Exception:
     pass
+
+# Moltbot integration — Telegram-heavy scrape/action runner
+try:
+    from nexus.worker.tasks import moltbot as _moltbot  # noqa: F401
+except Exception:
+    pass
+
+try:
+    from nexus.worker.tasks import polymarket_bot as _polymarket_bot  # noqa: F401
+except Exception:
+    pass
+
+# Account mapper — staged Telethon sessions → channel/group/bot asset map
+try:
+    from nexus.worker.tasks import account_mapper as _account_mapper  # noqa: F401
+except Exception:
+    pass
+
+try:
+    from nexus.worker.tasks import group_warmer as _group_warmer  # noqa: F401
+except Exception:
+    pass
+
+try:
+    from nexus.worker.tasks import retention_monitor as _retention_monitor  # noqa: F401
+except Exception:
+    pass

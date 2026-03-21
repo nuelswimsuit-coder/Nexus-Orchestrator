@@ -1,8 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import { motion } from "framer-motion";
 import { useNexus } from "@/lib/nexus-context";
 import { useStealth } from "@/lib/stealth";
+import CyberGrid from "@/components/CyberGrid";
+import FleetIntelligence from "@/components/FleetIntelligence";
 import PageTransition from "@/components/PageTransition";
 import type { NodeStatus } from "@/lib/api";
 
@@ -140,10 +143,100 @@ function NodeCard({ node }: { node: NodeStatus }) {
   );
 }
 
+// ── Tabs + glass section (match dashboard cyber aesthetic) ─────────────────────
+
+type FleetTab = "intelligence" | "hardware";
+
+function FleetTabBar({
+  active,
+  onChange,
+  stealth,
+}: {
+  active: FleetTab;
+  onChange: (t: FleetTab) => void;
+  stealth: boolean;
+}) {
+  const btn = (id: FleetTab, label: string) => (
+    <button
+      type="button"
+      onClick={() => onChange(id)}
+      style={{
+        fontFamily: "var(--font-mono)",
+        fontSize: "0.65rem",
+        fontWeight: 800,
+        letterSpacing: "0.14em",
+        textTransform: "uppercase",
+        padding: "0.5rem 1rem",
+        borderRadius: "10px",
+        border:
+          active === id
+            ? stealth
+              ? "1px solid #1e293b"
+              : "1px solid rgba(0, 180, 255, 0.45)"
+            : "1px solid transparent",
+        background:
+          active === id
+            ? stealth
+              ? "#0f172a"
+              : "linear-gradient(160deg, rgba(0, 24, 48, 0.5), rgba(5, 10, 22, 0.85))"
+            : "transparent",
+        color: stealth ? "#334155" : active === id ? "#e8f2ff" : "#64748b",
+        cursor: "pointer",
+        boxShadow:
+          active === id && !stealth ? "0 0 20px rgba(0, 180, 255, 0.12)" : "none",
+        transition: "all 0.2s",
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1.25rem" }}>
+      {btn("intelligence", "◇ Fleet intelligence")}
+      {btn("hardware", "🖥 Hardware mesh")}
+    </div>
+  );
+}
+
+function GlassFleetSection({ children }: { children: ReactNode }) {
+  return (
+    <div
+      style={{
+        background: "rgba(5, 10, 22, 0.72)",
+        backdropFilter: "blur(28px) saturate(1.6)",
+        WebkitBackdropFilter: "blur(28px) saturate(1.6)",
+        border: "1.5px solid rgba(0, 180, 255, 0.18)",
+        borderRadius: "18px",
+        padding: "1.75rem",
+        boxShadow: `0 0 0 1px rgba(0,180,255,0.07) inset,
+          0 8px 40px rgba(0,0,0,0.60),
+          0 0 24px rgba(0,180,255,0.06)`,
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          left: "2rem",
+          right: "2rem",
+          height: "1px",
+          background: "linear-gradient(90deg, transparent, rgba(0,180,255,0.30), transparent)",
+          pointerEvents: "none",
+        }}
+      />
+      {children}
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function FleetPage() {
   const { cluster, clusterLoading } = useNexus();
   const { stealth } = useStealth();
+  const [tab, setTab] = useState<FleetTab>("intelligence");
 
   const nodes = cluster?.nodes ?? [];
   const sorted = [...nodes].sort((a, b) =>
@@ -151,33 +244,137 @@ export default function FleetPage() {
   );
 
   return (
-    <PageTransition>
-      <div style={{ maxWidth: "1400px", margin: "0 auto", padding: "2rem 1.5rem" }}>
-        <div style={{ marginBottom: "1.5rem" }}>
-          <h1 style={{ fontFamily: "var(--font-mono)", fontSize: "1.1rem", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: stealth ? "#334155" : "#f1f5f9", marginBottom: "0.25rem" }}>
-            🖥️ Fleet Monitor
-          </h1>
-          <p style={{ fontFamily: "var(--font-mono)", fontSize: "0.75rem", color: "#475569" }}>
-            Hardware health for all nodes — Master + Workers
-          </p>
-        </div>
-
-        {clusterLoading && !cluster && (
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.85rem", color: "#334155", padding: "3rem", textAlign: "center" }}>
-            Loading cluster data…
+    <>
+      <CyberGrid opacity={0.45} speed={0.85} />
+      <PageTransition>
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+          style={{
+            position: "relative",
+            zIndex: 1,
+            maxWidth: "1400px",
+            margin: "0 auto",
+            padding: "2rem 1.5rem 3rem",
+            display: "flex",
+            flexDirection: "column",
+            gap: "1.75rem",
+          }}
+        >
+          <div>
+            <h1
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: "1.1rem",
+                fontWeight: 700,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                color: stealth ? "#334155" : "#f1f5f9",
+                marginBottom: "0.25rem",
+              }}
+            >
+              Fleet command
+            </h1>
+            <p style={{ fontFamily: "var(--font-mono)", fontSize: "0.75rem", color: "#475569", margin: 0 }}>
+              Telegram group intelligence and worker hardware topology
+            </p>
           </div>
-        )}
 
-        {nodes.length === 0 && !clusterLoading && (
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.85rem", color: "#334155", padding: "3rem", textAlign: "center", border: "1px dashed #1e293b", borderRadius: "12px" }}>
-            No nodes reporting heartbeats. Start the master process.
-          </div>
-        )}
+          <FleetTabBar active={tab} onChange={setTab} stealth={stealth} />
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "1.5rem" }}>
-          {sorted.map(node => <NodeCard key={node.node_id} node={node} />)}
-        </div>
-      </div>
-    </PageTransition>
+          {tab === "intelligence" && (
+            <GlassFleetSection>
+              <div style={{ marginBottom: "1.25rem" }}>
+                <span
+                  style={{
+                    fontFamily: "var(--font-sans)",
+                    fontSize: "1.25rem",
+                    fontWeight: 800,
+                    letterSpacing: "0.04em",
+                    textTransform: "uppercase",
+                    color: stealth ? "#334155" : "#e8f2ff",
+                  }}
+                >
+                  Asset matrix
+                </span>
+                <p
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "0.62rem",
+                    color: "#64748b",
+                    letterSpacing: "0.06em",
+                    margin: "0.35rem 0 0 0",
+                  }}
+                >
+                  Session roster (phone, status, activity, daily volume) · Group matrix — search filters both; add session via wizard
+                </p>
+              </div>
+              <FleetIntelligence />
+            </GlassFleetSection>
+          )}
+
+          {tab === "hardware" && (
+            <GlassFleetSection>
+              <h2
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "0.85rem",
+                  fontWeight: 700,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: stealth ? "#334155" : "#94a3b8",
+                  margin: "0 0 1.25rem 0",
+                }}
+              >
+                Worker &amp; master nodes
+              </h2>
+
+              {clusterLoading && !cluster && (
+                <div
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "0.85rem",
+                    color: "#334155",
+                    padding: "3rem",
+                    textAlign: "center",
+                  }}
+                >
+                  Loading cluster data…
+                </div>
+              )}
+
+              {nodes.length === 0 && !clusterLoading && (
+                <div
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "0.85rem",
+                    color: "#334155",
+                    padding: "3rem",
+                    textAlign: "center",
+                    border: "1px dashed #1e293b",
+                    borderRadius: "12px",
+                  }}
+                >
+                  No nodes reporting heartbeats. Start the master process.
+                </div>
+              )}
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))",
+                  gap: "1.5rem",
+                }}
+              >
+                {sorted.map((node) => (
+                  <NodeCard key={node.node_id} node={node} />
+                ))}
+              </div>
+            </GlassFleetSection>
+          )}
+        </motion.div>
+      </PageTransition>
+    </>
   );
 }

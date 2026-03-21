@@ -7,6 +7,7 @@
 # ── Job queue & broker ────────────────────────────────────────────────────────
 arq>=0.26
 redis[hiredis]>=5.0
+fakeredis>=2.23
 
 # ── Config & data contracts ───────────────────────────────────────────────────
 pydantic>=2.7
@@ -15,12 +16,15 @@ python-dotenv>=1.0
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 structlog>=24.1
+rich>=13.7
 
 # ── System monitoring ─────────────────────────────────────────────────────────
 psutil>=6.0
+rich>=13.7
 
 # ── Telegram (MTProto client — worker sessions) ───────────────────────────────
 telethon>=1.36
+PySocks>=1.7.1
 cryptography>=42.0
 Pillow>=10.0
 
@@ -29,6 +33,9 @@ aiogram>=3.20
 
 # ── HTTP client ───────────────────────────────────────────────────────────────
 httpx>=0.27
+
+# ── Binance websocket (Polymarket bot Linux worker) ───────────────────────────
+websockets>=12.0
 
 # ── Async utilities ───────────────────────────────────────────────────────────
 anyio>=4.4
@@ -39,6 +46,9 @@ paramiko>=3.4
 # ── OpenClaw browser scraping (Linux worker only — Phase 19) ─────────────────
 # After installing, run: playwright install chromium
 playwright>=1.44
+
+# ── Binance websocket velocity (poly5m worker feed) ────────────────────────────
+websockets>=12.0
 
 # ── Polymarket CLOB trading (nexus/trading) ───────────────────────────────────
 # Official Polymarket Python CLOB client — order placement, book queries

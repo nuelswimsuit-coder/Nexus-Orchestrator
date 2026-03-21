@@ -22,6 +22,11 @@ enrollments     — id, user_id, target_link, status, timestamp
 settings        — key, value, updated_at
 metrics         — key, value, updated_at
 
+Nexus extension (written by Nexus, not the Telefix bot)
+--------------------------------------------------------
+nexus_fleet_audit — id, run_id, created_at, payload_json
+                    (append-only snapshots of ``FleetAuditResults``)
+
 Session files (on-disk, not in DB)
 -----------------------------------
 The bot stores Telethon session files as JSON under:
@@ -45,7 +50,9 @@ ROI / financial data is derived from:
 from __future__ import annotations
 
 import glob
+import json
 import os
+import time as time_module
 from datetime import datetime, timezone
 from typing import Any
 
@@ -59,6 +66,16 @@ log = structlog.get_logger(__name__)
 _PROJECT_ROOT = r"C:\Users\Yarin\Desktop\Mangement Ahu"
 DB_PATH = os.path.join(_PROJECT_ROOT, "data", "telefix.db")
 SESSIONS_DIR = os.path.join(_PROJECT_ROOT, "sessions")
+
+
+def _telefix_db_path() -> str:
+    """Resolve telefix.db (Desktop layout when available, else legacy Windows path)."""
+    try:
+        from nexus.shared.paths import get_telefix_path
+
+        return str(get_telefix_path("Mangement Ahu") / "data" / "telefix.db")
+    except Exception:
+        return DB_PATH
 
 
 # ── Stats model ────────────────────────────────────────────────────────────────
@@ -343,3 +360,180 @@ async def get_windowed_stats(window_minutes: int = 1440) -> dict[str, Any]:
         result["new_pipeline_users_window"] = 0
 
     return result
+
+
+# ── Fleet intelligence (managed groups × scraped_users) ────────────────────────
+
+
+def _parse_last_automation_ts(val: Any) -> float | None:
+    """Best-effort parse of managed_groups.last_automation to Unix seconds."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        t = float(val)
+        return t / 1000.0 if t > 1e12 else t
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        iso = s.replace("Z", "+00:00") if s.endswith("Z") else s
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        try:
+            return float(s)
+        except Exception:
+            return None
+
+
+def _fleet_status_from_automation(last_automation: Any) -> str:
+    ts = _parse_last_automation_ts(last_automation)
+    if ts is None:
+        return "MONITORING"
+    age_s = time_module.time() - ts
+    if age_s < 3 * 86400:
+        return "ACTIVE"
+    if age_s < 14 * 86400:
+        return "STALE"
+    return "DORMANT"
+
+
+async def get_fleet_group_assets() -> dict[str, Any]:
+    """
+    Per managed group: display name, member/premium counts from scraped_users,
+    owner session, and derived status from last_automation.
+
+    Joins scraped_users on title (exact, case-insensitive), username substring,
+    or Telegram group id appearing in source_group.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    db_file = _telefix_db_path()
+    if not os.path.exists(db_file):
+        return {"groups": [], "db_available": False, "queried_at": now}
+
+    sql = """
+        SELECT
+          mg.group_id,
+          COALESCE(
+            NULLIF(TRIM(mg.title), ''),
+            NULLIF(TRIM(mg.username), ''),
+            CAST(mg.group_id AS TEXT)
+          ) AS group_name,
+          mg.title AS raw_title,
+          mg.username AS raw_username,
+          mg.owner_session,
+          mg.last_automation,
+          COUNT(su.user_id) AS member_count,
+          SUM(
+            CASE
+              WHEN su.user_id IS NULL THEN 0
+              WHEN CAST(COALESCE(su.is_premium, 0) AS INTEGER) != 0 THEN 1
+              ELSE 0
+            END
+          ) AS premium_count
+        FROM managed_groups mg
+        LEFT JOIN scraped_users su ON (
+          (
+            LENGTH(TRIM(COALESCE(mg.title, ''))) > 0
+            AND LOWER(TRIM(COALESCE(su.source_group, ''))) = LOWER(TRIM(COALESCE(mg.title, '')))
+          )
+          OR (
+            mg.username IS NOT NULL
+            AND TRIM(mg.username) != ''
+            AND LENGTH(TRIM(COALESCE(su.source_group, ''))) > 0
+            AND INSTR(
+              LOWER(REPLACE(COALESCE(su.source_group, ''), 'https://t.me/', '')),
+              LOWER(REPLACE(TRIM(COALESCE(mg.username, '')), '@', ''))
+            ) > 0
+          )
+          OR (
+            INSTR(COALESCE(su.source_group, ''), CAST(mg.group_id AS TEXT)) > 0
+          )
+        )
+        GROUP BY mg.group_id, mg.title, mg.username, mg.owner_session, mg.last_automation
+    """
+
+    try:
+        uri = f"file:{db_file.replace(chr(92), '/')}?mode=ro"
+        async with aiosqlite.connect(uri, uri=True, timeout=5) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA busy_timeout = 5000")
+            async with db.execute(sql) as cur:
+                rows = await cur.fetchall()
+
+        groups: list[dict[str, Any]] = []
+        for r in rows:
+            gid = r["group_id"]
+            gid_s = str(int(gid)) if isinstance(gid, (int, float)) and float(gid).is_integer() else str(gid)
+            mcount = int(r["member_count"] or 0)
+            pcount = int(r["premium_count"] or 0)
+            last_auto = r["last_automation"]
+            groups.append(
+                {
+                    "group_id": gid_s,
+                    "group_name": (r["group_name"] or gid_s).strip() or gid_s,
+                    "member_count": mcount,
+                    "premium_count": pcount,
+                    "owner_session": r["owner_session"],
+                    "status": _fleet_status_from_automation(last_auto),
+                    "last_automation": None if last_auto is None else str(last_auto),
+                }
+            )
+
+        groups.sort(key=lambda x: x["member_count"], reverse=True)
+
+        log.info("fleet_assets_queried", rows=len(groups))
+        return {"groups": groups, "db_available": True, "queried_at": now}
+
+    except Exception as exc:
+        log.error("fleet_assets_error", error=str(exc))
+        return {"groups": [], "db_available": False, "queried_at": now}
+
+
+async def append_fleet_audit_run(payload: dict[str, Any]) -> bool:
+    """
+    Append a ``FleetAuditResults`` snapshot to Nexus-owned table ``nexus_fleet_audit``.
+
+    Uses a normal SQLite connection (not read-only) so the Telefix bot and Nexus
+    can coexist; WAL mode allows concurrent reads from the bot while we INSERT.
+    """
+    path = _telefix_db_path()
+    if not os.path.exists(path):
+        log.warning("fleet_audit_db_missing", path=path)
+        return False
+
+    run_id = str(payload.get("run_id", ""))
+    scanned = payload.get("scanned_at")
+    if isinstance(scanned, dict):
+        scanned = json.dumps(scanned)
+    created_at = str(scanned or datetime.now(timezone.utc).isoformat())
+    blob = json.dumps(payload, default=str)
+
+    try:
+        async with aiosqlite.connect(path, timeout=10) as db:
+            await db.execute("PRAGMA busy_timeout = 8000")
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS nexus_fleet_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT INTO nexus_fleet_audit (run_id, created_at, payload_json)
+                VALUES (?, ?, ?)
+                """,
+                (run_id, created_at, blob),
+            )
+            await db.commit()
+        log.info("fleet_audit_row_saved", run_id=run_id)
+        return True
+    except Exception as exc:
+        log.error("fleet_audit_save_error", error=str(exc))
+        return False

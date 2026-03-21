@@ -6,6 +6,7 @@ import structlog
 
 from nexus.trading.config import PAPER_TRADING_AMOUNT_USD
 from nexus.trading.polymarket_client import KILL_SWITCH_BALANCE_USD, PolymarketClient, place_order
+from nexus.trading.runtime_mode import effective_paper_trading
 
 log = structlog.get_logger(__name__)
 
@@ -28,22 +29,25 @@ async def execute_live_trade(
     """
     Execute a live trade only after a strict balance pre-check.
     """
-    balance_usd = await get_live_balance_usd()
     min_required = max(KILL_SWITCH_BALANCE_USD, PAPER_TRADING_AMOUNT_USD)
-
-    if balance_usd < min_required:
-        log.error(
-            "live_trade_execution_blocked_low_balance",
-            signal=signal,
-            balance_usd=round(balance_usd, 2),
-            min_required_usd=round(min_required, 2),
-        )
-        return {
-            "executed": False,
-            "status": "blocked_low_balance",
-            "balance_usd": round(balance_usd, 2),
-            "min_required_usd": round(min_required, 2),
-        }
+    paper = await effective_paper_trading(redis)
+    if paper:
+        balance_usd = 100.0
+    else:
+        balance_usd = await get_live_balance_usd()
+        if balance_usd < min_required:
+            log.error(
+                "live_trade_execution_blocked_low_balance",
+                signal=signal,
+                balance_usd=round(balance_usd, 2),
+                min_required_usd=round(min_required, 2),
+            )
+            return {
+                "executed": False,
+                "status": "blocked_low_balance",
+                "balance_usd": round(balance_usd, 2),
+                "min_required_usd": round(min_required, 2),
+            }
 
     result = await place_order(
         signal=signal,

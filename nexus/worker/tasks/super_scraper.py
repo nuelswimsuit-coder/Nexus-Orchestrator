@@ -56,6 +56,12 @@ import aiosqlite
 import psutil
 import structlog
 
+from nexus.shared.fleet_redis import (
+    fleet_mapper_record_group,
+    get_fleet_counter_snapshot,
+    publish_fleet_scan_event,
+)
+from nexus.shared.schemas import FleetScanEvent, FleetScanPhase
 from nexus.worker.task_registry import registry
 from nexus.worker.tasks.auto_scrape import TELEFIX_DB, TELEFIX_PROJECT
 
@@ -106,6 +112,23 @@ async def _store_candidates(redis: Any, candidates: list[dict]) -> None:
         SUPER_CANDIDATES_KEY,
         json.dumps(candidates),
         ex=SUPER_STATUS_TTL,
+    )
+
+
+async def _fleet_super_emit(redis: Any, phase: FleetScanPhase, detail: str) -> None:
+    """Push fleet scan phase to Redis for the dashboard SSE stream."""
+    if redis is None:
+        return
+    snap = await get_fleet_counter_snapshot(redis)
+    await publish_fleet_scan_event(
+        redis,
+        FleetScanEvent(
+            phase=phase,
+            task_type="telegram.super_scrape",
+            detail=detail,
+            managed_members_total=snap["total_managed_members"],
+            premium_members_total=snap["total_premium_members"],
+        ),
     )
 
 
@@ -267,6 +290,7 @@ async def super_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
         )
         await _write_status(redis, "postponed",
             f"{reason} — postponed {POSTPONE_DELAY_S//60} min")
+        await _fleet_super_emit(redis, FleetScanPhase.ENDED, f"postponed: {reason}")
         log.info("super_scraper_postponed", reason=reason)
         return {
             "status": "postponed",
@@ -302,6 +326,29 @@ async def super_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
 
     log.info("super_scraper_discovered", count=len(discovered))
 
+    mtot, ptot = 0, 0
+    if redis is not None:
+        for g in discovered:
+            mc = int(g.get("member_count") or 0)
+            pc = int(g.get("premium_count") or g.get("premium_members") or 0)
+            mtot, ptot = await fleet_mapper_record_group(
+                redis,
+                managed_members=mc,
+                premium_members=pc,
+            )
+        if discovered:
+            await publish_fleet_scan_event(
+                redis,
+                FleetScanEvent(
+                    phase=FleetScanPhase.PROGRESS,
+                    task_type="telegram.super_scrape",
+                    detail=f"Mapper indexed {len(discovered)} group(s)",
+                    groups_found_delta=len(discovered),
+                    managed_members_total=mtot,
+                    premium_members_total=ptot,
+                ),
+            )
+
     # ── 5. New niche detection ────────────────────────────────────────────────
     existing_links = await _get_existing_group_links()
     new_groups = [
@@ -312,6 +359,11 @@ async def super_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
     if not new_groups:
         await _write_status(redis, "idle",
             f"No new groups found across {len(niches)} niche(s)")
+        await _fleet_super_emit(
+            redis,
+            FleetScanPhase.ENDED,
+            f"No new groups across {len(niches)} niche(s)",
+        )
         return {
             "status": "no_new_groups",
             "niches_scanned": len(niches),
@@ -360,6 +412,11 @@ async def super_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
 
         await _write_status(redis, "awaiting_approval",
             f"{len(needs_approval)} new group(s) pending approval")
+        await _fleet_super_emit(
+            redis,
+            FleetScanPhase.ENDED,
+            f"Awaiting HITL approval for {len(needs_approval)} group(s)",
+        )
 
         # Dispatch scrapes for already-approved groups while waiting
         dispatched = len(already_approved)
@@ -383,6 +440,11 @@ async def super_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
 
     await _write_status(redis, "completed",
         f"Dispatched {dispatched} scrape(s) from {len(niches)} niche(s) in {duration:.0f}s")
+    await _fleet_super_emit(
+        redis,
+        FleetScanPhase.ENDED,
+        f"Completed: dispatched {dispatched} scrape(s) in {duration:.0f}s",
+    )
 
     return {
         "status": "completed",

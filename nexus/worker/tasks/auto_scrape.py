@@ -58,6 +58,11 @@ import aiosqlite
 import psutil
 import structlog
 
+from nexus.shared.fleet_redis import (
+    get_fleet_counter_snapshot,
+    publish_fleet_scan_event,
+)
+from nexus.shared.schemas import FleetScanEvent, FleetScanPhase
 from nexus.worker.task_registry import registry
 
 log = structlog.get_logger(__name__)
@@ -89,6 +94,23 @@ async def _write_scrape_status(redis: Any, status: str, detail: str = "") -> Non
     }
     import json
     await redis.set(SCRAPE_STATUS_KEY, json.dumps(payload), ex=SCRAPE_STATUS_TTL)
+
+
+async def _fleet_auto_emit(redis: Any, phase: FleetScanPhase, detail: str) -> None:
+    """Mirror scrape lifecycle to ``nexus:fleet:scan`` for the dashboard progress bar."""
+    if redis is None:
+        return
+    snap = await get_fleet_counter_snapshot(redis)
+    await publish_fleet_scan_event(
+        redis,
+        FleetScanEvent(
+            phase=phase,
+            task_type="telegram.auto_scrape",
+            detail=detail,
+            managed_members_total=snap["total_managed_members"],
+            premium_members_total=snap["total_premium_members"],
+        ),
+    )
 
 
 async def _get_source_groups() -> list[dict[str, Any]]:
@@ -237,6 +259,11 @@ async def auto_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
             f"CPU {cpu_now:.0f}% > {cpu_threshold:.0f}%"
             f" — rescheduled in {RESCHEDULE_DELAY_S//60} min",
         )
+        await _fleet_auto_emit(
+            redis,
+            FleetScanPhase.ENDED,
+            f"low_resources: CPU {cpu_now:.0f}%",
+        )
         return {
             "status": "low_resources",
             "users_saved": 0,
@@ -258,6 +285,7 @@ async def auto_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
     if not candidates:
         log.info("auto_scrape_no_candidates")
         await _write_scrape_status(redis, "idle", "No candidate groups to scrape")
+        await _fleet_auto_emit(redis, FleetScanPhase.ENDED, "No candidate groups to scrape")
         return {
             "status": "no_candidates",
             "users_saved": 0,
@@ -276,6 +304,11 @@ async def auto_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
         "running",
         f"Scraping {len(candidates)} group(s): {', '.join(source_links[:3])}"
         + ("..." if len(candidates) > 3 else ""),
+    )
+    await _fleet_auto_emit(
+        redis,
+        FleetScanPhase.PROGRESS,
+        f"Scraping {len(candidates)} group(s)",
     )
 
     # ── 4. Run scraper in subprocess ───────────────────────────────────────────
@@ -296,6 +329,11 @@ async def auto_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
             f"Saved {result['users_saved']} users"
             f" from {len(candidates)} group(s) in {duration:.0f}s",
         )
+        await _fleet_auto_emit(
+            redis,
+            FleetScanPhase.ENDED,
+            f"Scrape completed — {result['users_saved']} users saved",
+        )
         log.info(
             "auto_scrape_completed",
             users_saved=result["users_saved"],
@@ -312,6 +350,11 @@ async def auto_scrape(parameters: dict[str, Any]) -> dict[str, Any]:
         }
     else:
         await _write_scrape_status(redis, "failed", result["error"] or "unknown error")
+        await _fleet_auto_emit(
+            redis,
+            FleetScanPhase.ENDED,
+            f"failed: {(result['error'] or 'unknown')[:200]}",
+        )
         log.error("auto_scrape_failed", error=result["error"], duration_s=duration)
         return {
             "status": "failed",

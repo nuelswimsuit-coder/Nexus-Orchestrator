@@ -49,12 +49,23 @@ from arq.connections import RedisSettings
 
 import nexus.worker.tasks.auto_scrape  # noqa: F401 — registers telegram.auto_scrape
 import nexus.worker.tasks.content_factory  # noqa: F401 — registers telegram.content_factory
+import nexus.worker.tasks.group_warmer  # noqa: F401 — registers swarm.group_warmer
 import nexus.worker.tasks.incubator_spawn  # noqa: F401 — registers nexus.incubator.*
+import nexus.worker.tasks.account_mapper  # noqa: F401 — registers account_mapper.map
+import nexus.worker.tasks.moltbot  # noqa: F401 — registers bot.moltbot
+import nexus.worker.tasks.openclaw  # noqa: F401 — registers scraper.openclaw/openclaw.browser_scrape
+import nexus.worker.tasks.polymarket_bot  # noqa: F401 — trading.polymarket_bot_session
 import nexus.worker.tasks.prediction  # noqa: F401 — registers prediction.cross_exchange
+import nexus.worker.tasks.retention_monitor  # noqa: F401 — retention.guardian.monitor
+import nexus.worker.tasks.staged_session_warmup  # noqa: F401 — registers telegram.run_warmup
 import nexus.worker.tasks.super_scraper  # noqa: F401 — registers telegram.super_scrape
 import nexus.worker.tasks.telegram_adder  # noqa: F401 — registers telegram.auto_add
 from nexus.worker.executor.runner import WORKER_CAPABILITIES, run_task
 from nexus.worker.task_registry import registry  # noqa: F401 — registers built-ins
+from nexus.worker.tasks.poly5m_velocity import (
+    attach_velocity_feed_to_worker_ctx,
+    detach_velocity_feed_from_worker_ctx,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -153,9 +164,12 @@ async def startup(ctx: dict[str, Any]) -> None:
         name="worker_panic_subscriber",
     )
 
+    attach_velocity_feed_to_worker_ctx(ctx)
+
 
 async def shutdown(ctx: dict[str, Any]) -> None:
     """Called once by ARQ when the worker process shuts down cleanly."""
+    await detach_velocity_feed_from_worker_ctx(ctx)
     if task := ctx.get("_panic_task"):
         task.cancel()
         try:
@@ -266,9 +280,13 @@ async def _panic_subscriber(ctx: dict[str, Any]) -> None:
                 if message.get("type") != "message":
                     continue
                 data = message.get("data", "")
-                if data == "TERMINATE":
+                if data in ("TERMINATE", "FORCE_STOP"):
                     ctx["panic"] = True
-                    log.critical("worker_terminate_signal_received", worker_id=ctx.get("worker_id"))
+                    log.critical(
+                        "worker_terminate_signal_received",
+                        worker_id=ctx.get("worker_id"),
+                        signal=data,
+                    )
                 elif data == "RESUME":
                     ctx["panic"] = False
                     log.info("worker_resume_signal_received", worker_id=ctx.get("worker_id"))

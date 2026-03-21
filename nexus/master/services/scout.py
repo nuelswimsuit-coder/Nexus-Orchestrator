@@ -27,7 +27,8 @@ browser-scraping task on the Linux worker for each known project:
   "House of Exhaust"   → google_maps  mode, query="exhaust repair"
   "Management Ahu"     → social_forums mode, query="management ahu bug"
 
-The OpenClaw task runs on the Linux worker (requires_capabilities=["linux-only"])
+The OpenClaw task is routed to the high-power Windows worker
+(requires_capabilities=["windows-only"])
 and writes verified Telegram leads directly into telefix.db.
 
 Redis Keys
@@ -538,7 +539,7 @@ class ScoutService:
         dispatcher: Any | None,
     ) -> str | None:
         """
-        Build and dispatch a single openclaw.browser_scrape task.
+        Build and dispatch a single scraper.openclaw task.
         Returns the task_id on success, None on failure.
         """
         from nexus.shared.schemas import TaskPayload, WorkerCapability
@@ -553,12 +554,12 @@ class ScoutService:
             parameters["location"] = cfg["location"]
 
         task = TaskPayload(
-            task_type="openclaw.browser_scrape",
+            task_type="scraper.openclaw",
             parameters=parameters,
             project_id=cfg["project_id"],
             priority=3,
-            # Must run on the Linux worker — Playwright + headless Chromium
-            required_capabilities=[WorkerCapability.LINUX],
+            # Route browser-heavy OpenClaw jobs to the 95% power Windows node.
+            required_capabilities=[WorkerCapability.WINDOWS],
             approval_context=(
                 f"OpenClaw triggered by Scout (low yield < {LOW_YIELD_THRESHOLD}). "
                 f"Project: {cfg['display_name']} | Mode: {cfg['mode']} | "

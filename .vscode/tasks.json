@@ -15,7 +15,7 @@
     {
       "label": "2. Start Nexus (Optimized)",
       "type": "shell",
-      "command": "python scripts/nexus_lite.py",
+      "command": "python bot.py",
       "isBackground": true,
       "presentation": {
         "clear": true,

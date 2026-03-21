@@ -111,6 +111,15 @@ class TaskPayload(BaseModel):
         description="Human-readable description shown to the approver in the HITL UI",
     )
 
+    # ── ARQ job lifetime (optional) ────────────────────────────────────────────
+    # When set, overrides TASK_DEFAULT_TIMEOUT for this enqueue only (long-running
+    # sessions e.g. Polymarket bot websocket loop on the Linux worker).
+    job_expires_seconds: int | None = Field(
+        default=None,
+        ge=60,
+        description="ARQ _expires for this job; omit to use TASK_DEFAULT_TIMEOUT",
+    )
+
     model_config = {"frozen": True}
 
     def model_dump_for_wire(self) -> dict[str, Any]:
@@ -203,3 +212,61 @@ class NodeHeartbeat(BaseModel):
     ram_total_mb: float = Field(default=0.0)
     active_tasks_count: int = Field(default=0)
     os_info: str = Field(default="unknown")
+
+
+# ── Fleet audit / mapper → dashboard ───────────────────────────────────────────
+
+
+class FleetScanPhase(str, Enum):
+    """Lifecycle phase for fleet-wide Telegram mapper / scraper runs."""
+
+    STARTED = "started"
+    PROGRESS = "progress"
+    ENDED = "ended"
+
+
+class FleetScanEvent(BaseModel):
+    """
+    Published to Redis channel ``nexus:fleet:scan`` and mirrored to
+    ``nexus:fleet:scan:status`` so HTTP/SSE clients can show a progress bar.
+    """
+
+    phase: FleetScanPhase
+    task_id: str | None = None
+    task_type: str | None = None
+    detail: str = ""
+    groups_found_delta: int | None = Field(
+        default=None,
+        description="Optional: groups discovered in this event (mapper batch)",
+    )
+    managed_members_total: int | None = None
+    premium_members_total: int | None = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class FleetAuditGroupEntry(BaseModel):
+    """One managed or discovered group in a fleet audit snapshot."""
+
+    group_id: str | int | None = None
+    title: str = ""
+    username: str | None = None
+    link: str | None = None
+    owner_session: str = ""
+    member_count: int = 0
+    premium_members: int = 0
+
+
+class FleetAuditResults(BaseModel):
+    """
+    Full audit snapshot: stored in Redis (``nexus:fleet:audit:latest``) and
+    optionally appended to SQLite table ``nexus_fleet_audit`` via telefix_bridge.
+    """
+
+    run_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    task_id: str | None = None
+    worker_id: str | None = None
+    source: str = Field(default="mapper", description="mapper | worker | api")
+    groups: list[FleetAuditGroupEntry] = Field(default_factory=list)
+    scanned_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    total_managed_members: int = 0
+    total_premium_members: int = 0

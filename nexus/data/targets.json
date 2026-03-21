@@ -1,0 +1,27 @@
+{
+  "targets": [
+    {
+      "category": "Crypto Regulation",
+      "keywords": ["SEC", "ETF", "Gensler", "Ban", "Approval"],
+      "priority": "high",
+      "auto_trade": true
+    },
+    {
+      "category": "Whale Alerts",
+      "keywords": [
+        "transferred to Binance",
+        "minted at Tether Treasury",
+        "dump",
+        "liquidation"
+      ],
+      "priority": "high",
+      "auto_trade": true
+    },
+    {
+      "category": "Market Makers",
+      "keywords": ["Elon Musk", "Fed rate", "Powell", "CPI"],
+      "priority": "medium",
+      "auto_trade": false
+    }
+  ]
+}

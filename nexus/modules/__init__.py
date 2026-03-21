@@ -86,6 +86,22 @@ TELEFIX_MODULES = {
         "priority": 1,
         "icon": "🗄️",
     },
+    "openclaw": {
+        "name": "OpenClaw Core",
+        "path": MODULES_ROOT / "openclaw.py",
+        "description": "Browser-heavy scraping engine orchestrated by Nexus",
+        "category": "intelligence",
+        "priority": 1,
+        "icon": "🕷️",
+    },
+    "moltbot": {
+        "name": "Moltbot Core",
+        "path": MODULES_ROOT / "moltbot.py",
+        "description": "Telegram-heavy automation and scrape execution module",
+        "category": "communication",
+        "priority": 1,
+        "icon": "🤖",
+    },
 }
 
 
@@ -136,6 +152,10 @@ class ModuleAdapter:
             stats.update(self._get_budget_stats())
         elif self.module_id == "crypto_bot":
             stats.update(self._get_crypto_stats())
+        elif self.module_id == "openclaw":
+            stats.update(self._get_openclaw_stats())
+        elif self.module_id == "moltbot":
+            stats.update(self._get_moltbot_stats())
             
         return stats
     
@@ -232,6 +252,30 @@ class ModuleAdapter:
             return datetime.fromtimestamp(latest).isoformat() if latest else ""
         except Exception:
             return ""
+
+    def _get_openclaw_stats(self) -> Dict[str, Any]:
+        """Basic local availability metadata for OpenClaw core."""
+        try:
+            return {
+                "entrypoint": str(self.path),
+                "last_update": self._get_last_modified(),
+            }
+        except Exception:
+            return {"entrypoint": str(self.path)}
+
+    def _get_moltbot_stats(self) -> Dict[str, Any]:
+        """Session awareness metadata for Moltbot."""
+        try:
+            session_path = os.getenv("MOLTBOT_SESSION_FILE", "")
+            has_session = bool(session_path and Path(session_path).exists())
+            return {
+                "entrypoint": str(self.path),
+                "session_file": session_path,
+                "has_valid_session": has_session,
+                "last_update": self._get_last_modified(),
+            }
+        except Exception:
+            return {"entrypoint": str(self.path), "has_valid_session": False}
 
 
 class ModuleManager:

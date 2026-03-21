@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from nexus.shared.schemas import NodeRole
+from nexus.shared.schemas import FleetAuditResults, NodeRole
 
 # ── Cluster status ─────────────────────────────────────────────────────────────
 
@@ -49,6 +49,69 @@ class ClusterStatusResponse(BaseModel):
     master_resource_caps: ResourceCaps
     queues: list[QueueStats]
     timestamp: datetime
+
+
+# ── Cluster health (async probes for dashboard grid) ────────────────────────────
+
+
+class ClusterHealthNode(BaseModel):
+    """One fleet node with Redis read latency and UI labels."""
+
+    node_id: str
+    role: NodeRole
+    online: bool
+    status: str = Field(description="ok | degraded | offline")
+    probe_latency_ms: float = Field(description="Redis GET timing for this node's heartbeat key")
+    cpu_percent: float
+    ram_used_mb: float
+    active_jobs: int
+    last_seen: datetime
+    local_ip: str = "unknown"
+    cpu_model: str = "unknown"
+    gpu_model: str = "N/A"
+    ram_total_mb: float = 0.0
+    os_info: str = "unknown"
+    display_label: str = Field(description="Short operator label, e.g. MASTER / LAPTOP 1")
+
+
+class TargetHeatCell(BaseModel):
+    id: str
+    label: str
+    intensity: float = Field(ge=0.0, le=100.0, description="0–100 heat for UI")
+
+
+class ClusterHealthResponse(BaseModel):
+    redis_ok: bool
+    redis_ping_ms: float | None = None
+    nodes: list[ClusterHealthNode]
+    workers_online: int
+    swarm_activity: list[str]
+    targets: list[TargetHeatCell]
+    timestamp: datetime
+
+
+# ── Fleet assets (Telefix managed_groups × Redis mapper counters) ──────────────
+
+
+class FleetAssetRow(BaseModel):
+    """One managed Telegram group with scraped member aggregates."""
+
+    group_id: str
+    title: str
+    member_count: int
+    premium_members: int
+    session_owner: str
+    status: str = "MONITORING"
+    last_automation: str | None = None
+
+
+class FleetAssetsResponse(BaseModel):
+    groups: list[FleetAssetRow]
+    total_managed_members: int
+    total_premium_members: int
+    latest_audit: FleetAuditResults | None = None
+    db_available: bool
+    queried_at: datetime
 
 
 # ── HITL ───────────────────────────────────────────────────────────────────────

@@ -11,6 +11,24 @@ GET  /api/prediction/chart-data
     Returns the last 30 paired (timestamp, binance_price, poly_price) data
     points collected by the background arbitrage collector (2 s cadence).
     Data is read from the Redis key nexus:arbitrage:timeseries.
+    Newer points may include pred_mid / ci_low / ci_high (AI fair-value band).
+
+GET  /api/prediction/polymarket-bot
+    Live PnL and worker telemetry for the Polymarket BTC strike bot
+    (Redis keys nexus:poly:pnl, nexus:poly:session_status; ticks from
+    ``trading.polymarket_bot_tick`` on the Linux worker).
+
+POST /api/prediction/manual-override
+    Sets Redis halt flag, blocks new Polymarket orders, closes paper trades
+    still marked ``open``.
+
+POST /api/prediction/manual-override/clear  — remove halt flag.
+GET  /api/prediction/manual-override/status — whether halt is active.
+
+GET  /api/prediction/poly5m-scalper
+    Dashboard snapshot for NEXUS-POLY-SCALPER-5M (Redis ``nexus:poly5m:dashboard``).
+
+Ultimate 5m scalper UI also uses ``/api/scalper/*`` — see ``nexus.api.routers.scalper``.
 """
 
 from __future__ import annotations
@@ -20,13 +38,16 @@ from typing import Any, Dict, List, Optional
 
 import structlog
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from nexus.api.dependencies import RedisDep
 from nexus.trading.config import (
     PAPER_TRADING,
     PAPER_TRADING_REDIS_KEY,
+    PREDICTION_MANUAL_HALT_KEY,
 )
+from nexus.trading.runtime_mode import effective_paper_trading
+from nexus.trading.poly_bot_state import POLY_BOT_PNL_KEY, POLY_BOT_STATUS_KEY
 
 log = structlog.get_logger(__name__)
 
@@ -57,6 +78,12 @@ class PolymarketSnapshot(BaseModel):
     volume:           Optional[Any]   = None
 
 
+class PredictionCIBand(BaseModel):
+    pred_mid: Optional[float] = None
+    ci_low:   Optional[float] = None
+    ci_high:  Optional[float] = None
+
+
 class SignalThresholds(BaseModel):
     imbalance_threshold:    float
     polymarket_yes_ceiling: float
@@ -74,9 +101,48 @@ class CrossExchangeResponse(BaseModel):
     errors:          list[str]
     duration_s:      float
     fetched_at:      str
+    prediction_ci:   Optional[PredictionCIBand] = None
 
 
 # ── Route ─────────────────────────────────────────────────────────────────────
+
+class Poly5mScalperDashboardResponse(BaseModel):
+    """Live snapshot from ``nexus:poly5m:dashboard`` (5m Polymarket scalper)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    updated_at: str | None = None
+    event_id: str | None = None
+    decision: str | None = None
+    blocked: bool = False
+    block_reason: str = ""
+    btc_price: float | None = None
+    velocity_pct_60s: float | None = None
+    sentiment: dict[str, Any] = {}
+    market_found: bool | None = None
+    market_question: str | None = None
+    yes_price: float | None = None
+    paper_trading: bool = True
+    wins: int = 0
+    losses: int = 0
+    win_loss_ratio: float | None = None
+    loss_streak: int = 0
+    trading_halted: bool = False
+    velocity_feed_key: str | None = None
+    project: str | None = None
+
+
+@router.get(
+    "/poly5m-scalper",
+    response_model=Poly5mScalperDashboardResponse,
+    summary="Poly 5m scalper: velocity, Openclaw/Telefix sentiment, win/loss",
+)
+async def get_poly5m_scalper_dashboard(redis: RedisDep) -> Poly5mScalperDashboardResponse:
+    from nexus.master.services.poly_5m_scalper import read_dashboard_snapshot
+
+    raw = await read_dashboard_snapshot(redis)
+    return Poly5mScalperDashboardResponse(**raw)
+
 
 @router.get(
     "/cross-exchange",
@@ -110,6 +176,7 @@ async def get_cross_exchange() -> CrossExchangeResponse:
     binance_raw   = result.get("binance")
     poly_raw      = result.get("polymarket")
     thresholds    = result["thresholds"]
+    ci_raw        = result.get("prediction_ci") or {}
 
     return CrossExchangeResponse(
         status          = result["status"],
@@ -123,6 +190,93 @@ async def get_cross_exchange() -> CrossExchangeResponse:
         errors          = result.get("errors", []),
         duration_s      = result["duration_s"],
         fetched_at      = result["fetched_at"],
+        prediction_ci   = (
+            PredictionCIBand(**ci_raw) if ci_raw.get("pred_mid") is not None else None
+        ),
+    )
+
+
+# ── Polymarket bot (Nexus Poly Trader) ─────────────────────────────────────────
+
+class PolymarketBotPnLResponse(BaseModel):
+    available: bool = False
+    realized_pnl_usd: float = 0.0
+    unrealized_pnl_usd: float = 0.0
+    total_pnl_usd: float = 0.0
+    btc_spot: Optional[float] = None
+    target_strike: Optional[float] = None
+    yes_price: Optional[float] = None
+    market_question: Optional[str] = None
+    open_position: Optional[Dict[str, Any]] = None
+    within_target_band: bool = False
+    last_action: str = ""
+    detail: str = ""
+    session_active: bool = False
+    session_stage: str = ""
+    session_node_id: str = ""
+    updated_at: str = ""
+
+
+@router.get(
+    "/polymarket-bot",
+    response_model=PolymarketBotPnLResponse,
+    summary="Live PnL and session telemetry for the Polymarket BTC strike bot",
+)
+async def get_polymarket_bot_pnl(redis: RedisDep) -> PolymarketBotPnLResponse:
+    """
+    Reads Redis keys written by the Linux worker ``trading.polymarket_bot_tick``
+    handler (PnL snapshot + heartbeat).
+    """
+    raw_pnl = await redis.get(POLY_BOT_PNL_KEY)
+    raw_st = await redis.get(POLY_BOT_STATUS_KEY)
+
+    session_active = False
+    session_stage = ""
+    session_node_id = ""
+    if raw_st:
+        try:
+            st = json.loads(raw_st)
+            session_active = bool(st.get("active", False))
+            session_stage = str(st.get("stage", ""))
+            session_node_id = str(st.get("node_id", ""))
+        except Exception:
+            pass
+
+    if not raw_pnl:
+        return PolymarketBotPnLResponse(
+            available=False,
+            session_active=session_active,
+            session_stage=session_stage,
+            session_node_id=session_node_id,
+        )
+
+    try:
+        p = json.loads(raw_pnl)
+    except Exception:
+        return PolymarketBotPnLResponse(
+            available=False,
+            session_active=session_active,
+            session_stage=session_stage,
+            session_node_id=session_node_id,
+        )
+
+    return PolymarketBotPnLResponse(
+        available=True,
+        realized_pnl_usd=float(p.get("realized_pnl_usd", 0)),
+        unrealized_pnl_usd=float(p.get("unrealized_pnl_usd", 0)),
+        total_pnl_usd=float(p.get("total_pnl_usd", 0)),
+        btc_spot=p.get("btc_spot"),
+        target_strike=p.get("target_strike"),
+        yes_price=p.get("yes_price"),
+        market_question=p.get("market_question"),
+        open_position=p.get("open_position"),
+        within_target_band=bool(p.get("within_target_band", False)),
+        last_action=str(p.get("last_action", "")),
+        detail=str(p.get("detail", "")),
+        session_active=session_active,
+        session_stage=session_stage,
+        session_node_id=session_node_id,
+        updated_at=str(p.get("updated_at", "")),
     )
 
 
@@ -132,6 +286,9 @@ class ArbitrageDataPoint(BaseModel):
     timestamp:     str
     binance_price: Optional[float] = None
     poly_price:    Optional[float] = None
+    pred_mid:      Optional[float] = None
+    ci_low:        Optional[float] = None
+    ci_high:       Optional[float] = None
 
 
 class ArbitrageChartDataResponse(BaseModel):
@@ -158,7 +315,16 @@ async def get_chart_data(redis: RedisDep) -> ArbitrageChartDataResponse:
     for entry in raw_entries:
         try:
             obj = json.loads(entry)
-            points.append(ArbitrageDataPoint(**obj))
+            points.append(
+                ArbitrageDataPoint(
+                    timestamp     = obj["timestamp"],
+                    binance_price = obj.get("binance_price"),
+                    poly_price    = obj.get("poly_price"),
+                    pred_mid      = obj.get("pred_mid"),
+                    ci_low        = obj.get("ci_low"),
+                    ci_high       = obj.get("ci_high"),
+                )
+            )
         except Exception as exc:
             log.warning("chart_data_parse_error", error=str(exc), raw=entry[:80])
 
@@ -219,11 +385,12 @@ async def get_paper_trades(redis: RedisDep) -> PaperTradesResponse:
         except Exception as exc:
             log.warning("paper_trade_parse_error", error=str(exc), raw=entry[:80])
 
+    paper_now = await effective_paper_trading(redis)
     return PaperTradesResponse(
         trades=trades,
         total=len(trades),
         total_virtual_pnl=round(total_pnl, 4),
-        paper_trading_enabled=PAPER_TRADING,
+        paper_trading_enabled=paper_now,
     )
 
 
@@ -239,8 +406,9 @@ async def get_trading_mode(redis: RedisDep) -> TradingModeResponse:
     to render the Simulation Mode badge.
     """
     count = await redis.llen(PAPER_TRADING_REDIS_KEY)
+    paper_now = await effective_paper_trading(redis)
     return TradingModeResponse(
-        paper_trading=PAPER_TRADING,
+        paper_trading=paper_now,
         virtual_trade_count=int(count),
     )
 
@@ -377,3 +545,53 @@ async def get_trade_log(redis: RedisDep) -> TradeLogResponse:
         paper_trading=PAPER_TRADING,
         kill_switch_balance_usd=KILL_SWITCH_BALANCE_USD,
     )
+
+
+# ── Manual override (volatility kill-switch) ────────────────────────────────────
+
+
+class ManualOverrideResponse(BaseModel):
+    halted:                 bool
+    halted_at:              str
+    open_positions_closed:  int
+
+
+class ManualOverrideStatusResponse(BaseModel):
+    active:     bool
+    halted_at:  Optional[str] = None
+
+
+@router.post(
+    "/manual-override",
+    response_model=ManualOverrideResponse,
+    summary="Halt prediction-market orders and close open paper positions",
+)
+async def post_manual_override(redis: RedisDep) -> ManualOverrideResponse:
+    from nexus.worker.tasks.prediction import apply_prediction_manual_override
+
+    data = await apply_prediction_manual_override(redis)
+    return ManualOverrideResponse(**data)
+
+
+@router.post(
+    "/manual-override/clear",
+    response_model=ManualOverrideStatusResponse,
+    summary="Clear prediction manual halt — allow automated orders again",
+)
+async def post_manual_override_clear(redis: RedisDep) -> ManualOverrideStatusResponse:
+    from nexus.worker.tasks.prediction import clear_prediction_manual_override
+
+    await clear_prediction_manual_override(redis)
+    return ManualOverrideStatusResponse(active=False, halted_at=None)
+
+
+@router.get(
+    "/manual-override/status",
+    response_model=ManualOverrideStatusResponse,
+    summary="Whether prediction manual override is engaged",
+)
+async def get_manual_override_status(redis: RedisDep) -> ManualOverrideStatusResponse:
+    raw = await redis.get(PREDICTION_MANUAL_HALT_KEY)
+    if not raw:
+        return ManualOverrideStatusResponse(active=False)
+    return ManualOverrideStatusResponse(active=True, halted_at=str(raw))
