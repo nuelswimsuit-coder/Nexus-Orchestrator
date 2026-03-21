@@ -1,12 +1,5 @@
 """
-High-end terminal node monitor for distributed Nexus workers.
-
-Features
---------
-- Rich cyberpunk dashboard with live hardware + AI context panels
-- Redis-backed dynamic intent/vision strings
-- Rolling node history (last 5 successful tasks)
-- Sleep-prevention guard while monitor is active
+High-end terminal monitor for Nexus distributed nodes.
 """
 
 from __future__ import annotations
@@ -19,7 +12,9 @@ import socket
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import psutil
@@ -33,12 +28,15 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-NEON_BLUE = "#00D7FF"
-WARNING_YELLOW = "#FFD84D"
-SUCCESS_GREEN = "#46FF8B"
+NEON_CYAN = "#00D7FF"
+NEON_GREEN = "#46FF8B"
+NEON_YELLOW = "#FFD84D"
+NEON_MAGENTA = "#FF4FD8"
+SOFT_WHITE = "#EAF7FF"
 
-DEFAULT_INTENT = "Analyzing Telegram API limits to avoid shadowban"
-DEFAULT_VISION = "Acquiring 10,000 high-intent leads for NUEL project"
+DEFAULT_INTENT = "Awaiting node intent stream from Redis"
+DEFAULT_VISION = "Expand autonomous execution quality and reliability"
+SLEEP_GUARD_ENV = "NEXUS_SLEEP_GUARD_ACTIVE"
 
 
 @dataclass
@@ -49,6 +47,54 @@ class RuntimeState:
     previous_net_sent: int
     previous_net_recv: int
     previous_net_ts: float
+    intent_stream: deque[str] = field(default_factory=lambda: deque(maxlen=24))
+    vision_stream: deque[str] = field(default_factory=lambda: deque(maxlen=8))
+    last_intent: str = ""
+    last_vision: str = ""
+
+
+class StayAwake:
+    """Windows sleep inhibitor while monitor is active."""
+
+    _ES_CONTINUOUS = 0x80000000
+    _ES_SYSTEM_REQUIRED = 0x00000001
+    _ES_AWAYMODE_REQUIRED = 0x00000040
+
+    def __enter__(self) -> "StayAwake":
+        if os.name == "nt":
+            ctypes.windll.kernel32.SetThreadExecutionState(
+                self._ES_CONTINUOUS | self._ES_SYSTEM_REQUIRED | self._ES_AWAYMODE_REQUIRED
+            )
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if os.name == "nt":
+            ctypes.windll.kernel32.SetThreadExecutionState(self._ES_CONTINUOUS)
+
+
+def _maybe_reexec_with_systemd_inhibit() -> int | None:
+    """
+    On Linux, restart this process under systemd-inhibit to block system sleep.
+    Returns an exit code when re-exec happened, otherwise None.
+    """
+    if sys.platform != "linux":
+        return None
+    if os.getenv(SLEEP_GUARD_ENV) == "1":
+        return None
+    if not shutil.which("systemd-inhibit"):
+        return None
+
+    env = os.environ.copy()
+    env[SLEEP_GUARD_ENV] = "1"
+    cmd = [
+        "systemd-inhibit",
+        "--what=sleep",
+        "--why=Nexus node monitor active",
+        "--mode=block",
+        sys.executable,
+        *sys.argv,
+    ]
+    return subprocess.call(cmd, env=env)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -61,76 +107,27 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--node-id",
         default=os.getenv("NODE_ID") or socket.gethostname(),
-        help="Node ID used for Redis keys: node:<node_id>:*",
+        help="Node ID used for node-specific Redis fallback keys",
     )
-    parser.add_argument(
-        "--redis-host",
-        default="127.0.0.1",
-        help="Redis host (use 127.0.0.1 on master or pass worker target)",
-    )
-    parser.add_argument("--redis-port", type=int, default=6379, help="Redis port")
+    parser.add_argument("--redis-host", default="127.0.0.1", help="Master Redis host")
+    parser.add_argument("--redis-port", type=int, default=6379, help="Master Redis port")
     parser.add_argument("--redis-db", type=int, default=0, help="Redis database index")
     parser.add_argument(
         "--redis-url",
-        default="",
+        default=os.getenv("REDIS_URL", ""),
         help="Optional full Redis URL (overrides host/port/db)",
     )
     parser.add_argument("--refresh", type=float, default=1.0, help="Dashboard refresh in seconds")
     return parser.parse_args()
 
 
-def _ensure_stay_awake_linux() -> None:
-    """
-    Re-exec this script under systemd-inhibit to block sleep while active.
-    """
-    if os.getenv("NEXUS_MONITOR_INHIBITED") == "1":
-        return
-    inhibit = shutil.which("systemd-inhibit")
-    if not inhibit:
-        return
-    env = os.environ.copy()
-    env["NEXUS_MONITOR_INHIBITED"] = "1"
-    cmd = [
-        inhibit,
-        "--what=sleep",
-        "--why=Nexus node monitor is active",
-        "--mode=block",
-        sys.executable,
-        *sys.argv,
-    ]
-    completed = subprocess.run(cmd, env=env, check=False)
-    raise SystemExit(completed.returncode)
-
-
-def _stay_awake_tick_windows() -> None:
-    """
-    Signal Windows power manager to keep the system awake.
-    """
-    es_continuous = 0x80000000
-    es_system_required = 0x00000001
-    es_awaymode_required = 0x00000040
-    ctypes.windll.kernel32.SetThreadExecutionState(
-        es_continuous | es_system_required | es_awaymode_required
-    )
-
-
-def _stay_awake_release_windows() -> None:
-    es_continuous = 0x80000000
-    ctypes.windll.kernel32.SetThreadExecutionState(es_continuous)
-
-
 def _build_redis_client(args: argparse.Namespace) -> Redis:
     if args.redis_url:
         return Redis.from_url(args.redis_url, decode_responses=True)
-    return Redis(
-        host=args.redis_host,
-        port=args.redis_port,
-        db=args.redis_db,
-        decode_responses=True,
-    )
+    return Redis(host=args.redis_host, port=args.redis_port, db=args.redis_db, decode_responses=True)
 
 
-def _get_first_key(redis_client: Redis, keys: list[str], default: str) -> str:
+def _redis_get_first(redis_client: Redis, keys: list[str], default: str) -> str:
     for key in keys:
         try:
             value = redis_client.get(key)
@@ -141,23 +138,67 @@ def _get_first_key(redis_client: Redis, keys: list[str], default: str) -> str:
     return default
 
 
-def _get_history(redis_client: Redis, node_id: str) -> list[str]:
+def _get_action_history(redis_client: Redis, node_id: str) -> list[str]:
     for key in [f"node:{node_id}:history", "node:history"]:
         try:
-            entries = redis_client.lrange(key, 0, 4)
-            if entries:
-                return [str(entry) for entry in entries]
+            rows = redis_client.lrange(key, 0, 4)
+            if rows:
+                parsed = [str(row) for row in rows]
+                successful = [
+                    line for line in parsed
+                    if any(tag in line.lower() for tag in ("completed", "success", "done"))
+                ]
+                return successful[:5] if successful else parsed[:5]
         except RedisError:
             continue
-    return ["No successful tasks recorded yet"]
+    return ["No completed actions recorded"]
 
 
-def _format_speed(num_bytes_per_s: float) -> str:
-    if num_bytes_per_s >= 1024 ** 2:
-        return f"{num_bytes_per_s / (1024 ** 2):.2f} MB/s"
-    if num_bytes_per_s >= 1024:
-        return f"{num_bytes_per_s / 1024:.2f} KB/s"
-    return f"{num_bytes_per_s:.0f} B/s"
+def _format_speed(bytes_per_second: float) -> str:
+    if bytes_per_second >= 1024**2:
+        return f"{bytes_per_second / (1024**2):.2f} MB/s"
+    if bytes_per_second >= 1024:
+        return f"{bytes_per_second / 1024:.2f} KB/s"
+    return f"{bytes_per_second:.0f} B/s"
+
+
+def _format_bar(value: float, width: int = 24) -> str:
+    clamped = max(0.0, min(100.0, value))
+    filled = int((clamped / 100.0) * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+def _gpu_snapshot() -> tuple[str, float | None]:
+    try:
+        import GPUtil  # type: ignore[import-untyped]
+
+        gpus = GPUtil.getGPUs()
+        if gpus:
+            gpu = gpus[0]
+            return f"{gpu.name[:28]}", float(gpu.load * 100.0)
+    except Exception:
+        pass
+
+    try:
+        completed = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+        if completed.returncode == 0 and completed.stdout.strip():
+            first = completed.stdout.strip().splitlines()[0]
+            name, util = [piece.strip() for piece in first.split(",", maxsplit=1)]
+            return name[:28], float(util)
+    except Exception:
+        pass
+
+    return "GPU metrics unavailable", None
 
 
 def _collect_snapshot(state: RuntimeState) -> dict[str, Any]:
@@ -165,27 +206,34 @@ def _collect_snapshot(state: RuntimeState) -> dict[str, Any]:
     ram = psutil.virtual_memory().percent
 
     now = time.time()
-    counters = psutil.net_io_counters()
+    net = psutil.net_io_counters()
     elapsed = max(now - state.previous_net_ts, 0.001)
-
-    upload_bps = (counters.bytes_sent - state.previous_net_sent) / elapsed
-    download_bps = (counters.bytes_recv - state.previous_net_recv) / elapsed
-
-    state.previous_net_sent = counters.bytes_sent
-    state.previous_net_recv = counters.bytes_recv
+    upload_bps = (net.bytes_sent - state.previous_net_sent) / elapsed
+    download_bps = (net.bytes_recv - state.previous_net_recv) / elapsed
+    state.previous_net_sent = net.bytes_sent
+    state.previous_net_recv = net.bytes_recv
     state.previous_net_ts = now
 
-    intent = _get_first_key(
+    intent = _redis_get_first(
         state.redis,
-        [f"node:{state.node_id}:intent", "node:intent"],
+        ["node:intent", f"node:{state.node_id}:intent"],
         DEFAULT_INTENT,
     )
-    vision = _get_first_key(
+    vision = _redis_get_first(
         state.redis,
-        [f"node:{state.node_id}:vision", "node:vision"],
+        ["node:vision", f"node:{state.node_id}:vision"],
         DEFAULT_VISION,
     )
-    history = _get_history(state.redis, state.node_id)
+    history = _get_action_history(state.redis, state.node_id)
+
+    stamp = datetime.now().strftime("%H:%M:%S")
+    if intent != state.last_intent:
+        state.intent_stream.appendleft(f"[{stamp}] intent: {intent}")
+        state.last_intent = intent
+    if vision != state.last_vision:
+        state.vision_stream.appendleft(f"[{stamp}] objective sync: {vision}")
+        state.last_vision = vision
+        state.intent_stream.appendleft(f"[{stamp}] goal update observed")
 
     return {
         "cpu": cpu,
@@ -195,60 +243,66 @@ def _collect_snapshot(state: RuntimeState) -> dict[str, Any]:
         "intent": intent,
         "vision": vision,
         "history": history,
+        "intent_stream": list(state.intent_stream)[:12],
+        "vision_stream": list(state.vision_stream)[:5],
     }
 
 
-def _hardware_panel(snapshot: dict[str, Any]) -> Panel:
+def _build_hardware_panel(snapshot: dict[str, Any]) -> Panel:
     table = Table.grid(expand=True)
-    table.add_column(justify="left")
-    table.add_column(justify="right")
+    table.add_column(justify="left", ratio=2)
+    table.add_column(justify="right", ratio=3)
 
-    cpu_color = WARNING_YELLOW if snapshot["cpu"] >= 95 else SUCCESS_GREEN
-    ram_color = WARNING_YELLOW if snapshot["ram"] >= 90 else SUCCESS_GREEN
-
+    cpu_color = NEON_YELLOW if snapshot["cpu"] >= 95 else NEON_GREEN
+    ram_color = NEON_YELLOW if snapshot["ram"] >= 90 else NEON_GREEN
     table.add_row(
-        "CPU Utilization (Target 95%)",
-        f"[{cpu_color}]{snapshot['cpu']:.1f}%[/{cpu_color}]",
+        "CPU (95% target)",
+        f"[{cpu_color}]{snapshot['cpu']:5.1f}% [/{cpu_color}][{SOFT_WHITE}]{_format_bar(snapshot['cpu'])}[/{SOFT_WHITE}]",
     )
     table.add_row(
-        "RAM Usage",
-        f"[{ram_color}]{snapshot['ram']:.1f}%[/{ram_color}]",
+        "RAM",
+        f"[{ram_color}]{snapshot['ram']:5.1f}% [/{ram_color}][{SOFT_WHITE}]{_format_bar(snapshot['ram'])}[/{SOFT_WHITE}]",
     )
-    table.add_row(
-        "Network Download",
-        f"[{SUCCESS_GREEN}]{_format_speed(snapshot['download_bps'])}[/{SUCCESS_GREEN}]",
-    )
-    table.add_row(
-        "Network Upload",
-        f"[{SUCCESS_GREEN}]{_format_speed(snapshot['upload_bps'])}[/{SUCCESS_GREEN}]",
-    )
-    return Panel(table, title="[bold]Hardware[/bold]", border_style=NEON_BLUE)
+    table.add_row("NET IN", f"[{NEON_GREEN}]{_format_speed(snapshot['download_bps'])}[/{NEON_GREEN}]")
+    table.add_row("NET OUT", f"[{NEON_GREEN}]{_format_speed(snapshot['upload_bps'])}[/{NEON_GREEN}]")
+    return Panel(table, title="[bold]PANEL A | HARDWARE[/bold]", border_style=NEON_CYAN)
 
 
-def _intent_panel(snapshot: dict[str, Any]) -> Panel:
+def _build_ai_thinking_panel(snapshot: dict[str, Any]) -> Panel:
+    rows = snapshot["intent_stream"][:4] or ["[boot] waiting for intent stream"]
+    text_rows = [
+        Text(f"Current Intent: {snapshot['intent']}", style=f"bold {SOFT_WHITE}"),
+        Text(" ", style=SOFT_WHITE),
+        *[Text(entry, style=f"dim {NEON_GREEN}") for entry in rows],
+    ]
     return Panel(
-        Text(snapshot["intent"], style="bold white"),
-        title="[bold]AI Thinking / Current Intent[/bold]",
-        border_style=NEON_BLUE,
+        Group(*text_rows),
+        title="[bold]PANEL B | AI THINKING[/bold]",
+        subtitle=f"[{NEON_YELLOW}]Warning lights indicate high node load[/{NEON_YELLOW}]",
+        border_style=NEON_CYAN,
     )
 
 
-def _vision_panel(snapshot: dict[str, Any]) -> Panel:
+def _build_vision_panel(snapshot: dict[str, Any]) -> Panel:
+    content = Group(
+        Text(f"Long-term Goal: {snapshot['vision']}", style=f"bold {SOFT_WHITE}"),
+        Text(" ", style=SOFT_WHITE),
+        *[Text(line, style=f"dim {NEON_GREEN}") for line in snapshot["vision_stream"]],
+    )
     return Panel(
-        Text(snapshot["vision"], style="bold white"),
-        title="[bold]Strategic Vision / Long-term Goal[/bold]",
-        border_style=NEON_BLUE,
+        content,
+        title="[bold]PANEL C | STRATEGIC VISION[/bold]",
+        subtitle="[dim]long-horizon objective map[/dim]",
+        border_style=NEON_CYAN,
     )
 
 
-def _history_panel(snapshot: dict[str, Any]) -> Panel:
-    rows: list[Text] = []
-    for item in snapshot["history"][:5]:
-        rows.append(Text(f"+ {item}", style=SUCCESS_GREEN))
+def _build_history_panel(snapshot: dict[str, Any]) -> Panel:
+    lines = [Text(f"- {item}", style=NEON_GREEN) for item in snapshot["history"][:5]]
     return Panel(
-        Group(*rows),
-        title="[bold]History / Last 5 Successful Tasks[/bold]",
-        border_style=NEON_BLUE,
+        Group(*lines),
+        title="[bold]PANEL D | HISTORY (LAST 5 SUCCESSFUL TASKS)[/bold]",
+        border_style=NEON_CYAN,
     )
 
 
@@ -256,63 +310,64 @@ def _render_dashboard(state: RuntimeState, snapshot: dict[str, Any]) -> Layout:
     layout = Layout(name="root")
     layout.split_column(
         Layout(name="header", size=3),
-        Layout(name="body"),
+        Layout(name="body", ratio=12),
     )
-    layout["body"].split_row(
-        Layout(name="left"),
-        Layout(name="right"),
+    layout["body"].split_column(
+        Layout(name="top", ratio=1),
+        Layout(name="bottom", ratio=1),
     )
-    layout["left"].split_column(Layout(name="hardware"), Layout(name="intent"))
-    layout["right"].split_column(Layout(name="vision"), Layout(name="history"))
+    layout["top"].split_row(Layout(name="left", ratio=1), Layout(name="right", ratio=1))
+    layout["bottom"].split_row(Layout(name="left_bottom", ratio=1), Layout(name="right_bottom", ratio=1))
 
     header = Text(
         f"NEXUS DISTRIBUTED NODE: {state.node_name} | TELEFIX OS v2.0",
-        style=f"bold {NEON_BLUE}",
+        style=f"bold {NEON_CYAN}",
     )
-    layout["header"].update(Panel(Align.center(header), border_style=NEON_BLUE))
-    layout["hardware"].update(_hardware_panel(snapshot))
-    layout["intent"].update(_intent_panel(snapshot))
-    layout["vision"].update(_vision_panel(snapshot))
-    layout["history"].update(_history_panel(snapshot))
+    layout["header"].update(Panel(Align.center(header), border_style=NEON_CYAN))
+    layout["left"].update(_build_hardware_panel(snapshot))
+    layout["right"].update(_build_ai_thinking_panel(snapshot))
+    layout["left_bottom"].update(_build_vision_panel(snapshot))
+    layout["right_bottom"].update(_build_history_panel(snapshot))
     return layout
 
 
 def main() -> None:
+    reexec_code = _maybe_reexec_with_systemd_inhibit()
+    if reexec_code is not None:
+        raise SystemExit(reexec_code)
+
     args = _parse_args()
-
-    if sys.platform.startswith("linux"):
-        _ensure_stay_awake_linux()
-
     redis_client = _build_redis_client(args)
+    net = psutil.net_io_counters()
 
-    counters = psutil.net_io_counters()
     state = RuntimeState(
         node_name=args.node_name,
         node_id=args.node_id,
         redis=redis_client,
-        previous_net_sent=counters.bytes_sent,
-        previous_net_recv=counters.bytes_recv,
+        previous_net_sent=net.bytes_sent,
+        previous_net_recv=net.bytes_recv,
         previous_net_ts=time.time(),
     )
-
     psutil.cpu_percent(interval=None)
-    try:
-        with Live(refresh_per_second=max(1, int(1 / max(args.refresh, 0.25))), screen=False) as live:
-            while True:
-                if sys.platform == "win32":
-                    _stay_awake_tick_windows()
-                snapshot = _collect_snapshot(state)
-                live.update(_render_dashboard(state, snapshot))
-                time.sleep(max(args.refresh, 0.25))
-    except KeyboardInterrupt:
-        pass
-    finally:
-        if sys.platform == "win32":
-            _stay_awake_release_windows()
+
+    with StayAwake():
         try:
-            redis_client.close()
-        except Exception:
+            with Live(
+                refresh_per_second=max(1, int(1 / max(args.refresh, 0.25))),
+                screen=True,
+                transient=False,
+            ) as live:
+                while True:
+                    snapshot = _collect_snapshot(state)
+                    live.update(_render_dashboard(state, snapshot))
+                    time.sleep(max(args.refresh, 0.25))
+        except KeyboardInterrupt:
             pass
+        finally:
+            try:
+                redis_client.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
