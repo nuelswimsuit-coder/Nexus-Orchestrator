@@ -242,6 +242,9 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Abort if no worker heartbeats (ignored with --dry-run)",
     )
+    parser.add_argument('--worker', action='store_true', help='Start in worker mode')
+    parser.add_argument('--turbo-boost', action='store_true', help='Enable high process priority')
+    parser.add_argument('--skip-sync-check', action='store_true', help='Skip Redis sync check on startup')
     return parser.parse_args()
 
 
@@ -298,12 +301,26 @@ def main() -> None:
         raise SystemExit(code)
 
     master_ip = (args.master_ip or "127.0.0.1").strip()
+
+    if args.turbo_boost:
+        try:
+            import psutil
+            proc = psutil.Process()
+            if sys.platform == "win32":
+                proc.nice(psutil.HIGH_PRIORITY_CLASS)
+                print("[nexus_core] Turbo-boost: process priority set to HIGH (Windows).")
+            else:
+                proc.nice(-10)
+                print("[nexus_core] Turbo-boost: process nice value set to -10 (Linux).")
+        except Exception as exc:
+            print(f"[nexus_core] Turbo-boost: could not set priority — {exc}", file=sys.stderr)
+
     missing = [p for p in (API_SCRIPT, BOT_SCRIPT, WORKER_SCRIPT) if not p.exists()]
     if missing:
         for path in missing:
             print(f"[nexus_core] Missing required script: {path}")
         sys.exit(1)
-    if not _check_redis_socket(host=master_ip):
+    if not args.skip_sync_check and not _check_redis_socket(host=master_ip):
         print(
             f"\033[1m[!] Redis is unreachable at {master_ip}:6379. "
             "Run 'wsl service redis-server start' (or verify host).\033[0m"
