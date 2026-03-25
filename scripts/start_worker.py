@@ -102,12 +102,6 @@ def _apply_master_redis(master_host: str) -> None:
 def main() -> None:
     args = _parse_args()
     master_host = (args.master_host or "127.0.0.1").strip() or "127.0.0.1"
-    # #region agent log
-    import json as _json, time as _time
-    _log_path = Path(__file__).resolve().parent.parent / "debug-1360d2.log"
-    with open(_log_path, "a", encoding="utf-8") as _lf:
-        _lf.write(_json.dumps({"sessionId": "1360d2", "hypothesisId": "H1", "location": "start_worker.py:main", "message": "worker main() entry", "data": {"sys_argv": sys.argv[:], "master_host": master_host, "REDIS_URL_env": os.environ.get("REDIS_URL", ""), "MASTER_IP_env": os.environ.get("MASTER_IP", "")}, "timestamp": int(_time.time() * 1000)}) + "\n")
-    # #endregion
     _apply_master_redis(master_host)
 
     # WorkerSettings reads env at import time, so import it only after
@@ -122,10 +116,6 @@ def main() -> None:
     _coerced_url = os.environ.get("REDIS_URL", "")
     _parsed_host = (_urlparse(_coerced_url).hostname or master_host).strip("[]")
     WorkerSettings.redis_settings.host = _parsed_host
-    # #region agent log
-    with open(_log_path, "a", encoding="utf-8") as _lf:
-        _lf.write(_json.dumps({"sessionId": "1360d2", "hypothesisId": "H2", "location": "start_worker.py:arq_host", "message": "arq host resolved", "data": {"REDIS_URL_after_apply": _coerced_url, "arq_host": _parsed_host, "WorkerSettings_host": WorkerSettings.redis_settings.host}, "timestamp": int(_time.time() * 1000)}) + "\n")
-    # #endregion
 
     system_runtime = read_system_settings()
     # Muscle mode (default): target ~90% CPU on worker laptops via high ARQ
