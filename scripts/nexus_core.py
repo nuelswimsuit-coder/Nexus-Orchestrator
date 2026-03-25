@@ -44,11 +44,21 @@ BOT_SCRIPT = BASE_DIR / "start_telegram_bot.py"
 WORKER_SCRIPT = BASE_DIR / "start_worker.py"
 MASTER_NODE_ID = "master-hybrid-node"
 
+
+def _coerce_redis_url(url: str) -> str:
+    """Rewrite 127.0.0.1 -> [::1] on Windows to avoid WSL2/Hyper-V port-proxy interception."""
+    try:
+        from nexus.shared.redis_util import coerce_redis_url_for_platform
+        return coerce_redis_url_for_platform(url)
+    except Exception:
+        return url
+
+
 GLOBAL_MISSION_KEY = "global_mission"
 HEARTBEAT_KEY_PREFIX = "nexus:heartbeat:"
 ARQ_QUEUE_NAME = "nexus:tasks"
 
-# Friendly aliases → registry task_type (worker handler is ``telegram.auto_scrape``).
+# Friendly aliases -> registry task_type (worker handler is ``telegram.auto_scrape``).
 TASK_TYPE_ALIASES: dict[str, str] = {
     "auto_scrape": "telegram.auto_scrape",
     "telegram.autoscrape": "telegram.auto_scrape",
@@ -78,12 +88,11 @@ def _bootstrap_env_from_dotenv() -> None:
 
 def _redis_dsn_for_dispatch(master_ip: str) -> str:
     env_url = (os.getenv("REDIS_URL") or "").strip()
-    if env_url:
-        return env_url
     host = (master_ip or "127.0.0.1").strip() or "127.0.0.1"
     port = os.getenv("REDIS_PORT", "6379")
     db = os.getenv("REDIS_DB", "0")
-    return f"redis://{host}:{port}/{db}"
+    raw = env_url or f"redis://{host}:{port}/{db}"
+    return _coerce_redis_url(raw)
 
 
 async def _count_online_workers(redis: Any) -> tuple[int, list[str]]:
@@ -225,7 +234,7 @@ def _parse_args() -> argparse.Namespace:
         default=5,
         choices=range(1, 11),
         metavar="1-10",
-        help="Task priority 1–10 (default: 5)",
+        help="Task priority 1-10 (default: 5)",
     )
     parser.add_argument(
         "--params",
@@ -253,6 +262,9 @@ def _run_script(script_path: str, env_overrides: dict[str, str] | None = None) -
     if env_overrides:
         for key, value in env_overrides.items():
             os.environ[str(key)] = str(value)
+    # Reset sys.argv so child scripts don't inherit nexus_core's CLI flags
+    # (e.g. --worker --turbo-boost --skip-sync-check) and fail their own argparse.
+    sys.argv = [script_path]
     runpy.run_path(script_path, run_name="__main__")
 
 
@@ -261,12 +273,9 @@ def _graceful_stop(processes: list[Process]) -> None:
     for proc in processes:
         if proc.is_alive():
             try:
-                # Give each child process a chance to handle SIGINT cleanly.
                 if hasattr(signal, "SIGINT"):
                     signal_name = signal.SIGINT
-                    # os.kill works across platforms for Python child processes.
                     import os
-
                     os.kill(proc.pid, signal_name)
             except Exception:
                 pass
@@ -326,12 +335,9 @@ def main() -> None:
             "Run 'wsl service redis-server start' (or verify host).\033[0m"
         )
 
-    # Master-hybrid identity is inherited by API/Bot and enforced explicitly
-    # for the colocated worker process below.
     os.environ["NODE_ID"] = MASTER_NODE_ID
     os.environ["MASTER_IP"] = master_ip
 
-    # Apply node-level resource controls from node_config.json.
     node_cfg = load_node_config()
     limiter = GlobalResourceManager(
         cpu_limit=node_cfg.cpu_limit,
@@ -350,7 +356,7 @@ def main() -> None:
                 {
                     "NODE_ID": MASTER_NODE_ID,
                     "MASTER_IP": master_ip,
-                    "REDIS_URL": f"redis://{master_ip}:6379/0",
+                    "REDIS_URL": _coerce_redis_url(f"redis://{master_ip}:6379/0"),
                     "REDIS_HOST": master_ip,
                 },
             ),
@@ -374,7 +380,6 @@ def main() -> None:
     try:
         signal.signal(signal.SIGTERM, _on_signal)
     except (AttributeError, OSError, ValueError):
-        # SIGTERM handling may not be available depending on platform/runtime.
         pass
 
     try:

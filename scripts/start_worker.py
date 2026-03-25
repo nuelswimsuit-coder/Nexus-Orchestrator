@@ -81,21 +81,33 @@ def _parse_args() -> argparse.Namespace:
             "default: 127.0.0.1 on Windows, 10.100.102.8 on Linux)"
         ),
     )
-    return parser.parse_args()
+    # Use parse_known_args so that unknown flags inherited from nexus_core's
+    # sys.argv (--worker, --turbo-boost, --skip-sync-check) are silently ignored
+    # instead of causing argparse to exit with code 2.
+    args, _ = parser.parse_known_args()
+    return args
 
 
 def _apply_master_redis(master_host: str) -> None:
+    from nexus.shared.redis_util import coerce_redis_url_for_platform  # noqa: PLC0415
     host = (master_host or "127.0.0.1").strip() or "127.0.0.1"
     port = os.getenv("REDIS_PORT", "6379")
     db = os.getenv("REDIS_DB", "0")
+    url = coerce_redis_url_for_platform(f"redis://{host}:{port}/{db}")
     os.environ["MASTER_IP"] = host
     os.environ["REDIS_HOST"] = host
-    os.environ["REDIS_URL"] = f"redis://{host}:{port}/{db}"
+    os.environ["REDIS_URL"] = url
 
 
 def main() -> None:
     args = _parse_args()
     master_host = (args.master_host or "127.0.0.1").strip() or "127.0.0.1"
+    # #region agent log
+    import json as _json, time as _time
+    _log_path = Path(__file__).resolve().parent.parent / "debug-1360d2.log"
+    with open(_log_path, "a", encoding="utf-8") as _lf:
+        _lf.write(_json.dumps({"sessionId": "1360d2", "hypothesisId": "H1", "location": "start_worker.py:main", "message": "worker main() entry", "data": {"sys_argv": sys.argv[:], "master_host": master_host, "REDIS_URL_env": os.environ.get("REDIS_URL", ""), "MASTER_IP_env": os.environ.get("MASTER_IP", "")}, "timestamp": int(_time.time() * 1000)}) + "\n")
+    # #endregion
     _apply_master_redis(master_host)
 
     # WorkerSettings reads env at import time, so import it only after
@@ -104,7 +116,16 @@ def main() -> None:
 
     # CLI wins over any stale class-level redis_settings built from prior imports
     # or DSN edge cases: ARQ uses this object when the worker starts.
-    WorkerSettings.redis_settings.host = master_host
+    # Derive the arq host from the already-coerced REDIS_URL so we always
+    # connect via [::1] on Windows. arq expects a bare hostname (no brackets).
+    from urllib.parse import urlparse as _urlparse  # noqa: PLC0415
+    _coerced_url = os.environ.get("REDIS_URL", "")
+    _parsed_host = (_urlparse(_coerced_url).hostname or master_host).strip("[]")
+    WorkerSettings.redis_settings.host = _parsed_host
+    # #region agent log
+    with open(_log_path, "a", encoding="utf-8") as _lf:
+        _lf.write(_json.dumps({"sessionId": "1360d2", "hypothesisId": "H2", "location": "start_worker.py:arq_host", "message": "arq host resolved", "data": {"REDIS_URL_after_apply": _coerced_url, "arq_host": _parsed_host, "WorkerSettings_host": WorkerSettings.redis_settings.host}, "timestamp": int(_time.time() * 1000)}) + "\n")
+    # #endregion
 
     system_runtime = read_system_settings()
     # Muscle mode (default): target ~90% CPU on worker laptops via high ARQ
@@ -145,9 +166,6 @@ def main() -> None:
     )
 
     # ── Boot notification ─────────────────────────────────────────────────────
-    # If the system was rebooted less than 5 minutes ago, send a Telegram
-    # message so the operator knows the Worker came back online automatically.
-    # This runs in a short-lived event loop before ARQ takes over.
     tg_token   = os.environ.get("TELEGRAM_BOT_TOKEN", "") or settings.telegram_bot_token
     tg_chat_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "") or settings.telegram_admin_chat_id
 
@@ -161,8 +179,6 @@ def main() -> None:
 
     asyncio.run(_notify())
 
-    # Python 3.12+ / 3.14: `asyncio.run` closes the loop; ARQ expects a main-thread
-    # policy loop via get_event_loop(). Prefer an open loop, otherwise create one.
     try:
         loop = asyncio.get_event_loop()
         if loop.is_closed():
@@ -171,11 +187,6 @@ def main() -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-    # `run_worker` is ARQ's blocking worker loop.  It handles:
-    #   - Connecting to Redis
-    #   - Polling the queue
-    #   - Calling execute_task for each job
-    #   - Graceful shutdown on SIGTERM / Ctrl-C
     run_worker(WorkerSettings)
 
 

@@ -1,8 +1,9 @@
 """
 Smart Redis URL defaults and Windows auto-recovery helpers.
 
-- Windows (``win32``): broker defaults to ``127.0.0.1``; URLs that still point at
-  the fleet master stub ``10.100.102.8`` are rewritten to localhost.
+- Windows (``win32``): broker defaults to ``[::1]``; URLs that still point at
+  the fleet master stub ``10.100.102.8``, ``127.0.0.1``, or ``localhost`` are
+  rewritten to ``[::1]`` to avoid WSL2/Hyper-V port-proxy hijack (WinError 64).
 - Linux: default fleet master host ``10.100.102.8`` when nothing else is set.
 
 Used by :mod:`nexus.shared.config`, the API lifespan, and operator CLIs.
@@ -17,7 +18,9 @@ from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 LINUX_FLEET_REDIS_HOST = "10.100.102.8"
-WINDOWS_LOCAL_REDIS_HOST = "127.0.0.1"
+# Use IPv6 loopback on Windows — the bundled redis-server binds [::] which covers
+# IPv6. Avoid 127.0.0.1: WSL2/Hyper-V port-proxy rules can hijack it (WinError 64).
+WINDOWS_LOCAL_REDIS_HOST = "[::1]" if sys.platform == "win32" else "127.0.0.1"
 DEGRADED_ENV_FLAG = "NEXUS_ALLOW_DEGRADED"
 
 
@@ -48,13 +51,15 @@ def _replace_redis_hostname(url: str, new_host: str) -> str:
 
 def coerce_redis_url_for_platform(redis_url: str) -> str:
     """
-    Rewrite known misconfigurations (Windows still aimed at the Linux master IP).
+    Rewrite known misconfigurations on Windows:
+    - Linux fleet master IP -> [::1]
+    - 127.0.0.1 / localhost -> [::1]  (avoids WSL2/Hyper-V port-proxy hijack)
     """
     if not (redis_url or "").strip():
         return default_redis_url_string()
     if sys.platform == "win32":
         host = (urlparse(redis_url).hostname or "").lower()
-        if host == LINUX_FLEET_REDIS_HOST.lower():
+        if host in (LINUX_FLEET_REDIS_HOST.lower(), "127.0.0.1", "localhost"):
             return _replace_redis_hostname(redis_url, WINDOWS_LOCAL_REDIS_HOST)
     return redis_url
 
