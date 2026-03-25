@@ -126,3 +126,49 @@ async def upsert_by_numeric_id(
     redis: RedisDep,
 ) -> dict[str, Any]:
     return await upsert_swarm_group(_gk(group_id), body, redis)
+
+
+import socket as _socket
+
+_SESSION_INVENTORY_KEY = "nexus:sessions:inventory"
+_ALL_SCANNED_KEY = "nexus:sessions:all_scanned"
+
+
+def _machine_id() -> str:
+    return _socket.gethostname()
+
+
+@router.get("/sessions/inventory", summary="Get session inventory for this node")
+async def get_session_inventory(redis: RedisDep) -> dict[str, Any]:
+    raw = await redis.get(_SESSION_INVENTORY_KEY)
+    if not raw:
+        return {"machine_id": _machine_id(), "sessions": [], "total": 0}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = {}
+    return {"machine_id": _machine_id(), "data": data}
+
+
+@router.post("/sessions/inventory", summary="Update session inventory for this node")
+async def set_session_inventory(body: dict, redis: RedisDep) -> dict[str, Any]:
+    await redis.set(_SESSION_INVENTORY_KEY, json.dumps(body, ensure_ascii=False))
+    return {"ok": True, "machine_id": _machine_id()}
+
+
+@router.get("/sessions/all_scanned", summary="Get all scanned sessions across nodes")
+async def get_all_scanned(redis: RedisDep) -> dict[str, Any]:
+    raw = await redis.get(_ALL_SCANNED_KEY)
+    if not raw:
+        return {"machine_id": _machine_id(), "sessions": [], "total": 0}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = {}
+    return {"machine_id": _machine_id(), "data": data}
+
+
+@router.post("/sessions/all_scanned", summary="Update all scanned sessions")
+async def set_all_scanned(body: dict, redis: RedisDep) -> dict[str, Any]:
+    await redis.set(_ALL_SCANNED_KEY, json.dumps(body, ensure_ascii=False))
+    return {"ok": True, "machine_id": _machine_id()}

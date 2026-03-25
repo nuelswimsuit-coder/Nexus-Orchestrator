@@ -223,3 +223,17 @@ async def report_error(body: ReportErrorRequest, redis: RedisDep) -> dict:
         "node_id": body.node_id,
         "task_type": body.task_type,
     }
+
+
+class RecoverWorkerRequest(BaseModel):
+    node_id: str = "*"
+    mode: str = "signal_only"
+
+
+@router.post("/recover-worker", summary="Signal workers to restart via Redis panic channel")
+async def recover_worker(body: RecoverWorkerRequest, redis: RedisDep) -> dict:
+    """Publish a RESTART_WORKER signal to the panic channel so workers self-heal."""
+    PANIC_CHANNEL = "nexus:kill_switch:panic"
+    await redis.publish(PANIC_CHANNEL, f"RESTART_WORKER:{body.node_id}")
+    log.info("recover_worker_signal_sent", node_id=body.node_id, mode=body.mode)
+    return {"status": "published", "node_id": body.node_id, "mode": body.mode}

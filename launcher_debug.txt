@@ -3765,3 +3765,18 @@ eded the max restart limit (3). Manual intervention required.
 [watchdog] [frontend] restarted — pid=32924
 [launcher] child process exited pid=32924 label=frontend returncode=1.
 [WATCHDOG] Service *frontend* has crashed 3 times and exceeded the max restart limit (3). Manual intervention required.
+[launcher] child process exited pid=29848 label=git-sync returncode=4294967295.
+[watchdog] Restarting [git-sync] in 5s (attempt 1/3)…
+[watchdog] [git-sync] restarted — pid=38348
+[launcher] child process exited pid=27184 label=api returncode=4294967295.
+[watchdog] Restarting [api] in 10s (attempt 2/3)…
+[watchdog] [api] restarted — pid=7260
+[launcher] child process exited pid=7260 label=api returncode=4294967295.
+[watchdog] Restarting [api] in 15s (attempt 3/3)…
+[watchdog] [api] restarted — pid=21552
+[launcher] child process exited pid=38348 label=git-sync returncode=4294967295.
+[watchdog] Restarting [git-sync] in 10s (attempt 2/3)…
+[watchdog] [git-sync] restarted — pid=36132
+[launcher] child process exited pid=21552 label=api returncode=4294967295.
+[WATCHDOG] Service *api* has crashed 3 times and exceeded the max restart limit (3). Manual intervention required.
+[launcher] received signal 2; kill_all()
