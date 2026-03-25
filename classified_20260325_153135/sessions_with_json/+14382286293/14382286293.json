@@ -1,0 +1,20 @@
+{
+      "session_file": "14382286293",
+      "phone": "14382286293",
+      "register_time": 1730387103,
+      "app_id": 659337,
+      "app_hash": "314703a39f45937dcdee8dbb8c2dacbb",
+      "sdk": "SDK 31",
+      "app_version": "11.2.4 (1102040)",
+      "device": "Samsung SM-A315F",
+      "last_check_time": 1730387103,
+      "first_name": "Brian",
+      "last_name": "Turner",
+      "system_lang_code": "en-CA",
+      "lang_code": "en",
+      "twoFA": "86293",
+      "proxy": null,
+      "ipv6": false,
+      "username": null,
+      "avatar": "img/default.png"
+}

@@ -1,0 +1,20 @@
+{
+      "session_file": "573169788409",
+      "phone": "573169788409",
+      "register_time": 1728642359,
+      "app_id": 2040,
+      "app_hash": "b18441a1ff607e10a989891a5462e627",
+      "sdk": "Windows 10",
+      "app_version": "5.6.1 x64",
+      "device": "X12DPi_NT6",
+      "last_check_time": 1728642359,
+      "first_name": "John",
+      "last_name": "Frederick",
+      "system_lang_code": "en-CO",
+      "lang_code": "en",
+      "twoFA": "88409",
+      "proxy": null,
+      "ipv6": false,
+      "username": null,
+      "avatar": "img/default.png"
+}

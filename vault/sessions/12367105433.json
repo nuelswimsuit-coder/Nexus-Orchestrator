@@ -1,0 +1,20 @@
+{
+      "session_file": "12367105433",
+      "phone": "12367105433",
+      "register_time": 1730712267,
+      "app_id": 659337,
+      "app_hash": "314703a39f45937dcdee8dbb8c2dacbb",
+      "sdk": "SDK 31",
+      "app_version": "11.2.4 (1102040)",
+      "device": "Samsung SM-G973F",
+      "last_check_time": 1730712267,
+      "first_name": "Tanya",
+      "last_name": "Meyer",
+      "system_lang_code": "en-CA",
+      "lang_code": "en",
+      "twoFA": "05433",
+      "proxy": null,
+      "ipv6": false,
+      "username": null,
+      "avatar": "img/default.png"
+}

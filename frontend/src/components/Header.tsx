@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import useSWR from "swr";
 import { swrFetcher, API_BASE, openDeployProgressStream, getDeployStatus, triggerPanic } from "@/lib/api";
@@ -162,9 +163,12 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
   const [phase, setPhaseLocal]    = useState<DeployPhase>("idle");
   const [lines, setLines]         = useState<ModalLogLine[]>([]);
   const [errMsg, setErrMsg]       = useState("");
+  const [headerMounted, setHeaderMounted] = useState(false);
 
   const streamsRef  = useRef<Map<string, EventSource>>(new Map());
   const termRef     = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { setHeaderMounted(true); }, []);
 
   // Keep global context in sync
   const setPhase = useCallback((p: DeployPhase) => {
@@ -320,7 +324,7 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
       </button>
 
       {/* ── Full-screen modal terminal ── */}
-      {modalOpen && (
+      {headerMounted && modalOpen && createPortal(
         <div
           onClick={(e) => { if (e.target === e.currentTarget) setModalOpen(false); }}
           style={{
@@ -479,7 +483,8 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       <style>{`

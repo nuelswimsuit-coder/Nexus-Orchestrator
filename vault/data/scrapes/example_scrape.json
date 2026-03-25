@@ -1,0 +1,14 @@
+{
+  "scraped_at": "2025-03-20T14:30:00+00:00",
+  "source_group": "קהילת סוחרים — תל אביב",
+  "ai_relevance": 0.82,
+  "keywords": ["השקעה", "קריפטו", "סיכון"],
+  "users": [
+    { "user_id": 1001, "username": "trader_il", "display": "יוסי סוחר" },
+    { "user_id": 1002, "username": null, "display": "משתמש_חדש" }
+  ],
+  "selected_messages": [
+    { "id": 501, "text": "מחפשים שותף לעסקה בנדל״ן בדרום", "date": "2025-03-19" },
+    { "id": 502, "text": "מישהו מכיר עו״ד מומלץ לחברות?", "date": "2025-03-20" }
+  ]
+}

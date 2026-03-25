@@ -1,0 +1,20 @@
+{
+      "session_file": "13434383539",
+      "phone": "13434383539",
+      "register_time": 1732711412,
+      "app_id": 659337,
+      "app_hash": "314703a39f45937dcdee8dbb8c2dacbb",
+      "sdk": "SDK 31",
+      "app_version": "11.2.6 (1102061)",
+      "device": "Samsung SM-A715x",
+      "last_check_time": 1732711412,
+      "first_name": "Ryan",
+      "last_name": "Dixon",
+      "system_lang_code": "en-CA",
+      "lang_code": "en",
+      "twoFA": "83539",
+      "proxy": null,
+      "ipv6": false,
+      "username": null,
+      "avatar": "img/default.png"
+}

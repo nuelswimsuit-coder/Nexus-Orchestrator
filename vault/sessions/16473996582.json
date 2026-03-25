@@ -1,0 +1,20 @@
+{
+      "session_file": "16473996582",
+      "phone": "16473996582",
+      "register_time": 1732708710,
+      "app_id": 659337,
+      "app_hash": "314703a39f45937dcdee8dbb8c2dacbb",
+      "sdk": "SDK 31",
+      "app_version": "11.2.6 (1102061)",
+      "device": "Samsung SM-A515x",
+      "last_check_time": 1732708710,
+      "first_name": "Chris",
+      "last_name": "Hoover",
+      "system_lang_code": "en-CA",
+      "lang_code": "en",
+      "twoFA": "96582",
+      "proxy": null,
+      "ipv6": false,
+      "username": null,
+      "avatar": "img/default.png"
+}

@@ -1,0 +1,20 @@
+{
+      "session_file": "12495641553",
+      "phone": "12495641553",
+      "register_time": 1728999289,
+      "app_id": 659337,
+      "app_hash": "314703a39f45937dcdee8dbb8c2dacbb",
+      "sdk": "SDK 31",
+      "app_version": "11.1.5 (1101050)",
+      "device": "Samsung SM-A125F",
+      "last_check_time": 1728999289,
+      "first_name": "Jason",
+      "last_name": "Keller",
+      "system_lang_code": "en-CA",
+      "lang_code": "en",
+      "twoFA": "41553",
+      "proxy": null,
+      "ipv6": false,
+      "username": null,
+      "avatar": "img/default.png"
+}

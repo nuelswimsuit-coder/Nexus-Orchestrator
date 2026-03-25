@@ -1,0 +1,11 @@
+{
+  "convention": "he_IL",
+  "private_title_template": "{name} — פרטי",
+  "public_title_template": "{name} — ציבורי",
+  "name_pool": [
+    "קהילת ניתוח — בוקר",
+    "קהילת ניתוח — ערב",
+    "ארכיון סיגנלים",
+    "חדר מסחר — זהב"
+  ]
+}

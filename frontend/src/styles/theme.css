@@ -1,0 +1,40 @@
+/**
+ * Cyber-Ops theme layer — purple/cyan neon, RTL-friendly utilities.
+ * Activated with html[data-theme="cyber-ops"] (see ThemeProvider).
+ */
+
+html[data-theme="cyber-ops"] {
+  --cyber-purple: #a78bfa;
+  --cyber-cyan: #22d3ee;
+  --cyber-glow-p: rgba(167, 139, 250, 0.45);
+  --cyber-glow-c: rgba(34, 211, 238, 0.4);
+}
+
+html[data-theme="cyber-ops"] body {
+  background: radial-gradient(ellipse 120% 80% at 50% -20%, rgba(167, 139, 250, 0.12), transparent),
+    linear-gradient(180deg, #0c0514 0%, #07030f 100%);
+}
+
+.cyber-card {
+  border-radius: 12px;
+  border: 1px solid rgba(34, 211, 238, 0.2);
+  background: linear-gradient(145deg, rgba(26, 15, 46, 0.95), rgba(12, 5, 20, 0.9));
+  box-shadow:
+    0 0 24px rgba(167, 139, 250, 0.08),
+    0 0 1px rgba(34, 211, 238, 0.35) inset;
+}
+
+.cyber-glow-text {
+  text-shadow:
+    0 0 12px var(--cyber-glow-p, rgba(167, 139, 250, 0.5)),
+    0 0 28px var(--cyber-glow-c, rgba(34, 211, 238, 0.25));
+}
+
+/* Full Hebrew localization: respect dir=rtl on sections */
+[dir="rtl"] .cyber-mono-row {
+  text-align: right;
+}
+
+[dir="ltr"] .cyber-mono-row {
+  text-align: left;
+}

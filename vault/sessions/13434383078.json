@@ -1,0 +1,20 @@
+{
+      "session_file": "13434383078",
+      "phone": "13434383078",
+      "register_time": 1732706165,
+      "app_id": 659337,
+      "app_hash": "314703a39f45937dcdee8dbb8c2dacbb",
+      "sdk": "SDK 31",
+      "app_version": "11.2.6 (1102061)",
+      "device": "Samsung SM-M115F",
+      "last_check_time": 1732706165,
+      "first_name": "Ricky",
+      "last_name": "Jones",
+      "system_lang_code": "en-CA",
+      "lang_code": "en",
+      "twoFA": "83078",
+      "proxy": null,
+      "ipv6": false,
+      "username": null,
+      "avatar": "img/default.png"
+}

@@ -1,0 +1,9 @@
+telethon>=1.36.0
+google-generativeai>=0.7.0
+openai>=1.30.0
+anthropic>=0.28.0
+pyyaml>=6.0.1
+python-dotenv>=1.0.1
+rarfile>=4.1
+openpyxl>=3.1.2
+PySocks>=1.7.1

@@ -109,6 +109,7 @@ class Settings(BaseSettings):
     # production; the plain .env value is fine for local/LAN deployments.
     worker_ssh_user: str = Field(default="yadmin")
     worker_ssh_password: str = Field(default="")
+    worker_ssh_key_file: str = Field(default="")
     # Direct IP of the Linux worker laptop (used when no Redis heartbeat exists)
     worker_ip: str = Field(default="")
     # Canonical remote path — used by /api/deploy/sync (Phase 18)

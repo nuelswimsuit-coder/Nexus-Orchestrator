@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────
+#  Israeli AI Swarm Ghostwriter — Configuration
+# ─────────────────────────────────────────────────────────────
+
+telegram:
+  api_id: 0                          # Loaded from .env: TELEGRAM_API_ID
+  api_hash: ""                       # Loaded from .env: TELEGRAM_API_HASH
+  sessions_dir: "vault/sessions"     # Existing sessions from Nexus vault
+  max_sessions: 20                   # Max concurrent accounts to load (Israeli +972 prioritised)
+
+ai:
+  provider: "gemini"                 # "gemini" | "openai" | "anthropic"
+  gemini_api_key: ""                 # Loaded from .env: GEMINI_API_KEY
+  openai_api_key: ""                 # Loaded from .env: OPENAI_API_KEY
+  anthropic_api_key: ""              # Loaded from .env: ANTHROPIC_API_KEY
+  model_gemini: "gemini-1.5-flash"
+  model_openai: "gpt-4o-mini"
+  model_anthropic: "claude-3-haiku-20240307"
+  max_tokens: 200
+  temperature: 0.85
+
+personality: "Expert"
+# Options:
+#   "Expert"   — speaks with authority, drops technical insights
+#   "Skeptic"  — questions hype, asks for proof, plays devil's advocate
+#   "Hype-Man" — enthusiastic, uses emojis, amplifies excitement
+#   "Beginner" — curious, asks follow-up questions, sounds new to AI
+
+groups:
+  # Add Telegram group usernames (without @) or numeric IDs
+  - "israeliAIcommunity"
+  - "aitools_israel"
+  # - -1001234567890   # numeric group ID example
+
+triggers:
+  # Hebrew keywords that activate a reply
+  - "כסף"
+  - "כלי חדש"
+  - "פרומפט"
+  - "מדריך"
+  - "AI"
+  - "בינה מלאכותית"
+  - "ChatGPT"
+  - "קלוד"
+  - "גמיני"
+  - "אוטומציה"
+  - "הכנסה פסיבית"
+  - "פריצת דרך"
+
+behavior:
+  context_messages: 10              # How many past messages to read for context
+  min_delay_seconds: 5              # Minimum delay before replying
+  max_delay_seconds: 15             # Maximum delay before replying
+  stealth_mode: false               # If true, only reply to direct questions (ending with ?)
+  max_replies_per_hour: 8           # Rate-limit per session per group
+  skip_bots: true                   # Ignore messages from other bots
+  skip_own_messages: true           # Never reply to self
+
+logging:
+  level: "INFO"                     # DEBUG / INFO / WARNING
+  show_group_name: true
+  show_trigger_word: true
+
+# ── Session Scanner ────────────────────────────────────────────────────────────
+scanner:
+  enabled: false                    # Set to true to scan entire machine for .session files
+  roots:                            # Leave empty to scan ALL drives automatically
+    # - "C:\\"
+    # - "D:\\"
+  staging_dir: ""                   # Where extracted ZIP/RAR sessions land (empty = system temp)

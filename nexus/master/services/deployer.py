@@ -202,8 +202,13 @@ class DeployerService:
             or self._get_setting("worker_ssh_password")
             or ""
         )
+        ssh_key = (
+            os.environ.get("WORKER_SSH_KEY_FILE")
+            or self._get_setting("worker_ssh_key_file")
+            or ""
+        )
 
-        if not ssh_pass:
+        if not ssh_pass and not ssh_key:
             detail = "WORKER_SSH_PASSWORD is not set in .env or Vault"
             await self._emit(node_id, "error", "error", detail)
             return f"error: {detail}"
@@ -232,12 +237,14 @@ class DeployerService:
             # ── 1. Connect ────────────────────────────────────────────────────
             await self._emit(node_id, "connecting", "running",
                              f"SSH → {ssh_user}@{ip}")
+            _connect_kwargs: dict = dict(hostname=ip, username=ssh_user, timeout=15, banner_timeout=15)
+            if ssh_pass:
+                _connect_kwargs["password"] = ssh_pass
+            if ssh_key and os.path.isfile(ssh_key):
+                _connect_kwargs["key_filename"] = ssh_key
             await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: ssh.connect(
-                    hostname=ip, username=ssh_user, password=ssh_pass,
-                    timeout=15, banner_timeout=15,
-                ),
+                lambda: ssh.connect(**_connect_kwargs),
             )
             await self._emit(node_id, "connecting", "done",
                              f"Connected to {ip}")
@@ -364,8 +371,13 @@ class DeployerService:
             or self._get_setting("worker_ssh_password")
             or ""
         )
+        ssh_key = (
+            os.environ.get("WORKER_SSH_KEY_FILE")
+            or self._get_setting("worker_ssh_key_file")
+            or ""
+        )
 
-        if not ssh_pass:
+        if not ssh_pass and not ssh_key:
             detail = "WORKER_SSH_PASSWORD is not set in .env or Vault"
             await self._emit(node_id, "error", "error", detail)
             return f"error: {detail}"
@@ -417,12 +429,14 @@ class DeployerService:
             # ── 1. Connect ────────────────────────────────────────────────────
             await self._emit(node_id, "connecting", "running",
                              f"SSH → {ssh_user}@{ip}")
+            _ckw2: dict = dict(hostname=ip, username=ssh_user, timeout=15, banner_timeout=15)
+            if ssh_pass:
+                _ckw2["password"] = ssh_pass
+            if ssh_key and os.path.isfile(ssh_key):
+                _ckw2["key_filename"] = ssh_key
             await loop.run_in_executor(
                 None,
-                lambda: ssh.connect(
-                    hostname=ip, username=ssh_user, password=ssh_pass,
-                    timeout=15, banner_timeout=15,
-                ),
+                lambda: ssh.connect(**_ckw2),
             )
             await self._emit(node_id, "connecting", "done",
                              f"Connected to {ip}")
@@ -651,8 +665,13 @@ class DeployerService:
             or self._get_setting("worker_ssh_password")
             or ""
         )
+        ssh_key = (
+            os.environ.get("WORKER_SSH_KEY_FILE")
+            or self._get_setting("worker_ssh_key_file")
+            or ""
+        )
 
-        if not ssh_pass:
+        if not ssh_pass and not ssh_key:
             detail = "WORKER_SSH_PASSWORD is not set in .env or Vault"
             await self._emit(node_id, "error", "error", detail)
             return f"error: {detail}"
@@ -679,15 +698,14 @@ class DeployerService:
         try:
             # ── 1. Connect ────────────────────────────────────────────────────
             await self._emit(node_id, "connecting", "running", f"SSH → {ssh_user}@{ip}")
+            _ckw3: dict = dict(hostname=ip, username=ssh_user, timeout=15, banner_timeout=15)
+            if ssh_pass:
+                _ckw3["password"] = ssh_pass
+            if ssh_key and os.path.isfile(ssh_key):
+                _ckw3["key_filename"] = ssh_key
             await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: ssh.connect(
-                    hostname=ip,
-                    username=ssh_user,
-                    password=ssh_pass,
-                    timeout=15,
-                    banner_timeout=15,
-                ),
+                lambda: ssh.connect(**_ckw3),
             )
             await self._emit(node_id, "connecting", "done", f"Connected to {ip}")
 

@@ -1,0 +1,6 @@
+socks5://core-residential.evomi.com:1002:bawawa420:VIRbGlDJVH5EzPcbNk7P_country-IL
+socks5://core-residential.evomi.com:1002:bawawa420:VIRbGlDJVH5EzPcbNk7P_country-IL_city-netanya
+socks5://core-residential.evomi.com:1002:bawawa420:VIRbGlDJVH5EzPcbNk7P_country-IL_city-shoham
+socks5://core-residential.evomi.com:1002:bawawa420:VIRbGlDJVH5EzPcbNk7P_country-IL_city-ashdod
+socks5://core-residential.evomi.com:1002:bawawa420:VIRbGlDJVH5EzPcbNk7P_country-IL_city-yahod
+socks5://core-residential.evomi.com:1002:bawawa420:VIRbGlDJVH5EzPcbNk7P_country-IL_city-ness.ziona

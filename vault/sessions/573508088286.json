@@ -1,0 +1,20 @@
+{
+      "session_file": "573508088286",
+      "phone": "573508088286",
+      "register_time": 1728300166,
+      "app_id": 659337,
+      "app_hash": "314703a39f45937dcdee8dbb8c2dacbb",
+      "sdk": "SDK 31",
+      "app_version": "11.1.4 (1101040)",
+      "device": "Samsung SM-N770F",
+      "last_check_time": 1728300166,
+      "first_name": "Brian",
+      "last_name": "Barnes",
+      "system_lang_code": "en-CO",
+      "lang_code": "en",
+      "twoFA": "88286",
+      "proxy": null,
+      "ipv6": false,
+      "username": null,
+      "avatar": "img/default.png"
+}

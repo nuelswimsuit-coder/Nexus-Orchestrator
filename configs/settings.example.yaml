@@ -1,0 +1,6 @@
+# Optional defaults merged into environment before pydantic-settings loads.
+# Copy to ``settings.yaml`` in this directory. Keys become UPPER_SNAKE env names;
+# real environment variables always win.
+
+# LOG_LEVEL: DEBUG
+# API_PORT: 8001

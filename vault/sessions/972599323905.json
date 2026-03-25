@@ -1,0 +1,20 @@
+{
+      "session_file": "972599323905",
+      "phone": "972599323905",
+      "register_time": 1723210102,
+      "app_id": 659337,
+      "app_hash": "314703a39f45937dcdee8dbb8c2dacbb",
+      "sdk": "SDK 31",
+      "app_version": "10.14.5 (1014050)",
+      "device": "Samsung SM-N975F",
+      "last_check_time": 1723210102,
+      "first_name": "Jim",
+      "last_name": "Miller",
+      "system_lang_code": "en-us",
+      "lang_code": "en",
+      "twoFA": "23905",
+      "proxy": null,
+      "ipv6": false,
+      "username": null,
+      "avatar": "img/default.png"
+}
