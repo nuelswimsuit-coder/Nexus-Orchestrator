@@ -449,6 +449,6 @@ async def get_node_history(redis: RedisDep) -> dict[str, Any]:
     entries: list[str] = [r.decode() if isinstance(r, bytes) else str(r) for r in raw]
 
     if not entries:
-        entries = ["System initializing — waiting for core loop."]
+        entries = ["System initializing - waiting for core loop."]
 
     return {"entries": entries, "total": len(entries)}
