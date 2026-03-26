@@ -11,22 +11,67 @@ import { useTheme } from "@/lib/theme";
 
 // ── Nav item definitions ───────────────────────────────────────────────────────
 
-const NAV_ITEMS: {
-  href: string;
-  icon: string;
+interface NavItem {
+  href:     string;
+  icon:     string;
   labelKey: TranslationKey;
-  descKey: TranslationKey;
-}[] = [
-  { href: "/dashboard",  icon: "⚡", labelKey: "dashboard",  descKey: "nav_desc_dashboard" },
-  { href: "/operations", icon: "🎯", labelKey: "operations", descKey: "nav_desc_operations" },
-  { href: "/fleet",      icon: "🖥️", labelKey: "fleet",      descKey: "nav_desc_fleet" },
-  { href: "/projects",   icon: "🏗️", labelKey: "projects",   descKey: "nav_desc_projects" },
-  { href: "/treasury",   icon: "💰", labelKey: "treasury",   descKey: "nav_desc_treasury" },
-  { href: "/automation", icon: "🤖", labelKey: "automation", descKey: "nav_desc_automation" },
-  { href: "/incubator",  icon: "🧬", labelKey: "incubator",  descKey: "nav_desc_incubator" },
-  { href: "/settings",   icon: "⚙️", labelKey: "settings",   descKey: "nav_desc_settings" },
-  { href: "/about",      icon: "ℹ️", labelKey: "about",      descKey: "nav_desc_about" },
+  descKey:  TranslationKey;
+}
+
+interface NavGroup {
+  groupLabel: string;
+  items: NavItem[];
+}
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    groupLabel: "CORE",
+    items: [
+      { href: "/dashboard",  icon: "⚡", labelKey: "dashboard",  descKey: "nav_desc_dashboard" },
+      { href: "/operations", icon: "🎯", labelKey: "operations", descKey: "nav_desc_operations" },
+      { href: "/fleet",      icon: "🖥️", labelKey: "fleet",      descKey: "nav_desc_fleet" },
+      { href: "/treasury",   icon: "💰", labelKey: "treasury",   descKey: "nav_desc_treasury" },
+    ],
+  },
+  {
+    groupLabel: "TRADING",
+    items: [
+      { href: "/wallet-ops",      icon: "📈", labelKey: "wallet_ops",      descKey: "nav_desc_wallet_ops" },
+      { href: "/polymarket-deck", icon: "🎲", labelKey: "polymarket_deck", descKey: "nav_desc_polymarket_deck" },
+      { href: "/market-intel",    icon: "🔭", labelKey: "market_intel",    descKey: "nav_desc_market_intel" },
+    ],
+  },
+  {
+    groupLabel: "AUTOMATION",
+    items: [
+      { href: "/incubator",    icon: "🧬", labelKey: "incubator",    descKey: "nav_desc_incubator" },
+      { href: "/automation",   icon: "🤖", labelKey: "automation",   descKey: "nav_desc_automation" },
+      { href: "/ai-evolution", icon: "🧠", labelKey: "ai_evolution", descKey: "nav_desc_ai_evolution" },
+      { href: "/swarm-control",icon: "🐝", labelKey: "swarm_control",descKey: "nav_desc_swarm_control" },
+    ],
+  },
+  {
+    groupLabel: "DATA",
+    items: [
+      { href: "/sessions",  icon: "📱", labelKey: "sessions",  descKey: "nav_desc_sessions" },
+      { href: "/vault",     icon: "🔐", labelKey: "vault",     descKey: "nav_desc_vault" },
+      { href: "/modules",   icon: "🔧", labelKey: "modules",   descKey: "nav_desc_modules" },
+      { href: "/logs-raw",  icon: "📋", labelKey: "logs_raw",  descKey: "nav_desc_logs_raw" },
+    ],
+  },
+  {
+    groupLabel: "SYSTEM",
+    items: [
+      { href: "/projects",  icon: "🏗️", labelKey: "projects",  descKey: "nav_desc_projects" },
+      { href: "/nexus-os",  icon: "🌐", labelKey: "nexus_os",  descKey: "nav_desc_nexus_os" },
+      { href: "/settings",  icon: "⚙️", labelKey: "settings",  descKey: "nav_desc_settings" },
+      { href: "/about",     icon: "ℹ️", labelKey: "about",     descKey: "nav_desc_about" },
+    ],
+  },
 ];
+
+// Flat list for backward-compatible active-check logic
+const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap(g => g.items);
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
@@ -81,122 +126,150 @@ export default function Sidebar() {
         transition: "background 0.25s",
       }}
     >
-      {/* ── Nav items ── */}
-      <nav style={{ flex: 1, padding: "0.5rem 0" }}>
-        {NAV_ITEMS.map(({ href, icon, labelKey, descKey }) => {
-          const active = pathname === href || pathname.startsWith(href + "/");
-          const activeBg = isHighContrast
-            ? tokens.accentSubtle
-            : stealth ? "#0f172a" : `${accentC}18`;
-          const activeBorder = `2px solid ${stealth ? "#334155" : accentC}`;
+      {/* ── Nav items (grouped) ── */}
+      <nav style={{ flex: 1, padding: "0.5rem 0", overflowY: "auto", overflowX: "hidden" }}>
+        {NAV_GROUPS.map(({ groupLabel, items }) => (
+          <div key={groupLabel}>
+            {/* Group label — only visible when expanded */}
+            <AnimatePresence>
+              {expanded && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.12 }}
+                  style={{
+                    padding: "0.55rem 14px 0.2rem",
+                    fontSize: "0.6rem",
+                    fontWeight: 700,
+                    letterSpacing: "0.1em",
+                    color: isHighContrast ? tokens.textMuted : stealth ? "#1e293b" : "#2d4a65",
+                    fontFamily: "var(--font-mono)",
+                    whiteSpace: "nowrap",
+                    textAlign: isRTL ? "right" : "left",
+                  }}
+                >
+                  {groupLabel}
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-          return (
-            <Link key={href} href={href} style={{ textDecoration: "none" }}>
-              <div
-                title={expanded ? undefined : t(labelKey)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  flexDirection: isRTL ? "row-reverse" : "row",
-                  gap: "0.75rem",
-                  padding: "0.6rem 0",
-                  paddingLeft:  isRTL ? 0      : "14px",
-                  paddingRight: isRTL ? "14px" : 0,
-                  margin: "2px 6px",
-                  borderRadius: "8px",
-                  background: active ? activeBg : "transparent",
-                  borderLeft:  !isRTL && active ? activeBorder : "2px solid transparent",
-                  borderRight: isRTL  && active ? activeBorder : isRTL ? "2px solid transparent" : "none",
-                  cursor: "pointer",
-                  transition: "background 0.15s",
-                  position: "relative",
-                  overflow: "hidden",
-                  minWidth: 0,
-                }}
-              >
-                {/* Icon */}
-                <span style={{ fontSize: "1.1rem", flexShrink: 0, lineHeight: 1 }}>
-                  {icon}
-                </span>
+            {items.map(({ href, icon, labelKey, descKey }) => {
+              const active = pathname === href || pathname.startsWith(href + "/");
+              const activeBg = isHighContrast
+                ? tokens.accentSubtle
+                : stealth ? "#0f172a" : `${accentC}18`;
+              const activeBorder = `2px solid ${stealth ? "#334155" : accentC}`;
 
-                {/* Label + description */}
-                <AnimatePresence>
-                  {expanded && (
-                    <motion.div
-                      initial={{ opacity: 0, x: isRTL ? 8 : -8 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: isRTL ? 8 : -8 }}
-                      transition={{ duration: 0.15 }}
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        minWidth: 0,
-                        textAlign: isRTL ? "right" : "left",
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontFamily: "var(--font-sans)",
-                          fontSize: "0.95rem",
-                          fontWeight: active ? 700 : 500,
-                          color: active
-                            ? isHighContrast
-                              ? tokens.textPrimary
-                              : stealth ? "#94a3b8" : "#e8f2ff"
-                            : isHighContrast
-                              ? tokens.textSecondary
-                              : stealth ? "#334155" : "#7da8cc",
-                          letterSpacing: "0.02em",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {t(labelKey)}
-                      </span>
-                      <span
-                        style={{
-                          fontFamily: "var(--font-sans)",
-                          fontSize: "0.75rem",
-                          fontWeight: 400,
-                          color: isHighContrast
-                            ? tokens.textMuted
-                            : stealth ? "#1e293b" : "#2d4a65",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {t(descKey)}
-                      </span>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                {/* HITL badge on Dashboard */}
-                {href === "/dashboard" && hitlCount > 0 && (
-                  <motion.span
-                    animate={{ scale: [1, 1.15, 1] }}
-                    transition={{ repeat: Infinity, duration: 1.5 }}
+              return (
+                <Link key={href} href={href} style={{ textDecoration: "none" }}>
+                  <div
+                    title={expanded ? undefined : t(labelKey)}
                     style={{
-                      position: expanded ? "static" : "absolute",
-                      top: expanded ? undefined : 4,
-                      right: expanded ? undefined : 4,
-                      marginLeft: expanded && !isRTL ? "auto" : undefined,
-                      marginRight: expanded && isRTL ? "auto" : undefined,
-                      fontSize: "0.6rem",
-                      fontWeight: 700,
-                      fontFamily: "var(--font-mono)",
-                      background: isHighContrast ? tokens.warning : "#f59e0b",
-                      color: "#000",
-                      borderRadius: "999px",
-                      padding: "1px 5px",
-                      flexShrink: 0,
+                      display: "flex",
+                      alignItems: "center",
+                      flexDirection: isRTL ? "row-reverse" : "row",
+                      gap: "0.75rem",
+                      padding: "0.6rem 0",
+                      paddingLeft:  isRTL ? 0      : "14px",
+                      paddingRight: isRTL ? "14px" : 0,
+                      margin: "2px 6px",
+                      borderRadius: "8px",
+                      background: active ? activeBg : "transparent",
+                      borderLeft:  !isRTL && active ? activeBorder : "2px solid transparent",
+                      borderRight: isRTL  && active ? activeBorder : isRTL ? "2px solid transparent" : "none",
+                      cursor: "pointer",
+                      transition: "background 0.15s",
+                      position: "relative",
+                      overflow: "hidden",
+                      minWidth: 0,
                     }}
                   >
-                    {hitlCount}
-                  </motion.span>
-                )}
-              </div>
-            </Link>
-          );
-        })}
+                    {/* Icon */}
+                    <span style={{ fontSize: "1.1rem", flexShrink: 0, lineHeight: 1 }}>
+                      {icon}
+                    </span>
+
+                    {/* Label + description */}
+                    <AnimatePresence>
+                      {expanded && (
+                        <motion.div
+                          initial={{ opacity: 0, x: isRTL ? 8 : -8 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: isRTL ? 8 : -8 }}
+                          transition={{ duration: 0.15 }}
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            minWidth: 0,
+                            textAlign: isRTL ? "right" : "left",
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontFamily: "var(--font-sans)",
+                              fontSize: "0.95rem",
+                              fontWeight: active ? 700 : 500,
+                              color: active
+                                ? isHighContrast
+                                  ? tokens.textPrimary
+                                  : stealth ? "#94a3b8" : "#e8f2ff"
+                                : isHighContrast
+                                  ? tokens.textSecondary
+                                  : stealth ? "#334155" : "#7da8cc",
+                              letterSpacing: "0.02em",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {t(labelKey)}
+                          </span>
+                          <span
+                            style={{
+                              fontFamily: "var(--font-sans)",
+                              fontSize: "0.75rem",
+                              fontWeight: 400,
+                              color: isHighContrast
+                                ? tokens.textMuted
+                                : stealth ? "#1e293b" : "#2d4a65",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {t(descKey)}
+                          </span>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    {/* HITL badge on Dashboard */}
+                    {href === "/dashboard" && hitlCount > 0 && (
+                      <motion.span
+                        animate={{ scale: [1, 1.15, 1] }}
+                        transition={{ repeat: Infinity, duration: 1.5 }}
+                        style={{
+                          position: expanded ? "static" : "absolute",
+                          top: expanded ? undefined : 4,
+                          right: expanded ? undefined : 4,
+                          marginLeft: expanded && !isRTL ? "auto" : undefined,
+                          marginRight: expanded && isRTL ? "auto" : undefined,
+                          fontSize: "0.6rem",
+                          fontWeight: 700,
+                          fontFamily: "var(--font-mono)",
+                          background: isHighContrast ? tokens.warning : "#f59e0b",
+                          color: "#000",
+                          borderRadius: "999px",
+                          padding: "1px 5px",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {hitlCount}
+                      </motion.span>
+                    )}
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        ))}
       </nav>
 
       {/* ── System Health footer ── */}

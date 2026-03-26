@@ -79,9 +79,11 @@ ENGINE_STATE_KEY  = "nexus:engine:state"
 STUCK_STATE_KEY   = "nexus:engine:stuck"
 HEARTBEAT_PATTERN = "nexus:heartbeat:*"
 
+from pathlib import Path as _Path
+
 SESSIONS_DIR = os.getenv(
     "TELEFIX_SESSIONS_DIR",
-    r"C:\Users\Yarin\Desktop\Mangement Ahu\sessions",
+    str(_Path.home() / "Desktop" / "Mangement Ahu" / "sessions"),
 )
 
 STABILITY_SCORE_KEY = "nexus:stability:score"
@@ -99,6 +101,7 @@ class StabilitySentinel:
         redis: Any,
         notifier: Any = None,
         dispatcher: Any = None,
+        master_node_id: str | None = None,
     ) -> None:
         self._redis        = redis
         self._notifier     = notifier
@@ -106,6 +109,12 @@ class StabilitySentinel:
         self._running      = False
         self._below_threshold_since: float | None = None
         self._flight_engine = FlightModeEngine(redis=redis, notifier=notifier)
+        # Exclude master's own heartbeat key from worker count
+        self._master_heartbeat_key = (
+            f"nexus:heartbeat:{master_node_id}"
+            if master_node_id
+            else f"nexus:heartbeat:{os.getenv('NODE_ID', 'master')}"
+        )
 
     async def start(self) -> None:
         self._running = True
@@ -200,7 +209,10 @@ class StabilitySentinel:
                 cursor, keys = await self._redis.scan(
                     cursor=cursor, match=HEARTBEAT_PATTERN, count=50,
                 )
-                worker_count += len(keys)
+                # Exclude master's own heartbeat key — only count actual workers
+                worker_count += sum(
+                    1 for k in keys if k != self._master_heartbeat_key
+                )
                 if cursor == 0:
                     break
             if worker_count == 0:
@@ -262,7 +274,7 @@ ERROR_CHANNEL   = "nexus:sentinel:errors"
 FAILOVER_CH     = "nexus:sentinel:failover"
 AGENT_LOG_KEY   = "nexus:agent:log"
 
-WINDOWS_WORKER_KEY = "nexus:heartbeat:worker-windows"
+WINDOWS_WORKER_KEY = os.getenv("WINDOWS_WORKER_NODE_ID", "nexus:heartbeat:worker-windows")
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 

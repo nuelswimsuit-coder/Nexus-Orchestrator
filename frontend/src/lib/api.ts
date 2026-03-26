@@ -608,7 +608,7 @@ export interface IncubatorProject {
   age_hours: number;
 }
 
-export interface ProjectsResponse {
+export interface IncubatorProjectsResponse {
   projects: IncubatorProject[];
   total: number;
 }
@@ -634,8 +634,8 @@ export function refreshNiches(): Promise<{ message: string }> {
   return apiFetch("/api/incubator/niches/refresh", { method: "POST" });
 }
 
-export function getIncubatorProjects(): Promise<ProjectsResponse> {
-  return apiFetch<ProjectsResponse>("/api/incubator/projects");
+export function getIncubatorProjects(): Promise<IncubatorProjectsResponse> {
+  return apiFetch<IncubatorProjectsResponse>("/api/incubator/projects");
 }
 
 export function getIncubatorState(): Promise<IncubatorStateResponse> {
@@ -895,11 +895,14 @@ export interface ProjectInfo {
   scanned_at:    string;
 }
 
-export interface ProjectsResponse {
+export interface ProjectHubResponse {
   projects:  ProjectInfo[];
   total:     number;
   last_scan: string;
 }
+
+/** @deprecated Use ProjectHubResponse (project hub) or IncubatorProjectsResponse (incubator) */
+export type ProjectsResponse = ProjectHubResponse;
 
 export interface ProjectActionResponse {
   project_id: string;
@@ -908,8 +911,8 @@ export interface ProjectActionResponse {
   message:    string;
 }
 
-export function getProjects(): Promise<ProjectsResponse> {
-  return apiFetch<ProjectsResponse>("/api/projects");
+export function getProjects(): Promise<ProjectHubResponse> {
+  return apiFetch<ProjectHubResponse>("/api/projects");
 }
 
 export function getProject(name: string): Promise<ProjectInfo> {
@@ -923,8 +926,8 @@ export function projectAction(name: string, action: string): Promise<{ project: 
   });
 }
 
-export function refreshProjects(): Promise<ProjectsResponse> {
-  return apiFetch<ProjectsResponse>("/api/projects/refresh");
+export function refreshProjects(): Promise<ProjectHubResponse> {
+  return apiFetch<ProjectHubResponse>("/api/projects/refresh");
 }
 
 export function getBudgetStats(): Promise<BudgetStats> {
@@ -1071,4 +1074,67 @@ export function getSentinelEvents(limit = 20): Promise<SentinelEventsResponse> {
 
 export function getSentinelMetrics(limit = 30): Promise<SentinelMetricsResponse> {
   return apiFetch<SentinelMetricsResponse>(`/api/sentinel/metrics?limit=${limit}`);
+}
+
+// ── Session Commander ──────────────────────────────────────────────────────────
+
+export interface SessionCommanderAccount {
+  session_stem:     string;
+  phone:            string | null;
+  proxy_ip:         string | null;
+  status:           string | null;
+  health:           "green" | "yellow" | "red" | string | null;
+  lease_worker_id:  string | null;
+  lease_task_id:    string | null;
+  lease_ttl_seconds: number | null;
+}
+
+export interface SessionCommanderResponse {
+  accounts: SessionCommanderAccount[];
+  total:    number;
+  updated_at: string;
+}
+
+// ── Proxy ─────────────────────────────────────────────────────────────────────
+
+export interface ProxyEntry {
+  index:    number;
+  label:    string;
+  raw_line: string;
+}
+
+export interface ProxyStatusResponse {
+  active_index:              number;
+  active_label:              string | null;
+  active_public_ip:          string | null;
+  active_ip_country:         string | null;
+  active_ip_city:            string | null;
+  active_ip_isp:             string | null;
+  last_rotation_at:          string | null;
+  last_rotation_ago_seconds: number | null;
+  total_rotations:           number;
+  pool_size:                 number;
+  provider:                  string;
+  provider_plan:             string;
+  proxies:                   ProxyEntry[];
+}
+
+export interface RotationEvent {
+  ts:          string;
+  to_label:    string;
+  resolved_ip: string | null;
+  trigger:     string;
+}
+
+export interface RotationHistoryResponse {
+  events: RotationEvent[];
+}
+
+export interface RotateProxyResponse {
+  new_label:   string;
+  resolved_ip: string | null;
+}
+
+export function rotateProxy(): Promise<RotateProxyResponse> {
+  return apiFetch<RotateProxyResponse>("/api/proxy/rotate", { method: "POST" });
 }

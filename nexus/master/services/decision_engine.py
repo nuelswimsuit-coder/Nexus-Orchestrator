@@ -69,8 +69,11 @@ log = structlog.get_logger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-TELEFIX_DB   = r"C:\Users\Yarin\Desktop\Mangement Ahu\data\telefix.db"
-SESSIONS_DIR = r"C:\Users\Yarin\Desktop\Mangement Ahu\sessions"
+from pathlib import Path as _Path
+
+_DEFAULT_TELEFIX_ROOT = str(_Path.home() / "Desktop" / "Mangement Ahu")
+TELEFIX_DB   = os.getenv("TELEFIX_DB",       str(_Path(_DEFAULT_TELEFIX_ROOT) / "data" / "telefix.db"))
+SESSIONS_DIR = os.getenv("TELEFIX_SESSIONS_DIR", str(_Path(_DEFAULT_TELEFIX_ROOT) / "sessions"))
 
 HITL_THRESHOLD       = 60    # confidence below this → requires human approval
 STALE_SCRAPE_HOURS   = 6     # hours before scrape data is stale
@@ -720,8 +723,8 @@ class AutonomousOrchestrator:
         except Exception:
             daily_pnl = 0
 
-        # Worker count from cluster (fallback to 0)
-        worker_count = getattr(ctx, 'cluster_workers', 0)
+        # Worker count from context (active_workers is set by _collect_context)
+        worker_count = getattr(ctx, 'active_workers', 0)
         
         # Total sessions from context
         total_sessions = getattr(ctx, 'active_sessions', 0) + getattr(ctx, 'frozen_sessions', 0)

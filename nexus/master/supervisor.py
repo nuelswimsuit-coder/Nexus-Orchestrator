@@ -65,7 +65,6 @@ STRIKES_WINDOW_S      = int(os.getenv("SUPERVISOR_STRIKES_WINDOW",   "300"))
 BACKOFF_DELAYS: list[int] = [10, 30, 60]
 
 # ── Redis keys ────────────────────────────────────────────────────────────────
-WORKER_HEARTBEAT_KEY  = "nexus:heartbeat:worker"
 SUPERVISOR_STATUS_KEY = "nexus:supervisor:status"
 SUPERVISOR_STATUS_TTL = 300
 AGENT_LOG_KEY         = "nexus:agent:log"
@@ -136,10 +135,14 @@ class Supervisor:
         self._redis_last_warn_ts: float = 0.0
         self._redis_warn_cooldown_s: float = 20.0
 
-        # The main SSH-based worker is always registered
+        # The main SSH-based worker is always registered.
+        # node_id is used to build the heartbeat key: nexus:heartbeat:{node_id}
+        # It defaults to the configured worker IP so the key matches what the
+        # remote worker publishes (workers use NODE_ID env var, fallback to hostname).
+        worker_node_id = os.getenv("WORKER_NODE_ID", settings.worker_ip or "worker-remote")
         self._workers["worker-ssh"] = WorkerRecord(
             name    = "worker-ssh",
-            node_id = settings.worker_ip or "worker-remote",
+            node_id = worker_node_id,
         )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -245,8 +248,9 @@ class Supervisor:
             if task is None or task.done():
                 worker_ip = self._settings.worker_ip
                 if worker_ip:
+                    heartbeat_key = f"nexus:heartbeat:{ssh_worker.node_id}"
                     try:
-                        raw = await self._redis.get(WORKER_HEARTBEAT_KEY)
+                        raw = await self._redis.get(heartbeat_key)
                     except Exception as exc:
                         log.error(
                             "supervisor_heartbeat_check_error",

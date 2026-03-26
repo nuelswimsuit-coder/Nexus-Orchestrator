@@ -99,8 +99,9 @@ class Settings(BaseSettings):
     first_project_approved: bool = Field(default=False)
 
     # Root directory where the Architect writes generated project code.
+    # Defaults to ~/Desktop/Nexus-Projects — override with NEXUS_PROJECTS_DIR env var.
     nexus_projects_dir: str = Field(
-        default=r"C:\Users\Yarin\Desktop\Nexus-Projects"
+        default_factory=lambda: str(Path.home() / "Desktop" / "Nexus-Projects")
     )
 
     # ── Auto-Deployer — SSH credentials & targets ────────────────────────────

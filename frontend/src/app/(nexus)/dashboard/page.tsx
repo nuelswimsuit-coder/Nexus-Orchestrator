@@ -36,7 +36,7 @@ import WarRoomIntel from "@/components/WarRoomIntel";
 import WinRateWidget from "@/components/WinRateWidget";
 import { motion } from "framer-motion";
 import { useState } from "react";
-import { API_BASE, swrFetcher, type PanicStateResponse } from "@/lib/api";
+import { swrFetcher, triggerPanic, resetPanic, type PanicStateResponse } from "@/lib/api";
 import { useStealth } from "@/lib/stealth";
 
 // ── Stagger animation helpers ─────────────────────────────────────────────────
@@ -65,7 +65,7 @@ function PanicButtonPanel() {
   const [message, setMessage] = useState<string | null>(null);
 
   const { data: panicState } = useSWR<PanicStateResponse>(
-    `${API_BASE}/api/system/panic/state`,
+    "/api/system/panic/state",
     swrFetcher<PanicStateResponse>,
     { refreshInterval: 3_000 },
   );
@@ -78,9 +78,8 @@ function PanicButtonPanel() {
     setLoading(true);
     setMessage(null);
     try {
-      const res = await fetch(`${API_BASE}/api/panic`, { method: "POST" });
-      const json = await res.json();
-      setMessage(json.message ?? "🚨 PANIC ACTIVATED");
+      const json = await triggerPanic();
+      setMessage(`🚨 PANIC ACTIVATED — ${json.workers_terminated?.length ?? 0} workers terminated`);
       setLocalPanic(true);
     } catch {
       setMessage("שגיאה בהפעלת PANIC");
@@ -94,12 +93,10 @@ function PanicButtonPanel() {
   async function handleReset() {
     setLoading(true);
     try {
-      // Clear the panic flag by hitting the Redis delete endpoint (or just reset locally)
-      await fetch(`${API_BASE}/api/panic/reset`, { method: "POST" });
+      await resetPanic();
       setLocalPanic(false);
       setMessage("✅ המערכת הופעלה בהצלחה — System resumed");
     } catch {
-      // Fallback: clear locally even if endpoint fails
       setLocalPanic(false);
       setMessage("✅ מצב חירום בוטל — Panic cleared");
     } finally {

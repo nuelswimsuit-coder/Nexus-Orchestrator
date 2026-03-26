@@ -155,9 +155,7 @@ const DECISION_DOT: Record<string, string> = {
 
 export default function NexusOsGodMode() {
   const [activeTab, setActiveTab] = useState("master-hub");
-  const [currentTime, setCurrentTime] = useState(() =>
-    new Date().toLocaleTimeString(),
-  );
+  const [currentTime, setCurrentTime] = useState("");
   const [marketData, setMarketData] = useState<GodModeDashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [warmGroups, setWarmGroups] = useState<number>(0);
@@ -1628,10 +1626,6 @@ function SyncConnectionModal({ open, onClose, syncing, syncStatus, syncQueue, on
   const [activeConsoleNode, setActiveConsoleNode] = useState<string | null>(null);
   const terminalRef = React.useRef<HTMLDivElement>(null);
   const [mounted, setMounted] = useState(false);
-  // #region agent log
-  const [dbgInfo, setDbgInfo] = useState("");
-  // #endregion
-
   useEffect(() => { setMounted(true); }, []);
 
   // flex-col-reverse handles auto-scroll natively — no manual scrollTop needed.
@@ -1664,19 +1658,7 @@ function SyncConnectionModal({ open, onClose, syncing, syncStatus, syncQueue, on
       <div
         className="nexus-sync-panel relative w-full max-w-4xl bg-slate-950/95 backdrop-blur-md border border-cyan-500/60 border-t-4 border-t-cyan-500 rounded-2xl shadow-[0_0_80px_rgba(6,182,212,0.4)] flex flex-col pointer-events-auto"
         style={{ height: "min(85vh, 700px)", maxHeight: "calc(100vh - 2rem)", overflow: "hidden" }}
-        ref={(el) => {
-          if (el) {
-            const r = el.getBoundingClientRect();
-            const info = `vw=${window.innerWidth} vh=${window.innerHeight} | panel: t=${Math.round(r.top)} l=${Math.round(r.left)} w=${Math.round(r.width)} h=${Math.round(r.height)} | body.dir=${document.body.dir}`;
-            setDbgInfo(info);
-            fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'99ad89'},body:JSON.stringify({sessionId:'99ad89',location:'SyncConnectionModal:panel-rect',message:info,data:{top:r.top,left:r.left,w:r.width,h:r.height,vw:window.innerWidth,vh:window.innerHeight,bodyDir:document.body.dir},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-          }
-        }}
       >
-
-        {/* #region agent log */}
-        {dbgInfo && <div className="px-3 py-0.5 bg-yellow-500/20 text-yellow-300 text-[9px] font-mono shrink-0 truncate">{dbgInfo}</div>}
-        {/* #endregion */}
 
         {/* Modal header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800/80 shrink-0 bg-slate-950/95 backdrop-blur-sm">
@@ -1922,9 +1904,6 @@ function SwarmMonitorView() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ node_id: "*", mode: "signal_only" }),
       });
-      // #region agent log
-      fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'99ad89'},body:JSON.stringify({sessionId:'99ad89',location:'handleSync:recover-worker',message:'recover-worker response',data:{status:res.status,ok:res.ok,url:`${API_BASE}/api/sentinel/recover-worker`},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
       if (!res.ok) throw new Error(String(res.status));
 
       // Pull first 5 sessions as queue targets
@@ -1942,10 +1921,6 @@ function SwarmMonitorView() {
       setSyncStatus("active");
       void loadInventory();
     } catch(err) {
-      // #region agent log
-      fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'99ad89'},body:JSON.stringify({sessionId:'99ad89',location:'handleSync:catch',message:'sync failed',data:{error:String(err)},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
-      console.error('[NEXUS-DEBUG] handleSync failed:', err);
-      // #endregion
       setSyncStatus("error");
     } finally {
       setSyncing(false);
@@ -2307,10 +2282,19 @@ function SessionSwarmView() {
   const load = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/swarm/sessions/all_scanned`);
+      // #region agent log
+      fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dfb50f'},body:JSON.stringify({sessionId:'dfb50f',location:'NexusOsGodMode.tsx:fetch-response',message:'API response status',data:{ok:res.ok,status:res.status},timestamp:Date.now(),hypothesisId:'H-B'})}).catch(()=>{});
+      // #endregion
       if (!res.ok) throw new Error(String(res.status));
       const j = (await res.json()) as AllScannedResponse;
+      // #region agent log
+      fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dfb50f'},body:JSON.stringify({sessionId:'dfb50f',location:'NexusOsGodMode.tsx:after-json',message:'Parsed JSON shape',data:{typeofJ:typeof j,isNull:j===null,keys:j && typeof j==='object' ? Object.keys(j) : null, sessions_by_machine_type: j ? typeof (j as AllScannedResponse).sessions_by_machine : 'N/A', sessions_by_machine_val: j ? String((j as AllScannedResponse).sessions_by_machine).slice(0,100) : 'N/A'},timestamp:Date.now(),hypothesisId:'H-A,H-B,H-C'})}).catch(()=>{});
+      // #endregion
       setData(j);
     } catch (err) {
+      // #region agent log
+      fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dfb50f'},body:JSON.stringify({sessionId:'dfb50f',location:'NexusOsGodMode.tsx:catch',message:'Fetch error',data:{err:String(err)},timestamp:Date.now(),hypothesisId:'H-B'})}).catch(()=>{});
+      // #endregion
       console.error("SessionSwarm fetch error:", err);
     } finally {
       setLoading(false);
@@ -2325,8 +2309,12 @@ function SessionSwarmView() {
 
   const q = search.trim().toLowerCase();
 
+  // #region agent log
+  fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dfb50f'},body:JSON.stringify({sessionId:'dfb50f',location:'NexusOsGodMode.tsx:before-entries',message:'data state before Object.entries',data:{dataIsNull:data===null,dataType:typeof data,hasSBM:data ? 'sessions_by_machine' in data : false, sbmType: data ? typeof (data as AllScannedResponse).sessions_by_machine : 'N/A', sbmIsNull: data ? (data as AllScannedResponse).sessions_by_machine === null : false},timestamp:Date.now(),hypothesisId:'H-A,H-D'})}).catch(()=>{});
+  // #endregion
+
   const filteredMachines: [string, SwarmSession[]][] = data
-    ? Object.entries(data.sessions_by_machine)
+    ? Object.entries(data.sessions_by_machine ?? {})
         .map(([machine, sessions]) => {
           const filtered = q
             ? sessions.filter(

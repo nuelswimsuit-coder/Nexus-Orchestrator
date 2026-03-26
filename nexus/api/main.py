@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from redis.asyncio import Redis
 from slowapi import Limiter, _rate_limit_exceeded_handler  # type: ignore[import-untyped]
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from nexus.api.hitl_store import HitlStore
@@ -45,7 +46,9 @@ from nexus.api.routers import (
     notifications,
     prediction,
     projects,
+    proxy,
     scalper,
+    scan,
     sentinel,
     sessions,
     swarm,
@@ -147,7 +150,7 @@ async def _connect_redis_with_retry(redis_url: str) -> tuple[Redis, bool]:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage startup and shutdown of shared resources."""
-    configure_logging(level="ERROR", node_id=f"{settings.node_id}-api")
+    configure_logging(level=settings.log_level.upper() if hasattr(settings, "log_level") else "INFO", node_id=f"{settings.node_id}-api")
 
     redis, redis_degraded = await _connect_redis_with_retry(settings.redis_url)
     app.state.redis = redis
@@ -235,16 +238,16 @@ def create_app() -> FastAPI:
     # ── Rate limiting ──────────────────────────────────────────────────────────
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_middleware(SlowAPIMiddleware)
 
     # ── CORS ───────────────────────────────────────────────────────────────────
-    # Allow localhost dev server, Tailscale VPN range (100.x.x.x), and LAN.
+    # Allow localhost dev server and Tailscale VPN range (100.x.x.x).
+    # Tailscale origins are matched by allow_origin_regex — no CIDR strings here.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
             "http://localhost:3000",
             "http://127.0.0.1:3000",
-            # Tailscale VPN — allow all 100.x.x.x origins for mobile access
-            "http://100.0.0.0/8",
         ],
         allow_origin_regex=r"http://100\.\d+\.\d+\.\d+(:\d+)?",
         allow_credentials=True,
@@ -299,6 +302,8 @@ def create_app() -> FastAPI:
     app.include_router(swarm.router, prefix="/api")
     app.include_router(system.router, prefix="/api")
     app.include_router(flight_mode.router, prefix="/api")
+    app.include_router(scan.router, prefix="/api")
+    app.include_router(proxy.router, prefix="/api")
 
     # ── Root redirect ──────────────────────────────────────────────────────────
     @app.get("/", include_in_schema=False)

@@ -48,6 +48,7 @@ import structlog
 from arq.connections import RedisSettings
 
 import nexus.worker.tasks.auto_scrape  # noqa: F401 — registers telegram.auto_scrape
+import nexus.worker.tasks.scale  # noqa: F401 — registers nexus.scale_worker
 import nexus.worker.tasks.content_factory  # noqa: F401 — registers telegram.content_factory
 import nexus.worker.tasks.group_warmer  # noqa: F401 — registers swarm.group_warmer
 import nexus.worker.tasks.incubator_spawn  # noqa: F401 — registers nexus.incubator.*
@@ -260,7 +261,10 @@ async def _panic_subscriber(ctx: dict[str, Any]) -> None:
     """
     from redis.asyncio import from_url as _redis_from_url
 
-    redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
+    from nexus.shared import redis_util
+
+    raw_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
+    redis_url = redis_util.coerce_redis_url_for_platform(raw_url)
     retry_s = 1.0
     attempt = 0
     while True:
@@ -322,10 +326,12 @@ async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
     if redis is None:
         return
 
+    import psutil
+
     hw = get_hardware_info()
-    mem = __import__("psutil").virtual_memory()
+    mem = psutil.virtual_memory()
     ram_used_mb = round(mem.used / (1024 * 1024), 1)
-    cpu_percent = __import__("psutil").cpu_percent(interval=None)
+    cpu_percent = psutil.cpu_percent(interval=None)
 
     heartbeat = NodeHeartbeat(
         node_id=WORKER_ID,

@@ -1100,13 +1100,31 @@ export default function Header() {
   );
 
   const PAGE_KEY_MAP: Record<string, string> = {
-    "/dashboard":  "nav.dashboard",
-    "/operations": "nav.operations",
-    "/fleet":      "nav.fleet",
-    "/treasury":   "nav.treasury",
-    "/automation": "nav.automation",
-    "/settings":   "nav.settings",
-    "/about":      "nav.about",
+    "/dashboard":          "nav.dashboard",
+    "/operations":         "nav.operations",
+    "/fleet":              "nav.fleet",
+    "/projects":           "nav.projects",
+    "/treasury":           "nav.treasury",
+    "/automation":         "nav.automation",
+    "/incubator":          "nav.incubator",
+    "/settings":           "nav.settings",
+    "/about":              "nav.about",
+    "/sessions":           "nav.sessions",
+    "/wallet-ops":         "nav.wallet-ops",
+    "/swarm-control":      "nav.swarm-control",
+    "/vault":              "nav.vault",
+    "/market-intel":       "nav.market-intel",
+    "/polymarket-deck":    "nav.polymarket-deck",
+    "/modules":            "nav.modules",
+    "/nexus-os":           "nav.nexus-os",
+    "/logs-raw":           "nav.logs-raw",
+    "/ai-evolution":       "nav.ai-evolution",
+    "/evolution":          "nav.evolution",
+    "/bot-farm":           "nav.bot-farm",
+    "/strategy-lab":       "nav.strategy-lab",
+    "/bot-factory":        "nav.bot-factory",
+    "/scrape-browser":     "nav.scrape-browser",
+    "/group-infiltration": "nav.group-infiltration",
   };
   const pageLabel = PAGE_KEY_MAP[pathname] ? t(PAGE_KEY_MAP[pathname] as TranslationKey) : "";
 
