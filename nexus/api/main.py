@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import unquote, urlparse
 
 import structlog
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from redis.asyncio import Redis
@@ -197,9 +197,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     log.info("nexus_api_started", docs="/docs", rate_limit="100/min")
 
     # Push live system lines to the Redis log stream so the Live Terminal shows data.
+    # Writes to both the canonical node_id key and the UI alias "master-hybrid-node".
     async def _master_log_streamer() -> None:
         import socket as _sock  # noqa: PLC0415
-        _key = f"nexus:log_stream:{settings.node_id}"
+        _keys = [f"nexus:log_stream:{settings.node_id}", "nexus:log_stream:master-hybrid-node"]
         _hostname = _sock.gethostname()
         _max_lines = 200
         while True:
@@ -212,8 +213,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     f"[{_ts}] [{_hostname}] CPU {_cpu:.1f}% | "
                     f"RAM {_ram.used // 1024 // 1024}MB/{_ram.total // 1024 // 1024}MB"
                 )
-                await redis.rpush(_key, _line)
-                await redis.ltrim(_key, -_max_lines, -1)
+                for _key in _keys:
+                    await redis.rpush(_key, _line)
+                    await redis.ltrim(_key, -_max_lines, -1)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -1304,8 +1306,6 @@ def create_app() -> FastAPI:
 
     # ── WebSocket: Live log stream for any node (Master Terminal) ─────────────
     # Registered BEFORE middleware so SlowAPI / CORS don't block the WS upgrade.
-    from fastapi import WebSocket, WebSocketDisconnect  # noqa: PLC0415
-
     @app.websocket("/api/v1/swarm/nodes/{node_id}/log_stream")
     async def node_log_stream(websocket: WebSocket, node_id: str) -> None:
         """
@@ -1352,17 +1352,7 @@ def create_app() -> FastAPI:
     # ── Rate limiting ──────────────────────────────────────────────────────────
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-    # Use a WebSocket-aware wrapper so SlowAPI doesn't block WS upgrade requests.
-    from starlette.types import ASGIApp, Receive, Scope, Send  # noqa: PLC0415
-
-    class _WSAwareSlowAPIMiddleware(SlowAPIMiddleware):
-        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-            if scope["type"] == "websocket":
-                await self.app(scope, receive, send)
-                return
-            await super().__call__(scope, receive, send)
-
-    app.add_middleware(_WSAwareSlowAPIMiddleware)
+    app.add_middleware(SlowAPIMiddleware)
 
     # ── CORS ───────────────────────────────────────────────────────────────────
     # Allow localhost dev server and Tailscale VPN range (100.x.x.x).
@@ -1373,9 +1363,7 @@ def create_app() -> FastAPI:
             "http://localhost:3000",
             "http://127.0.0.1:3000",
         ],
-        # Starlette CORS blocks WebSocket upgrades unless origin is in allow_origins.
-        # allow_origin_regex covers Tailscale VPN range + any localhost variant.
-        allow_origin_regex=r"(https?|wss?)://(localhost|127\.0\.0\.1|100\.\d+\.\d+\.\d+)(:\d+)?",
+        allow_origin_regex=r"http://100\.\d+\.\d+\.\d+(:\d+)?",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
