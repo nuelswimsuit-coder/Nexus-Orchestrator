@@ -212,12 +212,6 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
         const color = MODAL_STEP_COLOR[ev.step] ?? "#94a3b8";
         const text  = ev.detail || (ev as DeployProgressEvent & { label?: string }).label || tag;
 
-        // #region agent log
-        if (ev.step === "uploading" || ev.step === "done") {
-          fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'99ad89'},body:JSON.stringify({sessionId:'99ad89',location:'Header.tsx:onmessage',message:'SSE event received',data:{step:ev.step,status:ev.status,text:text.slice(0,80),_maxFile,_totFile},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-        }
-        // #endregion
-
         // For individual file upload events, track max and collapse into one updating line
         if (ev.step === "uploading" && ev.status === "running" && text.match(/^\[(\d+)\/(\d+)\]/)) {
           const m = text.match(/^\[(\d+)\/(\d+)\]/);
