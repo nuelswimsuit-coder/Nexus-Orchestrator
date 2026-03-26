@@ -138,37 +138,126 @@ def _machine_id() -> str:
     return _socket.gethostname()
 
 
-@router.get("/sessions/inventory", summary="Get session inventory for this node")
+@router.get("/sessions/inventory", summary="Get global session inventory grouped by machine")
 async def get_session_inventory(redis: RedisDep) -> dict[str, Any]:
-    raw = await redis.get(_SESSION_INVENTORY_KEY)
-    if not raw:
-        return {"machine_id": _machine_id(), "sessions": [], "total": 0}
-    try:
-        data = json.loads(raw)
-    except Exception:
-        data = {}
-    return {"machine_id": _machine_id(), "data": data}
+    """
+    Returns inventory in the shape the dashboard expects:
+      {inventory_by_machine: {machine_id: [InventorySession]}, machines: [...], total: N}
+
+    Data is aggregated from all per-node keys ``nexus:sessions:inventory:<machine_id>``
+    plus the legacy single-node key ``nexus:sessions:inventory``.
+    """
+    inventory_by_machine: dict[str, list[dict[str, Any]]] = {}
+
+    # Scan all per-node inventory keys
+    cursor = 0
+    while True:
+        cursor, keys = await redis.scan(cursor=cursor, match="nexus:sessions:inventory:*", count=100)
+        for key in keys:
+            raw = await redis.get(key)
+            if not raw:
+                continue
+            try:
+                node_data = json.loads(raw)
+                machine = key.replace("nexus:sessions:inventory:", "")
+                sessions = node_data if isinstance(node_data, list) else node_data.get("sessions", [])
+                if sessions:
+                    inventory_by_machine[machine] = sessions
+            except Exception:
+                pass
+        if cursor == 0:
+            break
+
+    # Also check the legacy single-node key
+    raw_legacy = await redis.get(_SESSION_INVENTORY_KEY)
+    if raw_legacy:
+        try:
+            legacy = json.loads(raw_legacy)
+            if isinstance(legacy, dict) and "inventory_by_machine" in legacy:
+                # Already in the new shape — merge
+                for m, sessions in (legacy.get("inventory_by_machine") or {}).items():
+                    if m not in inventory_by_machine:
+                        inventory_by_machine[m] = sessions
+            elif isinstance(legacy, list):
+                mid = _machine_id()
+                if mid not in inventory_by_machine:
+                    inventory_by_machine[mid] = legacy
+        except Exception:
+            pass
+
+    machines = list(inventory_by_machine.keys())
+    total = sum(len(v) for v in inventory_by_machine.values())
+
+    return {
+        "inventory_by_machine": inventory_by_machine,
+        "machines": machines,
+        "total": total,
+        "is_mock": False,
+    }
 
 
 @router.post("/sessions/inventory", summary="Update session inventory for this node")
 async def set_session_inventory(body: dict, redis: RedisDep) -> dict[str, Any]:
+    machine = body.get("machine_id") or _machine_id()
+    # Store both per-node key and legacy key
+    await redis.set(f"{_SESSION_INVENTORY_KEY}:{machine}", json.dumps(body, ensure_ascii=False))
     await redis.set(_SESSION_INVENTORY_KEY, json.dumps(body, ensure_ascii=False))
-    return {"ok": True, "machine_id": _machine_id()}
+    return {"ok": True, "machine_id": machine}
 
 
 @router.get("/sessions/all_scanned", summary="Get all scanned sessions across nodes")
 async def get_all_scanned(redis: RedisDep) -> dict[str, Any]:
-    raw = await redis.get(_ALL_SCANNED_KEY)
-    if not raw:
-        return {"machine_id": _machine_id(), "sessions": [], "total": 0}
-    try:
-        data = json.loads(raw)
-    except Exception:
-        data = {}
-    return {"machine_id": _machine_id(), "data": data}
+    """
+    Returns sessions_by_machine shape expected by the dashboard.
+    """
+    sessions_by_machine: dict[str, list[dict[str, Any]]] = {}
+
+    cursor = 0
+    while True:
+        cursor, keys = await redis.scan(cursor=cursor, match="nexus:sessions:all_scanned:*", count=100)
+        for key in keys:
+            raw = await redis.get(key)
+            if not raw:
+                continue
+            try:
+                node_data = json.loads(raw)
+                machine = key.replace("nexus:sessions:all_scanned:", "")
+                sessions = node_data if isinstance(node_data, list) else node_data.get("sessions", [])
+                if sessions:
+                    sessions_by_machine[machine] = sessions
+            except Exception:
+                pass
+        if cursor == 0:
+            break
+
+    raw_legacy = await redis.get(_ALL_SCANNED_KEY)
+    if raw_legacy:
+        try:
+            legacy = json.loads(raw_legacy)
+            if isinstance(legacy, dict) and "sessions_by_machine" in legacy:
+                for m, sessions in (legacy.get("sessions_by_machine") or {}).items():
+                    if m not in sessions_by_machine:
+                        sessions_by_machine[m] = sessions
+            elif isinstance(legacy, list):
+                mid = _machine_id()
+                if mid not in sessions_by_machine:
+                    sessions_by_machine[mid] = legacy
+        except Exception:
+            pass
+
+    machines = list(sessions_by_machine.keys())
+    total = sum(len(v) for v in sessions_by_machine.values())
+    return {
+        "sessions_by_machine": sessions_by_machine,
+        "machines": machines,
+        "total": total,
+        "is_mock": False,
+    }
 
 
 @router.post("/sessions/all_scanned", summary="Update all scanned sessions")
 async def set_all_scanned(body: dict, redis: RedisDep) -> dict[str, Any]:
+    machine = body.get("machine_id") or _machine_id()
+    await redis.set(f"{_ALL_SCANNED_KEY}:{machine}", json.dumps(body, ensure_ascii=False))
     await redis.set(_ALL_SCANNED_KEY, json.dumps(body, ensure_ascii=False))
-    return {"ok": True, "machine_id": _machine_id()}
+    return {"ok": True, "machine_id": machine}

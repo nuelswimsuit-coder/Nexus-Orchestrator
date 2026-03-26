@@ -104,16 +104,6 @@ def main() -> None:
     master_host = (args.master_host or "127.0.0.1").strip() or "127.0.0.1"
     _apply_master_redis(master_host)
 
-    # #region agent log
-    import json as _j, time as _t
-    _log_path = Path(__file__).resolve().parent.parent / "debug-d379fc.log"
-    try:
-        with open(_log_path, "a") as _f:
-            _f.write(_j.dumps({"sessionId": "d379fc", "location": "start_worker.py:main_start", "message": "worker starting", "data": {"platform": sys.platform, "master_host": master_host, "redis_url": os.environ.get("REDIS_URL", ""), "node_id": os.environ.get("NODE_ID", "")}, "timestamp": int(_t.time() * 1000), "hypothesisId": "H1"}) + "\n")
-    except Exception:
-        pass
-    # #endregion
-
     # WorkerSettings reads env at import time, so import it only after
     # --master-host / env overrides have been applied.
     from nexus.worker.listener import WorkerSettings  # noqa: PLC0415
@@ -164,16 +154,6 @@ def main() -> None:
         throttle_delay_s=float(os.environ.get("NEXUS_PREDICTION_THROTTLE_DELAY", "1.0")),
         low_power_mode=low_power,
     )
-
-    # #region agent log
-    import json as _j, time as _t
-    _log_path = Path(__file__).resolve().parent.parent / "debug-d379fc.log"
-    try:
-        with open(_log_path, "a") as _f:
-            _f.write(_j.dumps({"sessionId": "d379fc", "location": "start_worker.py:arq_host", "message": "ARQ redis_settings resolved", "data": {"arq_host": rs.host, "arq_port": rs.port, "arq_db": rs.database, "resolved": resolved}, "timestamp": int(_t.time() * 1000), "hypothesisId": "H1"}) + "\n")
-    except Exception:
-        pass
-    # #endregion
 
     # ── Boot notification ─────────────────────────────────────────────────────
     tg_token   = os.environ.get("TELEGRAM_BOT_TOKEN", "") or settings.telegram_bot_token

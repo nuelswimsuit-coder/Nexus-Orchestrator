@@ -537,6 +537,42 @@ def _get_swagger_ui_html(openapi_url: str, title: str) -> str:  # noqa: PLR0915
       border: 1px solid rgba(245,158,11,0.25);
     }}
 
+    /* ── Language toggle button ──────────────────────────────────── */
+    .lang-btn {{
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 20px;
+      background: rgba(139,92,246,0.12);
+      border: 1px solid rgba(139,92,246,0.35);
+      color: #a78bfa;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--nexus-font);
+      letter-spacing: 0.3px;
+      transition: all 0.2s;
+      user-select: none;
+    }}
+
+    .lang-btn:hover {{
+      background: rgba(139,92,246,0.25);
+      border-color: rgba(139,92,246,0.6);
+      color: #c4b5fd;
+      transform: translateY(-1px);
+      box-shadow: 0 3px 10px rgba(139,92,246,0.25);
+    }}
+
+    .lang-btn:active {{
+      transform: translateY(0);
+    }}
+
+    #lang-flag {{
+      font-size: 14px;
+      line-height: 1;
+    }}
+
     @keyframes pulse-green {{
       0%, 100% {{ box-shadow: 0 0 0 0 rgba(16,185,129,0.4); }}
       50% {{ box-shadow: 0 0 0 4px rgba(16,185,129,0); }}
@@ -1038,26 +1074,139 @@ def _get_swagger_ui_html(openapi_url: str, title: str) -> str:  # noqa: PLR0915
     <div class="logo-icon">🤖</div>
     <div class="logo-text">
       <h1>Nexus Orchestrator</h1>
-      <p>Control Center API · Distributed Agentic Workflow System</p>
+      <p id="banner-subtitle">Control Center API · Distributed Agentic Workflow System</p>
     </div>
   </div>
   <div class="badges">
     <span class="badge badge-live">● LIVE</span>
     <span class="badge badge-version">v1.0.0</span>
     <span class="badge badge-rate">100 req/min</span>
+    <button id="lang-toggle" class="lang-btn" onclick="toggleLang()" title="Switch language / החלף שפה">
+      <span id="lang-flag">🇮🇱</span>
+      <span id="lang-label">עברית</span>
+    </button>
   </div>
 </div>
 
 <div id="swagger-ui"></div>
 
 <div id="nexus-footer">
-  Nexus Orchestrator · Built with <span>FastAPI</span> · Redis + ARQ · 
-  <span>22 API modules</span> · Master/Worker Architecture
+  <span id="footer-text">Nexus Orchestrator · Built with <span>FastAPI</span> · Redis + ARQ · <span>22 API modules</span> · Master/Worker Architecture</span>
 </div>
 
 <script src="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"></script>
 <script src="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-standalone-preset.js"></script>
 <script>
+  // ── i18n translations ────────────────────────────────────────────────────────
+  const TRANSLATIONS = {{
+    he: {{
+      lang: 'he',
+      dir: 'rtl',
+      flag: '🇮🇱',
+      btnLabel: 'English',
+      subtitle: 'ממשק בקרה API · מערכת זרימת עבודה מבוזרת ואוטונומית',
+      footer: 'Nexus Orchestrator · נבנה עם <span style="color:var(--nexus-accent)">FastAPI</span> · Redis + ARQ · <span style="color:var(--nexus-accent)">22 מודולי API</span> · ארכיטקטורת Master/Worker',
+      tags: {{
+        'meta':          '🟢 בדיקות חיות — Liveness & Readiness probes',
+        'cluster':       '🖥️ טופולוגיית Cluster — מצב כל הצמתים בזמן אמת',
+        'business':      '📊 אינטליגנציה עסקית — נתונים מ-Telefix',
+        'hitl':          '🧑‍⚖️ אישור אנושי — Human-in-the-Loop',
+        'system':        '🚨 בקרת חירום — PANIC, Kill-Switch, Black Box',
+        'sentinel':      '🛡️ ניטור יציבות — Sentinel',
+        'incubator':     '🧪 מנוע נישות — Incubator',
+        'evolution':     '🧬 אבולוציה אוטונומית — Evolution Engine',
+        'projects':      '📁 ניהול פרויקטים — Projects',
+        'content':       '✍️ מפעל תוכן AI — Content Factory',
+        'sessions':      '🔑 ניהול סשנים — Telegram Sessions',
+        'swarm':         '🐝 ניהול נחיל — Swarm',
+        'modules':       '🔌 מודולים חיצוניים — OpenClaw & Moltbot',
+        'polymarket':    '📈 מסחר Polymarket',
+        'prediction':    '🔮 מנוע ניבוי — Prediction & Arbitrage',
+        'scalper':       '⚡ סקאלפר מהיר — Scalper',
+        'deploy':        '🚀 פריסה לשרתים — Deploy via SSH',
+        'config':        '⚙️ הגדרות חיות — Live Config',
+        'flight_mode':   '✈️ מצב טיסה — Flight Mode',
+        'scan':          '🔍 סריקת פלוטה — Fleet Scan',
+        'proxy':         '🌐 ניהול פרוקסי — Proxy',
+        'notifications': '🔔 התראות — Notifications',
+      }},
+    }},
+    en: {{
+      lang: 'en',
+      dir: 'ltr',
+      flag: '🇺🇸',
+      btnLabel: 'עברית',
+      subtitle: 'Control Center API · Distributed Agentic Workflow System',
+      footer: 'Nexus Orchestrator · Built with <span style="color:var(--nexus-accent)">FastAPI</span> · Redis + ARQ · <span style="color:var(--nexus-accent)">22 API modules</span> · Master/Worker Architecture',
+      tags: {{
+        'meta':          '🟢 Liveness & Readiness probes',
+        'cluster':       '🖥️ Cluster Topology — live node status',
+        'business':      '📊 Business Intelligence — Telefix data',
+        'hitl':          '🧑‍⚖️ Human-in-the-Loop approvals',
+        'system':        '🚨 Emergency Control — PANIC, Kill-Switch, Black Box',
+        'sentinel':      '🛡️ Stability Monitor — Sentinel',
+        'incubator':     '🧪 Niche Discovery — Incubator',
+        'evolution':     '🧬 Autonomous Evolution Engine',
+        'projects':      '📁 Project Management',
+        'content':       '✍️ AI Content Factory',
+        'sessions':      '🔑 Telegram Session Management',
+        'swarm':         '🐝 Account Swarm Management',
+        'modules':       '🔌 External Modules — OpenClaw & Moltbot',
+        'polymarket':    '📈 Polymarket Trading',
+        'prediction':    '🔮 Prediction & Arbitrage Engine',
+        'scalper':       '⚡ Fast Scalper',
+        'deploy':        '🚀 Remote Deploy via SSH',
+        'config':        '⚙️ Live Configuration',
+        'flight_mode':   '✈️ Flight Mode — Controlled Stop',
+        'scan':          '🔍 Fleet Scan',
+        'proxy':         '🌐 Proxy Management',
+        'notifications': '🔔 Notifications',
+      }},
+    }},
+  }};
+
+  let currentLang = localStorage.getItem('nexus-docs-lang') || 'he';
+
+  function applyLang(lang) {{
+    const t = TRANSLATIONS[lang];
+    document.documentElement.lang = t.lang;
+    document.getElementById('lang-flag').textContent = t.flag;
+    document.getElementById('lang-label').textContent = t.btnLabel;
+    document.getElementById('banner-subtitle').textContent = t.subtitle;
+    document.getElementById('footer-text').innerHTML = t.footer;
+
+    // Translate tag section headers once Swagger UI has rendered them
+    translateTags(t.tags);
+  }}
+
+  function translateTags(tagMap) {{
+    // Swagger renders tag headers as <h3> inside .opblock-tag-section
+    // We look for the data-tag attribute or the text content
+    document.querySelectorAll('.opblock-tag[data-tag]').forEach(el => {{
+      const tag = el.getAttribute('data-tag');
+      if (tagMap[tag]) {{
+        const h3 = el.querySelector('h3 a') || el.querySelector('h3');
+        if (h3) {{
+          // Preserve the expand arrow span if present
+          const arrow = h3.querySelector('svg, .arrow');
+          h3.childNodes.forEach(n => {{ if (n.nodeType === 3) n.textContent = ''; }});
+          const textNode = document.createTextNode(tagMap[tag]);
+          h3.insertBefore(textNode, h3.firstChild);
+        }}
+      }}
+    }});
+  }}
+
+  function toggleLang() {{
+    currentLang = currentLang === 'he' ? 'en' : 'he';
+    localStorage.setItem('nexus-docs-lang', currentLang);
+    applyLang(currentLang);
+
+    // Re-translate after a short delay (Swagger may re-render on filter/expand)
+    setTimeout(() => translateTags(TRANSLATIONS[currentLang].tags), 400);
+  }}
+
+  // ── Swagger UI init ──────────────────────────────────────────────────────────
   window.onload = function() {{
     const ui = SwaggerUIBundle({{
       url: "{openapi_url}",
@@ -1083,6 +1232,18 @@ def _get_swagger_ui_html(openapi_url: str, title: str) -> str:  # noqa: PLR0915
       requestInterceptor: (req) => {{
         req.headers['X-Request-Source'] = 'swagger-ui';
         return req;
+      }},
+      onComplete: () => {{
+        // Apply saved language once Swagger finishes rendering
+        applyLang(currentLang);
+        // Re-apply on any DOM mutations (expand/collapse)
+        const observer = new MutationObserver(() => {{
+          translateTags(TRANSLATIONS[currentLang].tags);
+        }});
+        const container = document.getElementById('swagger-ui');
+        if (container) {{
+          observer.observe(container, {{ childList: true, subtree: true }});
+        }}
       }},
     }});
     window.ui = ui;
@@ -1188,6 +1349,45 @@ def create_app() -> FastAPI:
             openapi_url=app.openapi_url or "/openapi.json",
             title="Nexus Orchestrator — Control Center",
         ))
+
+    # ── WebSocket: Live log stream for any node (Master Terminal) ─────────────
+    from fastapi import WebSocket, WebSocketDisconnect  # noqa: PLC0415
+
+    @app.websocket("/api/v1/swarm/nodes/{node_id}/log_stream")
+    async def node_log_stream(websocket: WebSocket, node_id: str) -> None:
+        """
+        Real-time log stream for a node.  Reads from Redis list
+        ``nexus:log_stream:{node_id}`` (newest entries pushed by the master/worker)
+        and streams them to the WebSocket client.  Falls back to a heartbeat
+        keep-alive every 5 s when no new lines are available.
+        """
+        await websocket.accept()
+        redis: Redis = websocket.app.state.redis
+        key = f"nexus:log_stream:{node_id}"
+        last_len = 0
+        try:
+            while True:
+                try:
+                    current_len = await redis.llen(key)
+                    if current_len > last_len:
+                        new_entries = await redis.lrange(key, last_len, current_len - 1)
+                        for entry in new_entries:
+                            line = entry.decode() if isinstance(entry, bytes) else str(entry)
+                            await websocket.send_text(
+                                __import__("json").dumps({"line": line, "node_id": node_id})
+                            )
+                        last_len = current_len
+                    else:
+                        await websocket.send_text(
+                            __import__("json").dumps({"heartbeat": True, "node_id": node_id})
+                        )
+                except Exception:
+                    break
+                await asyncio.sleep(2.0)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
 
     # ── Root redirect ──────────────────────────────────────────────────────────
     @app.get("/", include_in_schema=False)

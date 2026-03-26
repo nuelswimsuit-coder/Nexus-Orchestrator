@@ -1821,9 +1821,9 @@ function SwarmMonitorView() {
         total: j.total,
         machines: j.machines,
         sessions_by_machine: Object.fromEntries(
-          Object.entries(j.inventory_by_machine).map(([m, sessions]) => [
+          Object.entries(j.inventory_by_machine ?? {}).map(([m, sessions]) => [
             m,
-            sessions.map((s) => ({
+            (sessions ?? []).map((s) => ({
               redis_key: s.redis_key,
               phone: s.phone,
               machine_id: s.machine_id,
@@ -2467,16 +2467,16 @@ function GlobalSwarmTableView() {
   const q = search.trim().toLowerCase();
 
   const filteredMachines: [string, InventorySession[]][] = data
-    ? Object.entries(data.inventory_by_machine)
+    ? Object.entries(data.inventory_by_machine ?? {})
         .map(([machine, sessions]) => {
           const filtered = q
-            ? sessions.filter(
+            ? (sessions ?? []).filter(
                 (s) =>
-                  s.phone.toLowerCase().includes(q) ||
-                  s.machine_id.toLowerCase().includes(q) ||
-                  s.status.toLowerCase().includes(q),
+                  (s.phone ?? "").toLowerCase().includes(q) ||
+                  (s.machine_id ?? "").toLowerCase().includes(q) ||
+                  (s.status ?? "").toLowerCase().includes(q),
               )
-            : sessions;
+            : (sessions ?? []);
           return [machine, filtered] as [string, InventorySession[]];
         })
         .filter(([, sessions]) => sessions.length > 0)
