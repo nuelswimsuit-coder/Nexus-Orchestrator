@@ -628,11 +628,6 @@ function LiveDecisionLog() {
       if (!res.ok) throw new Error(String(res.status));
       const j = (await res.json()) as { entries?: string[] };
       const raw = j.entries ?? [];
-      if (raw.length === 0) {
-        setSyncError(true);
-        setEntries([]);
-        return;
-      }
       setSyncError(false);
       setEntries(
         raw.slice(0, 8).map((text) => ({
@@ -661,10 +656,10 @@ function LiveDecisionLog() {
 
   return (
     <div className="flex-grow space-y-6 overflow-y-auto nexus-os-scrollbar pr-1">
-      {syncError || entries.length === 0 ? (
+      {syncError ? (
         <div className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 text-xs font-semibold tracking-wide">
           <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
-          ⚠️ Database initializing on Master...
+          ⚠️ מחכה לחיבור Worker...
         </div>
       ) : (
         entries.map((e, i) => (

@@ -422,3 +422,33 @@ async def blackbox_download() -> FileResponse:
         filename=latest.name,
         headers={"Content-Disposition": f'attachment; filename="{latest.name}"'},
     )
+
+
+# ── Node history (AI Decision Log feed) ───────────────────────────────────────
+
+NODE_HISTORY_KEY = "node:history"
+NODE_HISTORY_MAX = 20
+
+
+@router.get("/node-history", summary="Rolling node action history for AI Decision Log")
+async def get_node_history(redis: RedisDep) -> dict[str, Any]:
+    """
+    Returns the last N action lines written by worker tasks via ``_push_node_history``.
+    Stored in Redis list ``node:history`` (newest-first, capped at 20).
+
+    When no entries exist yet (worker not started or no tasks run), returns a
+    system-ready placeholder so the dashboard shows an idle state instead of an
+    amber warning.
+    """
+    try:
+        raw: list[str] = await redis.lrange(NODE_HISTORY_KEY, 0, NODE_HISTORY_MAX - 1)
+    except Exception as exc:
+        log.warning("node_history_redis_error", error=str(exc))
+        raw = []
+
+    entries: list[str] = [r.decode() if isinstance(r, bytes) else str(r) for r in raw]
+
+    if not entries:
+        entries = ["System initializing — waiting for core loop."]
+
+    return {"entries": entries, "total": len(entries)}
