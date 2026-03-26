@@ -97,6 +97,7 @@ interface InventorySession {
   machine_id: string;
   status: string;
   last_active: string;
+  current_task?: string | null;
 }
 
 interface InventoryResponse {
