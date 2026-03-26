@@ -453,11 +453,13 @@ class Dispatcher:
           cluster/status endpoint (SCAN-based, no subscription needed).
         - Redis pub/sub channel "nexus:heartbeats" — for real-time subscribers.
         """
-        from nexus.worker.hardware import get_hardware_info
+        import os as _os
+        from nexus.worker.hardware import get_cpu_temperature, get_hardware_info
         hw = get_hardware_info()
 
         heartbeat_key = f"{HEARTBEAT_KEY_PREFIX}{self.node_id}"
         key_ttl = int(interval * 2)
+        display_name = _os.getenv("NODE_DISPLAY_NAME", "")
 
         while True:
             await asyncio.sleep(interval)
@@ -466,6 +468,7 @@ class Dispatcher:
                 if self._guard
                 else {"cpu_percent": 0.0, "ram_mb": 0.0}
             )
+            cpu_temp = get_cpu_temperature()
             heartbeat = NodeHeartbeat(
                 node_id=self.node_id,
                 role=NodeRole.MASTER,
@@ -480,6 +483,10 @@ class Dispatcher:
                 ram_total_mb=hw["ram_total_mb"],
                 active_tasks_count=len(self._in_flight),
                 os_info=hw["os_info"],
+                # Phase 4 extended hardware
+                motherboard=hw["motherboard"],
+                cpu_temp_c=cpu_temp,
+                display_name=display_name,
             )
             if self._arq:
                 payload = heartbeat.model_dump_json()

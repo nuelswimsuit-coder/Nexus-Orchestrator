@@ -103,6 +103,10 @@ async def get_cluster_status(redis: RedisDep) -> ClusterStatusResponse:
                         ram_total_mb=hb.ram_total_mb,
                         active_tasks_count=hb.active_tasks_count,
                         os_info=hb.os_info,
+                        # Phase 4 extended hardware
+                        motherboard=hb.motherboard,
+                        cpu_temp_c=hb.cpu_temp_c,
+                        display_name=hb.display_name,
                     )
                 )
             except Exception as exc:
@@ -223,15 +227,15 @@ async def get_cluster_health(redis: RedisDep) -> ClusterHealthResponse:
 
     parsed.sort(key=lambda t: (t[0].role != NodeRole.MASTER, t[0].node_id))
 
-    worker_idx = 0
     nodes_out: list[ClusterHealthNode] = []
     for hb, st, probe_ms in parsed:
         is_master = hb.role == NodeRole.MASTER
+        os_lower = (hb.os_info or "").lower()
+        is_windows = "windows" in os_lower
         if is_master:
-            label = "MASTER"
+            label = "מאסטר ניהול" if is_windows else "מאסטר עובד"
         else:
-            worker_idx += 1
-            label = f"LAPTOP {worker_idx}"
+            label = "לפטופ ווינדוס עובד" if is_windows else "לפטופ לינוקס עובד"
         nodes_out.append(
             ClusterHealthNode(
                 node_id=hb.node_id,
@@ -249,6 +253,10 @@ async def get_cluster_health(redis: RedisDep) -> ClusterHealthResponse:
                 ram_total_mb=float(hb.ram_total_mb or 0.0),
                 os_info=hb.os_info or "unknown",
                 display_label=label,
+                # Phase 4 extended hardware
+                motherboard=hb.motherboard or "N/A",
+                cpu_temp_c=float(hb.cpu_temp_c if hb.cpu_temp_c is not None else -1.0),
+                display_name=hb.display_name or "",
             )
         )
 

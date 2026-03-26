@@ -42,7 +42,7 @@ def get_hardware_info() -> dict[str, Any]:
     Detect and return hardware specs for this node.
 
     Returns a dict with keys:
-        local_ip, cpu_model, gpu_model, ram_total_mb, os_info
+        local_ip, cpu_model, gpu_model, ram_total_mb, os_info, motherboard
 
     All values are strings or floats; never None.
     Cached after first call — safe to call repeatedly.
@@ -53,6 +53,7 @@ def get_hardware_info() -> dict[str, Any]:
         "gpu_model": _detect_gpu_model(),
         "ram_total_mb": _detect_ram_total_mb(),
         "os_info": _detect_os_info(),
+        "motherboard": _detect_motherboard(),
     }
 
 
@@ -174,10 +175,8 @@ def _detect_os_info() -> str:
     release = platform.release()
 
     if system == "Windows":
-        # e.g. "Windows 11 (10.0.22631)"
         return f"Windows {release}"
     if system == "Linux":
-        # Try to read /etc/os-release for distro name.
         try:
             with open("/etc/os-release", encoding="utf-8") as f:
                 for line in f:
@@ -189,3 +188,58 @@ def _detect_os_info() -> str:
     if system == "Darwin":
         return f"macOS {platform.mac_ver()[0]}"
     return f"{system} {release}".strip()
+
+
+def _detect_motherboard() -> str:
+    """Detect motherboard manufacturer + product name."""
+    system = platform.system()
+
+    if system == "Windows":
+        try:
+            result = subprocess.run(
+                ["wmic", "baseboard", "get", "Manufacturer,Product"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                lines = [
+                    ln.strip()
+                    for ln in result.stdout.strip().splitlines()
+                    if ln.strip() and ln.strip().lower() not in ("manufacturer product", "manufacturer,product")
+                ]
+                if lines:
+                    return " ".join(lines[0].split())[:60]
+        except Exception:
+            pass
+
+    elif system == "Linux":
+        try:
+            vendor, name = "", ""
+            for path, attr in [("/sys/class/dmi/id/board_vendor", "v"), ("/sys/class/dmi/id/board_name", "n")]:
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        val = f.read().strip()
+                    if attr == "v":
+                        vendor = val
+                    else:
+                        name = val
+                except Exception:
+                    pass
+            if vendor or name:
+                return f"{vendor} {name}".strip()[:60]
+        except Exception:
+            pass
+
+    elif system == "Darwin":
+        try:
+            result = subprocess.run(
+                ["system_profiler", "SPHardwareDataType"],
+                capture_output=True, text=True, timeout=8,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if "Model Identifier" in line:
+                        return line.split(":", 1)[1].strip()[:60]
+        except Exception:
+            pass
+
+    return "N/A"

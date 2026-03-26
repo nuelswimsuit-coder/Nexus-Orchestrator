@@ -194,6 +194,12 @@ class NodeHeartbeat(BaseModel):
     ram_total_mb      : Total installed RAM in MB.
     active_tasks_count: Number of tasks currently executing on this node.
     os_info           : OS platform string (e.g. "Windows 11", "Ubuntu 22.04").
+
+    Phase 4 additions
+    -----------------
+    motherboard       : Motherboard manufacturer + product name (e.g. "ASUS ROG STRIX B550-F").
+    cpu_temp_c        : Current CPU temperature in °C, or -1.0 if unavailable.
+    display_name      : Human-readable machine name set via NODE_DISPLAY_NAME env var.
     """
 
     node_id: str
@@ -212,6 +218,11 @@ class NodeHeartbeat(BaseModel):
     ram_total_mb: float = Field(default=0.0)
     active_tasks_count: int = Field(default=0)
     os_info: str = Field(default="unknown")
+
+    # ── Extended hardware identity (Phase 4) ───────────────────────────────────
+    motherboard: str = Field(default="N/A")
+    cpu_temp_c: float = Field(default=-1.0, description="CPU temperature in °C; -1 = unavailable")
+    display_name: str = Field(default="", description="Human-readable machine name (NODE_DISPLAY_NAME)")
 
 
 # ── Fleet audit / mapper → dashboard ───────────────────────────────────────────

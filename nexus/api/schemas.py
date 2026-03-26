@@ -32,6 +32,10 @@ class NodeStatus(BaseModel):
     ram_total_mb: float = 0.0
     active_tasks_count: int = 0
     os_info: str = "unknown"
+    # Phase 4 extended hardware
+    motherboard: str = "N/A"
+    cpu_temp_c: float = -1.0
+    display_name: str = ""
 
 
 class ResourceCaps(BaseModel):
@@ -71,7 +75,11 @@ class ClusterHealthNode(BaseModel):
     gpu_model: str = "N/A"
     ram_total_mb: float = 0.0
     os_info: str = "unknown"
-    display_label: str = Field(description="Short operator label, e.g. MASTER / LAPTOP 1")
+    display_label: str = Field(description="Short operator label, e.g. מאסטר ניהול / לפטופ לינוקס עובד")
+    # Phase 4 extended hardware
+    motherboard: str = "N/A"
+    cpu_temp_c: float = -1.0
+    display_name: str = ""
 
 
 class TargetHeatCell(BaseModel):

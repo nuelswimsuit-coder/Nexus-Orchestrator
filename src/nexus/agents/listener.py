@@ -481,6 +481,8 @@ async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
     Write a NodeHeartbeat key to Redis so the API cluster endpoint
     shows this worker as online immediately after startup.
     """
+    import os as _os
+
     from nexus.shared.schemas import NodeHeartbeat, NodeRole
     from nexus.agents.hardware import get_hardware_info
 
@@ -494,7 +496,10 @@ async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
     cpu_percent = __import__("psutil").cpu_percent(interval=None)
 
     from nexus.shared.system_stats import get_cpu_temp_celsius  # noqa: PLC0415
-    cpu_temp = get_cpu_temp_celsius()
+    raw_temp = get_cpu_temp_celsius()
+    cpu_temp_c = raw_temp if raw_temp is not None else -1.0
+
+    display_name = _os.getenv("NODE_DISPLAY_NAME", "")
 
     heartbeat = NodeHeartbeat(
         node_id=WORKER_ID,
@@ -509,7 +514,9 @@ async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
         ram_total_mb=hw["ram_total_mb"],
         active_tasks_count=0,
         os_info=hw["os_info"],
-        cpu_temp=cpu_temp,
+        motherboard=hw.get("motherboard", "N/A"),
+        cpu_temp_c=cpu_temp_c,
+        display_name=display_name,
     )
     key = f"nexus:heartbeat:{WORKER_ID}"
     payload = heartbeat.model_dump_json()

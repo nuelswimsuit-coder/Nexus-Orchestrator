@@ -6,19 +6,24 @@ payloads so the dashboard can display a "Digital Twin" HUD for each node.
 
 Detection strategy
 ------------------
-- CPU model  : platform.processor() → cleaned up string.
-               Falls back to psutil CPU count if processor() is empty.
-- GPU model  : Tries nvidia-smi via subprocess first (works on any OS with
-               NVIDIA drivers).  Falls back to GPUtil if installed.
-               Falls back to "N/A" gracefully — never raises.
-- Local IP   : Connects a UDP socket to 8.8.8.8 (no data sent) to discover
-               the outbound interface IP.  Falls back to socket.gethostbyname().
-- RAM total  : psutil.virtual_memory().total
-- OS info    : platform.system() + platform.release()
+- CPU model     : platform.processor() → cleaned up string.
+                  Falls back to psutil CPU count if processor() is empty.
+- GPU model     : Tries nvidia-smi via subprocess first (works on any OS with
+                  NVIDIA drivers).  Falls back to GPUtil if installed.
+                  Falls back to "N/A" gracefully — never raises.
+- Local IP      : Connects a UDP socket to 8.8.8.8 (no data sent) to discover
+                  the outbound interface IP.  Falls back to socket.gethostbyname().
+- RAM total     : psutil.virtual_memory().total
+- OS info       : platform.system() + platform.release()
+- Motherboard   : wmic on Windows, /sys/class/dmi on Linux.
+- CPU temp      : psutil.sensors_temperatures() (Linux/macOS),
+                  OpenHardwareMonitor WMI on Windows (falls back to "N/A").
 
-All detection is synchronous and cached at import time — the values do not
-change during a process lifetime.  The `get_hardware_info()` function returns
-a frozen dict that is safe to embed in a Pydantic model.
+All detection is synchronous.  Static fields (CPU model, GPU, RAM, motherboard,
+OS) are cached at import time via lru_cache.  Dynamic fields (temperature) are
+NOT cached — call get_cpu_temperature() each heartbeat cycle.
+The `get_hardware_info()` function returns a frozen dict that is safe to embed
+in a Pydantic model.
 """
 
 from __future__ import annotations
@@ -39,10 +44,11 @@ log = structlog.get_logger(__name__)
 @lru_cache(maxsize=1)
 def get_hardware_info() -> dict[str, Any]:
     """
-    Detect and return hardware specs for this node.
+    Detect and return static hardware specs for this node.
 
     Returns a dict with keys:
-        local_ip, cpu_model, gpu_model, ram_total_mb, os_info
+        local_ip, cpu_model, gpu_model, ram_total_mb, os_info,
+        motherboard
 
     All values are strings or floats; never None.
     Cached after first call — safe to call repeatedly.
@@ -53,7 +59,17 @@ def get_hardware_info() -> dict[str, Any]:
         "gpu_model": _detect_gpu_model(),
         "ram_total_mb": _detect_ram_total_mb(),
         "os_info": _detect_os_info(),
+        "motherboard": _detect_motherboard(),
     }
+
+
+def get_cpu_temperature() -> float:
+    """
+    Return current CPU temperature in °C, or -1.0 if unavailable.
+
+    NOT cached — call each heartbeat cycle for a live reading.
+    """
+    return _detect_cpu_temperature()
 
 
 # ── Individual detectors ───────────────────────────────────────────────────────
@@ -189,3 +205,153 @@ def _detect_os_info() -> str:
     if system == "Darwin":
         return f"macOS {platform.mac_ver()[0]}"
     return f"{system} {release}".strip()
+
+
+def _detect_motherboard() -> str:
+    """
+    Detect motherboard manufacturer + product name.
+
+    Windows : wmic baseboard get Manufacturer,Product
+    Linux   : /sys/class/dmi/id/board_vendor + board_name
+    macOS   : system_profiler SPHardwareDataType (model identifier)
+    """
+    system = platform.system()
+
+    if system == "Windows":
+        try:
+            result = subprocess.run(
+                ["wmic", "baseboard", "get", "Manufacturer,Product"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                lines = [
+                    ln.strip()
+                    for ln in result.stdout.strip().splitlines()
+                    if ln.strip() and ln.strip().lower() not in ("manufacturer product", "manufacturer,product")
+                ]
+                if lines:
+                    # wmic returns "Manufacturer  Product" on one line
+                    parts = lines[0].split()
+                    return " ".join(parts)[:60]
+        except Exception:
+            pass
+
+    elif system == "Linux":
+        try:
+            vendor = ""
+            name = ""
+            for path, attr in [
+                ("/sys/class/dmi/id/board_vendor", "vendor"),
+                ("/sys/class/dmi/id/board_name", "name"),
+            ]:
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        val = f.read().strip()
+                    if attr == "vendor":
+                        vendor = val
+                    else:
+                        name = val
+                except Exception:
+                    pass
+            if vendor or name:
+                return f"{vendor} {name}".strip()[:60]
+        except Exception:
+            pass
+
+    elif system == "Darwin":
+        try:
+            result = subprocess.run(
+                ["system_profiler", "SPHardwareDataType"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if "Model Identifier" in line:
+                        return line.split(":", 1)[1].strip()[:60]
+        except Exception:
+            pass
+
+    return "N/A"
+
+
+def _detect_cpu_temperature() -> float:
+    """
+    Detect CPU temperature in °C.
+
+    Linux/macOS : psutil.sensors_temperatures() — reads coretemp / k10temp / etc.
+    Windows     : tries OpenHardwareMonitor WMI namespace first, then
+                  wmic /namespace:\\root\\OpenHardwareMonitor path Sensor
+                  Falls back to -1.0 (unavailable) gracefully.
+    """
+    # ── Linux / macOS via psutil ───────────────────────────────────────────────
+    try:
+        temps = psutil.sensors_temperatures()
+        if temps:
+            # Priority order for sensor keys
+            for key in ("coretemp", "k10temp", "zenpower", "cpu_thermal", "acpitz"):
+                entries = temps.get(key, [])
+                if entries:
+                    # Use the "Package id 0" / "Tdie" / first entry
+                    for entry in entries:
+                        label = (entry.label or "").lower()
+                        if "package" in label or "tdie" in label or "tccd" in label:
+                            return round(entry.current, 1)
+                    return round(entries[0].current, 1)
+            # Fallback: any sensor with a reading
+            for entries in temps.values():
+                if entries:
+                    return round(entries[0].current, 1)
+    except (AttributeError, Exception):
+        pass
+
+    # ── Windows: OpenHardwareMonitor WMI ──────────────────────────────────────
+    if sys.platform == "win32":
+        try:
+            import wmi  # type: ignore[import-untyped]
+            w = wmi.WMI(namespace=r"root\OpenHardwareMonitor")
+            sensors = w.Sensor()
+            cpu_temps = [
+                float(s.Value)
+                for s in sensors
+                if s.SensorType == "Temperature" and "cpu" in s.Name.lower()
+            ]
+            if cpu_temps:
+                return round(sum(cpu_temps) / len(cpu_temps), 1)
+        except Exception:
+            pass
+
+        # Fallback: wmic path Win32_PerfFormattedData_Counters_ThermalZoneInformation
+        try:
+            result = subprocess.run(
+                [
+                    "wmic",
+                    "/namespace:\\\\root\\wmi",
+                    "path",
+                    "MSAcpi_ThermalZoneTemperature",
+                    "get",
+                    "CurrentTemperature",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                lines = [
+                    ln.strip()
+                    for ln in result.stdout.strip().splitlines()
+                    if ln.strip() and ln.strip().lower() != "currenttemperature"
+                ]
+                if lines:
+                    # Value is in tenths of Kelvin
+                    kelvin_tenths = float(lines[0])
+                    celsius = (kelvin_tenths / 10.0) - 273.15
+                    if 0 < celsius < 120:
+                        return round(celsius, 1)
+        except Exception:
+            pass
+
+    return -1.0

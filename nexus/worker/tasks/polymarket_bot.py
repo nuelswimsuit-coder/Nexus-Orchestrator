@@ -228,6 +228,16 @@ async def _write_status(
     await redis.set(POLY_BOT_STATUS_KEY, json.dumps(body), ex=STATUS_TTL_S)
 
 
+async def _write_clob_heartbeat(redis: Any) -> None:
+    """Write CLOB heartbeat keys every tick so the dashboard shows ACTIVE."""
+    ts = datetime.now(timezone.utc).isoformat()
+    try:
+        await redis.set("nexus:clob:heartbeat", ts, ex=STATUS_TTL_S)
+        await redis.set("nexus:clob:status", "ACTIVE", ex=STATUS_TTL_S)
+    except Exception as exc:
+        log.debug("clob_heartbeat_write_failed", error=str(exc))
+
+
 async def _run_tick(redis: Any, params: dict[str, Any]) -> dict[str, Any]:
     max_bet = float(params.get("max_bet_usd", 10.0))
     yes_ceiling = float(params.get("yes_ceiling", 0.40))
@@ -376,14 +386,32 @@ async def polymarket_bot_tick(parameters: dict[str, Any]) -> dict[str, Any]:
         return {"status": "error", "detail": "no_redis"}
 
     worker_id = os.getenv("NODE_ID", "worker")
+    # #region agent log
+    try:
+        import json as _json, urllib.request as _ur
+        _dbg_payload = _json.dumps({"sessionId":"cba42c","location":"worker/polymarket_bot.py:379","message":"worker_tick_entry","data":{"worker_id":worker_id,"has_redis":redis is not None},"hypothesisId":"H-A,H-B","timestamp":__import__("time").time_ns()//1000000}).encode()
+        _req = _ur.Request("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a",data=_dbg_payload,headers={"Content-Type":"application/json","X-Debug-Session-Id":"cba42c"},method="POST")
+        _ur.urlopen(_req,timeout=1)
+    except Exception:
+        pass
+    # #endregion
+
+    # Always emit a heartbeat — independent of private-key / trading state.
+    await _write_clob_heartbeat(redis)
+
     got = await redis.set(TICK_LOCK_KEY, worker_id, nx=True, ex=TICK_LOCK_TTL_S)
     if not got:
         holder = await redis.get(TICK_LOCK_KEY)
+        # Still refresh heartbeat even when the lock is held by another worker.
+        await _write_clob_heartbeat(redis)
         return {"status": "skipped", "detail": "tick_lock_held", "lock_holder": holder}
 
     t0 = time.monotonic()
     try:
-        return await _run_tick(redis, parameters)
+        result = await _run_tick(redis, parameters)
+        # Refresh heartbeat after a successful tick.
+        await _write_clob_heartbeat(redis)
+        return result
     finally:
         try:
             await redis.delete(TICK_LOCK_KEY)

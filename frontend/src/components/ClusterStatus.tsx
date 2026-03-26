@@ -159,18 +159,30 @@ function Sparkline({
 function HardwareModal({ node, onClose }: { node: NodeStatus; onClose: () => void }) {
   const { c, glow, boxShadow, stealth } = useRgb(node.online);
 
-  const rows: [string, string][] = [
-    ["Node ID",    node.node_id],
-    ["Role",       node.role.toUpperCase()],
-    ["Status",     node.online ? "ONLINE" : "OFFLINE"],
-    ["IP Address", node.local_ip ?? "—"],
-    ["OS",         node.os_info ?? "—"],
-    ["CPU",        node.cpu_model ?? "—"],
-    ["GPU",        node.gpu_model ?? "N/A"],
-    ["RAM Used",   `${node.ram_used_mb.toFixed(0)} / ${(node.ram_total_mb ?? 0).toFixed(0)} MB`],
-    ["CPU Load",   `${node.cpu_percent.toFixed(1)}%`],
-    ["Active Jobs", String(node.active_jobs)],
-    ["Last Seen",  new Date(node.last_seen).toLocaleTimeString()],
+  const tempStr = (node.cpu_temp_c != null && node.cpu_temp_c >= 0)
+    ? `${node.cpu_temp_c.toFixed(1)} °C`
+    : "N/A";
+  const tempColor = (node.cpu_temp_c != null && node.cpu_temp_c >= 0)
+    ? node.cpu_temp_c >= 85 ? "#ef4444"
+      : node.cpu_temp_c >= 70 ? "#f59e0b"
+      : "#22c55e"
+    : "#475569";
+
+  const rows: [string, string, string?][] = [
+    ["Node ID",      node.node_id],
+    ["Name",         node.display_name || node.node_id],
+    ["Role",         node.role.toUpperCase()],
+    ["Status",       node.online ? "ONLINE" : "OFFLINE"],
+    ["IP Address",   node.local_ip ?? "—"],
+    ["OS",           node.os_info ?? "—"],
+    ["Motherboard",  node.motherboard ?? "N/A"],
+    ["CPU",          node.cpu_model ?? "—"],
+    ["CPU Temp",     tempStr, tempColor],
+    ["GPU",          node.gpu_model ?? "N/A"],
+    ["RAM Used",     `${node.ram_used_mb.toFixed(0)} / ${(node.ram_total_mb ?? 0).toFixed(0)} MB`],
+    ["CPU Load",     `${node.cpu_percent.toFixed(1)}%`],
+    ["Active Jobs",  String(node.active_jobs)],
+    ["Last Seen",    new Date(node.last_seen).toLocaleTimeString()],
   ];
 
   return (
@@ -244,7 +256,7 @@ function HardwareModal({ node, onClose }: { node: NodeStatus; onClose: () => voi
 
         {/* Spec table */}
         <div className="grid grid-cols-1 gap-0">
-          {rows.map(([k, v]) => (
+          {rows.map(([k, v, vc]) => (
             <div
               key={k}
               className="flex items-start justify-between gap-4 py-1.5 px-2 rounded"
@@ -255,7 +267,7 @@ function HardwareModal({ node, onClose }: { node: NodeStatus; onClose: () => voi
               </span>
               <span
                 className="font-mono text-[11px] font-semibold text-right break-all"
-                style={{ color: "#94a3b8", wordBreak: "break-word" }}
+                style={{ color: vc ?? "#94a3b8", wordBreak: "break-word" }}
               >
                 {v}
               </span>
@@ -311,6 +323,17 @@ function NodeHud({
   const engineLabel = isMaster && engineState ? ENGINE_STATE_LABELS[engineState] : "";
   const showThinking = isMaster && contentFactoryActive;
 
+  const tempC = node.cpu_temp_c;
+  const hasTempData = tempC != null && tempC >= 0;
+  const tempColor = hasTempData
+    ? tempC >= 85 ? "#ef4444"
+      : tempC >= 70 ? "#f59e0b"
+      : "#22c55e"
+    : "#334155";
+  const tempLabel = hasTempData ? `${tempC.toFixed(1)}°C` : "N/A";
+
+  const machineName = node.display_name || node.node_id;
+
   return (
     <button
       onClick={onOpen}
@@ -324,7 +347,7 @@ function NodeHud({
       }}
       title="Click for Hardware Health"
     >
-      {/* LED + node ID */}
+      {/* LED + machine name */}
       <div className="flex items-center gap-2">
         <span
           className="rgb-led shrink-0 rounded-full"
@@ -341,7 +364,7 @@ function NodeHud({
           className="rgb-text font-mono text-[10px] font-bold tracking-widest truncate"
           style={{ color: c, textShadow: stealth ? "none" : `0 0 6px ${c}` }}
         >
-          {node.node_id.toUpperCase()}
+          {machineName.toUpperCase()}
         </span>
       </div>
 
@@ -358,10 +381,22 @@ function NodeHud({
         <span style={{ color: stealth ? "#475569" : c }}>{node.cpu_percent.toFixed(0)}%</span>
       </div>
 
+      {/* [TEMP] */}
+      <div className="font-mono text-[9px] truncate" style={{ color: "#475569" }}>
+        <span style={{ color: "#334155" }}>[TEMP]</span>{" "}
+        <span style={{ color: stealth ? "#475569" : tempColor }}>{tempLabel}</span>
+      </div>
+
       {/* [GPU] */}
       <div className="font-mono text-[9px] truncate" style={{ color: "#475569" }}>
         <span style={{ color: "#334155" }}>[GPU]</span>{" "}
         {node.gpu_model ?? "N/A"}
+      </div>
+
+      {/* [MB] motherboard */}
+      <div className="font-mono text-[9px] truncate" style={{ color: "#334155" }}>
+        <span>[MB]</span>{" "}
+        <span style={{ color: "#475569" }}>{node.motherboard ?? "N/A"}</span>
       </div>
 
       {/* [OS] */}
@@ -1249,21 +1284,32 @@ export default function ClusterStatus() {
     active_jobs: 0, last_seen: new Date().toISOString(), online: false,
     local_ip: "—", cpu_model: "—", gpu_model: "N/A",
     ram_total_mb: 0, active_tasks_count: 0, os_info: "—",
+    motherboard: "N/A", cpu_temp_c: -1, display_name: "",
   };
 
-  const workerNodes: NodeStatus[] = workers.length > 0 ? workers : [
-    { node_id: "worker-linux", role: "worker", cpu_percent: 0, ram_used_mb: 0,
+  // Use real workers when available; show placeholder slots only when no data yet
+  const workerNodes: NodeStatus[] = workers.length > 0 ? workers : (data ? [] : [
+    { node_id: "worker-1", role: "worker", cpu_percent: 0, ram_used_mb: 0,
       active_jobs: 0, last_seen: new Date().toISOString(), online: false,
       local_ip: "—", cpu_model: "—", gpu_model: "N/A",
-      ram_total_mb: 0, active_tasks_count: 0, os_info: "Linux" },
-    { node_id: "worker-win", role: "worker", cpu_percent: 0, ram_used_mb: 0,
+      ram_total_mb: 0, active_tasks_count: 0, os_info: "Linux",
+      motherboard: "N/A", cpu_temp_c: -1, display_name: "Worker 1" },
+    { node_id: "worker-2", role: "worker", cpu_percent: 0, ram_used_mb: 0,
       active_jobs: 0, last_seen: new Date().toISOString(), online: false,
       local_ip: "—", cpu_model: "—", gpu_model: "N/A",
-      ram_total_mb: 0, active_tasks_count: 0, os_info: "Windows" },
-  ];
+      ram_total_mb: 0, active_tasks_count: 0, os_info: "Linux",
+      motherboard: "N/A", cpu_temp_c: -1, display_name: "Worker 2" },
+  ]);
 
   const anyOnline = masterNode.online || workerNodes.some((w) => w.online);
-  const hasSystemError = !!data && (!masterNode.online || !workerNodes.some((w) => w.online));
+  // Only flag error when we have data and master is down
+  const hasSystemError = !!data && !masterNode.online;
+
+  // Desk labels use display_name when available
+  const masterLabel = masterNode.display_name || masterNode.node_id || "Master Station";
+  const workerLabel = workerNodes.length === 1 && workerNodes[0].display_name
+    ? workerNodes[0].display_name
+    : "Worker Station";
 
   return (
     <section>
@@ -1284,7 +1330,7 @@ export default function ClusterStatus() {
         {/* Master Station — RGB driven by engine state / report sending */}
         {/* Priority: reportSending (blue) > contentFactory (indigo) > engineState */}
         <Desk
-          label="Master Station"
+          label={masterLabel}
           online={masterNode.online}
           wide
           engineState={activeEngineState !== "idle" ? activeEngineState : undefined}
@@ -1325,8 +1371,9 @@ export default function ClusterStatus() {
         <ConnectionLine online={anyOnline} />
 
         {/* Worker Station */}
+        {workerNodes.length > 0 && (
         <Desk
-          label="Worker Station"
+          label={workerLabel}
           online={workerNodes[0]?.online ?? false}
           deploying={workerNodes.some((w) => deployingNodes.has(w.node_id))}
         >
@@ -1343,6 +1390,7 @@ export default function ClusterStatus() {
             ))}
           </div>
         </Desk>
+        )}
       </div>
 
       {/* Queue stats */}

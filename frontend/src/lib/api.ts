@@ -47,6 +47,10 @@ export interface NodeStatus {
   ram_total_mb?: number;
   active_tasks_count?: number;
   os_info?: string;
+  // Phase 4 extended hardware
+  motherboard?: string;
+  cpu_temp_c?: number;
+  display_name?: string;
 }
 
 export interface ResourceCaps {
@@ -85,6 +89,10 @@ export interface ClusterHealthNode {
   ram_total_mb?: number;
   os_info?: string;
   display_label: string;
+  // Phase 4 extended hardware
+  motherboard?: string;
+  cpu_temp_c?: number;
+  display_name?: string;
 }
 
 export interface TargetHeatCell {

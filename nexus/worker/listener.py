@@ -338,7 +338,7 @@ async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
     shows this worker as online immediately after startup.
     """
     from nexus.shared.schemas import NodeHeartbeat, NodeRole
-    from nexus.worker.hardware import get_hardware_info
+    from nexus.worker.hardware import get_cpu_temperature, get_hardware_info
 
     redis = ctx.get("redis")
     if redis is None:
@@ -350,6 +350,9 @@ async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
     mem = psutil.virtual_memory()
     ram_used_mb = round(mem.used / (1024 * 1024), 1)
     cpu_percent = psutil.cpu_percent(interval=None)
+    cpu_temp = get_cpu_temperature()
+
+    display_name = os.getenv("NODE_DISPLAY_NAME", "")
 
     heartbeat = NodeHeartbeat(
         node_id=WORKER_ID,
@@ -364,6 +367,9 @@ async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
         ram_total_mb=hw["ram_total_mb"],
         active_tasks_count=0,
         os_info=hw["os_info"],
+        motherboard=hw["motherboard"],
+        cpu_temp_c=cpu_temp,
+        display_name=display_name,
     )
     key = f"nexus:heartbeat:{WORKER_ID}"
     await redis.set(key, heartbeat.model_dump_json(), ex=120)
