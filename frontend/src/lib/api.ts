@@ -1144,3 +1144,39 @@ export interface RotateProxyResponse {
 export function rotateProxy(): Promise<RotateProxyResponse> {
   return apiFetch<RotateProxyResponse>("/api/proxy/rotate", { method: "POST" });
 }
+
+// ── AI Terminal ───────────────────────────────────────────────────────────────
+
+export interface AiTerminalReply {
+  reply: string;
+  source: string;
+}
+
+export function postAiTerminalChat(prompt: string): Promise<AiTerminalReply> {
+  return apiFetch<AiTerminalReply>("/api/ai/chat", {
+    method: "POST",
+    body: JSON.stringify({ prompt }),
+  });
+}
+
+export interface PersonalityMessage {
+  text: string;
+}
+
+export interface PersonalityRequest {
+  messages: PersonalityMessage[];
+  note?: string;
+}
+
+export function postAiTerminalPersonality(body: PersonalityRequest): Promise<AiTerminalReply> {
+  return apiFetch<AiTerminalReply>("/api/ai/personality", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function postStrategyMutation(): Promise<{ status: string; message: string }> {
+  return apiFetch<{ status: string; message: string }>("/api/ai/strategy-mutation", {
+    method: "POST",
+  });
+}

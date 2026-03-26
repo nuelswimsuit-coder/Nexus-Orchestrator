@@ -33,6 +33,7 @@ from slowapi.util import get_remote_address
 
 from nexus.api.hitl_store import HitlStore
 from nexus.api.routers import (
+    ai,
     business,
     cluster,
     config,
@@ -54,6 +55,7 @@ from nexus.api.routers import (
     sessions,
     swarm,
     system,
+    telefix,
 )
 from nexus.shared import redis_util
 from nexus.shared.config import settings
@@ -1398,6 +1400,7 @@ def create_app() -> FastAPI:
         )
 
     # ── Routers ────────────────────────────────────────────────────────────────
+    app.include_router(ai.router, prefix="/api")
     app.include_router(cluster.router, prefix="/api")
     app.include_router(hitl.router, prefix="/api")
     app.include_router(business.router, prefix="/api")
@@ -1419,6 +1422,7 @@ def create_app() -> FastAPI:
     app.include_router(flight_mode.router, prefix="/api")
     app.include_router(scan.router, prefix="/api")
     app.include_router(proxy.router, prefix="/api")
+    app.include_router(telefix.router, prefix="/api")
 
     # ── Custom Swagger UI docs ─────────────────────────────────────────────────
     @app.get("/docs", include_in_schema=False)

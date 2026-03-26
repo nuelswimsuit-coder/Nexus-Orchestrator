@@ -28,7 +28,7 @@ log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/telefix", tags=["telefix-dashboard"])
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[5]
 _VAULT_DATA = _REPO_ROOT / "vault" / "data"
 _GROUP_STATE = _VAULT_DATA / "group_infiltration.json"
 _BOT_STATE = _VAULT_DATA / "bot_factory.json"

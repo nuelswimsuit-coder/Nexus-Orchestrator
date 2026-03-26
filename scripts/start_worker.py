@@ -167,7 +167,10 @@ def main() -> None:
             node_id=settings.node_id,
         )
 
-    asyncio.run(_notify())
+    try:
+        asyncio.run(asyncio.wait_for(_notify(), timeout=10))
+    except (asyncio.TimeoutError, Exception):
+        pass
 
     try:
         loop = asyncio.get_event_loop()

@@ -37,6 +37,9 @@ httpx>=0.27
 # ── Binance websocket (Polymarket bot Linux worker) ───────────────────────────
 websockets>=12.0
 
+# ── CCXT — multi-exchange trading library (prediction tasks, Binance feed) ────
+ccxt>=4.3
+
 # ── Async utilities ───────────────────────────────────────────────────────────
 anyio>=4.4
 
