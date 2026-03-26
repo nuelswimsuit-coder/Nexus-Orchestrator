@@ -545,6 +545,113 @@ async def get_telefix_db_status() -> TelefixDbStatus:
     )
 
 
+# ── Group Factory Schedule ─────────────────────────────────────────────────────
+
+_GROUP_FACTORY_STATE = _REPO_ROOT / "vault" / "data" / "group_factory_state.json"
+_GROUP_FACTORY_SETTINGS = _VAULT_DATA / "group_factory_settings.json"
+
+_DEFAULT_FACTORY_SETTINGS = {
+    "warmup_days": 14,
+    "cooldown_hours": 24,
+    "groups_per_day": 2,
+}
+
+
+def _load_factory_settings() -> dict[str, Any]:
+    raw = _read_json(_GROUP_FACTORY_SETTINGS, {})
+    return {**_DEFAULT_FACTORY_SETTINGS, **raw}
+
+
+def _load_factory_state() -> dict[str, Any]:
+    return _read_json(_GROUP_FACTORY_STATE, {"groups": {}, "updated_at": None})
+
+
+class GroupFactoryScheduleResponse(BaseModel):
+    settings: dict[str, Any]
+    groups_total: int
+    groups_in_warmup: int
+    groups_in_public_trial: int
+    groups_in_search: int
+    groups: list[dict[str, Any]]
+    updated_at: str | None
+
+
+class GroupFactorySettingsPatch(BaseModel):
+    warmup_days: int | None = Field(default=None, ge=1, le=30)
+    cooldown_hours: int | None = Field(default=None, ge=1, le=168)
+    groups_per_day: int | None = Field(default=None, ge=1, le=50)
+
+
+@router.get("/group-factory/schedule", response_model=GroupFactoryScheduleResponse)
+async def get_group_factory_schedule() -> GroupFactoryScheduleResponse:
+    settings = _load_factory_settings()
+    state = _load_factory_state()
+    raw_groups = state.get("groups") or {}
+
+    groups_list: list[dict[str, Any]] = []
+    in_warmup = 0
+    in_public_trial = 0
+    in_search = 0
+
+    if isinstance(raw_groups, dict):
+        for key, g in raw_groups.items():
+            if not isinstance(g, dict):
+                continue
+            phase = str(g.get("phase") or "warmup")
+            if phase == "warmup":
+                in_warmup += 1
+            elif phase == "public_trial":
+                in_public_trial += 1
+            elif phase in ("in_search", "search_indexed"):
+                in_search += 1
+            groups_list.append({
+                "key": key,
+                "phase": phase,
+                "birth_ts": g.get("birth_ts"),
+                "display_title_hint": g.get("display_title_hint"),
+                "search_indexed": bool(g.get("search_indexed", False)),
+                "cooldown_until": g.get("cooldown_until"),
+                "last_index_probe_at": g.get("last_index_probe_at"),
+            })
+    elif isinstance(raw_groups, list):
+        for g in raw_groups:
+            if not isinstance(g, dict):
+                continue
+            phase = str(g.get("phase") or "warmup")
+            if phase == "warmup":
+                in_warmup += 1
+            elif phase == "public_trial":
+                in_public_trial += 1
+            elif phase in ("in_search", "search_indexed"):
+                in_search += 1
+            groups_list.append(g)
+
+    return GroupFactoryScheduleResponse(
+        settings=settings,
+        groups_total=len(groups_list),
+        groups_in_warmup=in_warmup,
+        groups_in_public_trial=in_public_trial,
+        groups_in_search=in_search,
+        groups=groups_list,
+        updated_at=state.get("updated_at"),
+    )
+
+
+@router.patch("/group-factory/schedule", summary="Update group factory settings")
+async def patch_group_factory_schedule(body: GroupFactorySettingsPatch) -> dict[str, Any]:
+    current = _load_factory_settings()
+    if body.warmup_days is not None:
+        current["warmup_days"] = body.warmup_days
+    if body.cooldown_hours is not None:
+        current["cooldown_hours"] = body.cooldown_hours
+    if body.groups_per_day is not None:
+        current["groups_per_day"] = body.groups_per_day
+    current["updated_at"] = _utc_now_iso()
+    _write_json(_GROUP_FACTORY_SETTINGS, current)
+    log.info("group_factory_settings_updated", settings=current)
+    return {"ok": True, "settings": current}
+
+
 # ── Operations config ──────────────────────────────────────────────────────────
 
 

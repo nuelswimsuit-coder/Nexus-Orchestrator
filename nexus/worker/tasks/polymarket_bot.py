@@ -187,6 +187,8 @@ async def _write_pnl(
         mark = float(market.get("yes_price", 0))
         unrealized = (mark - entry) * sh
 
+    active_token_id = open_pos.get("token_id") if open_pos else None
+
     payload = {
         "realized_pnl_usd": round(realized_pnl, 4),
         "unrealized_pnl_usd": round(unrealized, 4),
@@ -196,6 +198,8 @@ async def _write_pnl(
         "yes_price": market.get("yes_price") if market else None,
         "market_question": market.get("market_question") if market else None,
         "open_position": open_pos,
+        "token_id": active_token_id,
+        "yes_token_id": active_token_id,
         "within_target_band": False,
         "last_action": last_action,
         "detail": detail,

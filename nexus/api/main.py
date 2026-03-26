@@ -58,6 +58,7 @@ from nexus.api.routers import (
     system,
     telefix,
 )
+from src.nexus.services.api.routers import telefix_dashboard
 from nexus.shared import redis_util
 from nexus.shared.config import settings
 from nexus.shared.logging_config import configure_logging
@@ -1424,6 +1425,7 @@ def create_app() -> FastAPI:
     app.include_router(scan.router, prefix="/api")
     app.include_router(proxy.router, prefix="/api")
     app.include_router(telefix.router, prefix="/api")
+    app.include_router(telefix_dashboard.router, prefix="/api")
     app.include_router(ahu.router, prefix="/api")
 
     # ── Custom Swagger UI docs ─────────────────────────────────────────────────

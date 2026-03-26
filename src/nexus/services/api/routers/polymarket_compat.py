@@ -150,7 +150,12 @@ async def polymarket_live_orderbook(
             raw = await redis.get(POLY_BOT_PNL_KEY)
             if raw:
                 p = json.loads(raw)
-                token_id = str(p.get("token_id") or p.get("yes_token_id") or "")
+                token_id = str(
+                    p.get("token_id")
+                    or p.get("yes_token_id")
+                    or (p.get("open_position") or {}).get("token_id")
+                    or ""
+                )
         except Exception:
             pass
 

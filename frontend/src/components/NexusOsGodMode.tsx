@@ -952,9 +952,13 @@ function GroupFactoryView() {
   const [warmupGroups, setWarmupGroups] = useState<TelefixGroup[]>([]);
   const [dbGroups, setDbGroups] = useState<TelefixDbGroup[]>([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [forceSearchLoading, setForceSearchLoading] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [scheduleSettings, setScheduleSettings] = useState<{ warmup_days: number; cooldown_hours: number; groups_per_day: number } | null>(null);
+  const [settingsForm, setSettingsForm] = useState<{ warmup_days: number; cooldown_hours: number; groups_per_day: number } | null>(null);
+  const [savingSettings, setSavingSettings] = useState(false);
 
   const showToast = (msg: string, ok = true) => {
     setToast({ msg, ok });
@@ -982,10 +986,46 @@ function GroupFactoryView() {
       } catch { /* ignore */ }
     };
 
+    const loadSchedule = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/telefix/group-factory/schedule`);
+        if (!res.ok) return;
+        const j = (await res.json()) as { settings: { warmup_days: number; cooldown_hours: number; groups_per_day: number } };
+        if (!cancelled && j.settings) {
+          setScheduleSettings(j.settings);
+          setSettingsForm(j.settings);
+        }
+      } catch { /* ignore */ }
+    };
+
     void loadWarmup();
     void loadDbGroups();
+    void loadSchedule();
     return () => { cancelled = true; };
   }, [loadWarmup]);
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!settingsForm) return;
+    setSavingSettings(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/telefix/group-factory/schedule`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settingsForm),
+      });
+      if (!res.ok) throw new Error(`שגיאה ${res.status}`);
+      const j = (await res.json()) as { settings: typeof settingsForm };
+      setScheduleSettings(j.settings);
+      setSettingsForm(j.settings);
+      setShowSettings(false);
+      showToast("הגדרות נשמרו ✅");
+    } catch {
+      showToast("שמירה נכשלה", false);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
 
   const handleForceSearch = async (groupId: string) => {
     setForceSearchLoading(groupId);
@@ -1090,6 +1130,14 @@ function GroupFactoryView() {
             </button>
             <button
               type="button"
+              onClick={() => setShowSettings((v) => !v)}
+              className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-3 rounded-2xl font-bold transition flex items-center gap-2"
+              title="הגדרות"
+            >
+              ⚙ הגדרות
+            </button>
+            <button
+              type="button"
               onClick={() => setShowCreateModal(true)}
               className="bg-cyan-600 hover:bg-cyan-500 text-white px-6 py-3 rounded-2xl font-bold transition flex items-center gap-2"
             >
@@ -1100,7 +1148,7 @@ function GroupFactoryView() {
         </div>
 
         {/* Stats bar */}
-        <div className="grid grid-cols-3 gap-4 mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           <div className="bg-slate-950/60 rounded-2xl p-4 border border-slate-800 text-center">
             <div className="text-2xl font-black text-white">{rows.length}</div>
             <div className="text-xs text-slate-500 font-bold mt-0.5">סה״כ קבוצות</div>
@@ -1113,7 +1161,73 @@ function GroupFactoryView() {
             <div className="text-2xl font-black text-amber-400">{totalWarming}</div>
             <div className="text-xs text-amber-600 font-bold mt-0.5">בחימום · ממוצע {avgDays}/14 יום</div>
           </div>
+          <div className="bg-violet-500/10 rounded-2xl p-4 border border-violet-500/20 text-center">
+            <div className="text-2xl font-black text-violet-400">{scheduleSettings?.groups_per_day ?? "—"}</div>
+            <div className="text-xs text-violet-600 font-bold mt-0.5">קבוצות ליום</div>
+          </div>
         </div>
+
+        {/* Settings panel */}
+        {showSettings && settingsForm && (
+          <form
+            onSubmit={(e) => void handleSaveSettings(e)}
+            className="mb-6 bg-slate-950/60 border border-violet-500/30 rounded-2xl p-6"
+            dir="rtl"
+          >
+            <div className="text-sm font-black text-white mb-4">⚙ הגדרות מפעל קבוצות</div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-400 mb-1.5">ימי Warmup (1–30)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={30}
+                  value={settingsForm.warmup_days}
+                  onChange={(e) => setSettingsForm((f) => f ? { ...f, warmup_days: Number(e.target.value) } : f)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-violet-500 transition text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-400 mb-1.5">שעות Cooldown (1–168)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={168}
+                  value={settingsForm.cooldown_hours}
+                  onChange={(e) => setSettingsForm((f) => f ? { ...f, cooldown_hours: Number(e.target.value) } : f)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-violet-500 transition text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-400 mb-1.5">קבוצות ליצור ביום</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={settingsForm.groups_per_day}
+                  onChange={(e) => setSettingsForm((f) => f ? { ...f, groups_per_day: Number(e.target.value) } : f)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-violet-500 transition text-sm"
+                />
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button
+                type="submit"
+                disabled={savingSettings}
+                className="bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white px-5 py-2 rounded-xl font-bold text-sm transition"
+              >
+                {savingSettings ? "שומר..." : "שמור הגדרות"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowSettings(false)}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-5 py-2 rounded-xl font-bold text-sm transition"
+              >
+                ביטול
+              </button>
+            </div>
+          </form>
+        )}
 
         {/* Group list */}
         <div className="grid gap-4">
