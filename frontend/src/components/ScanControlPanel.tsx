@@ -300,7 +300,7 @@ export default function ScanControlPanel() {
           <StatChip
             label={he ? "נודים מחוברים" : "Nodes online"}
             value={`${status.nodes_online} / ${status.nodes_found}`}
-            color={status.nodes_online > 0 ? green : amber}
+            color={(status.nodes_online ?? 0) > 0 ? green : amber}
           />
           <StatChip
             label={he ? "משימות הורצו" : "Tasks queued"}
@@ -310,7 +310,7 @@ export default function ScanControlPanel() {
           <StatChip
             label={he ? "שגיאות" : "Errors"}
             value={String(status.tasks_failed)}
-            color={status.tasks_failed > 0 ? red : muted}
+            color={(status.tasks_failed ?? 0) > 0 ? red : muted}
           />
           <StatChip
             label={he ? "תור ARQ" : "ARQ queue"}
@@ -458,13 +458,13 @@ export default function ScanControlPanel() {
             {he ? "היסטוריית סריקות" : "SCAN HISTORY"}
           </div>
 
-          {!histData || histData.runs.length === 0 ? (
+          {!histData || (histData.runs ?? histData.history ?? []).length === 0 ? (
             <div style={{ fontSize: "0.68rem", color: muted }}>
               {he ? "אין היסטוריה עדיין" : "No history yet"}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
-              {histData.runs.map((run) => (
+              {(histData.runs ?? histData.history ?? []).map((run) => (
                 <HistoryRow key={run.run_id} run={run} he={he} muted={muted} green={green} red={red} amber={amber} text={text} />
               ))}
             </div>
@@ -542,7 +542,7 @@ function HistoryRow({
       <span style={{ color: "#22d3ee" }}>
         {he ? "משימות:" : "tasks:"} {run.tasks_enqueued}
       </span>
-      {run.tasks_failed > 0 && (
+      {(run.tasks_failed ?? 0) > 0 && (
         <span style={{ color: red }}>
           {he ? "שגיאות:" : "errors:"} {run.tasks_failed}
         </span>

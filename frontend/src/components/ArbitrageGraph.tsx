@@ -151,7 +151,7 @@ export default function ArbitrageGraph() {
     <motion.div
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+      transition={{ duration: 0.5, ease: "easeOut" as const }}
       style={{
         background:     "rgba(4, 10, 20, 0.58)",
         backdropFilter: "blur(20px)",

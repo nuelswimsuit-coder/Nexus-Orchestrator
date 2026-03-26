@@ -1126,7 +1126,7 @@ export default function Header() {
     "/scrape-browser":     "nav.scrape-browser",
     "/group-infiltration": "nav.group-infiltration",
   };
-  const pageLabel = PAGE_KEY_MAP[pathname] ? t(PAGE_KEY_MAP[pathname] as TranslationKey) : "";
+  const pageLabel = pathname && PAGE_KEY_MAP[pathname] ? t(PAGE_KEY_MAP[pathname] as TranslationKey) : "";
 
   return (
     <header

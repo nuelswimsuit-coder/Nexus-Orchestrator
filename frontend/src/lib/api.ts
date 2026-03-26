@@ -64,6 +64,8 @@ export interface ClusterStatusResponse {
   master_resource_caps: ResourceCaps;
   queues: QueueStats[];
   timestamp: string;
+  worker_cpu_avg_percent?: number;
+  telefix_context_active?: boolean;
 }
 
 /** GET /api/cluster/health — fleet grid + swarm tail + target heatmap */
@@ -1186,6 +1188,76 @@ export function postAiTerminalPersonality(body: PersonalityRequest): Promise<AiT
 
 export function postStrategyMutation(): Promise<{ status: string; message: string }> {
   return apiFetch<{ status: string; message: string }>("/api/ai/strategy-mutation", {
+    method: "POST",
+  });
+}
+
+// ── Scan ─────────────────────────────────────────────────────────────────────
+
+export interface ScanLogLine {
+  ts:      string;
+  level:   string;
+  message?: string;
+  msg?:    string;
+  detail?: string;
+  source?: string;
+}
+
+export interface ScanStatusResponse {
+  running:       boolean;
+  phase?:        string;
+  progress_pct?: number;
+  started_at?:   string;
+  finished_at?:  string;
+  error?:        string | null;
+  nodes_online?:   number;
+  nodes_found?:    number;
+  tasks_queued?:   number;
+  tasks_enqueued?: number;
+  tasks_done?:     number;
+  tasks_failed?:   number;
+  queue_depth?:    number;
+  elapsed_s?:      number;
+  errors?:         string[];
+}
+
+export interface ScanHistoryEntry {
+  run_id:          string;
+  started_at:      string;
+  finished_at?:    string;
+  duration_s?:     number;
+  tasks_count?:    number;
+  status?:         string;
+  phase?:          string;
+  nodes_found?:    number;
+  tasks_done?:     number;
+  tasks_enqueued?: number;
+  tasks_failed?:   number;
+  error?:          string;
+}
+
+export interface ScanHistoryResponse {
+  history: ScanHistoryEntry[];
+  runs?:   ScanHistoryEntry[];
+}
+
+export function triggerScan(opts?: { force?: boolean }): Promise<{ status: string; message: string }> {
+  return apiFetch<{ status: string; message: string }>("/api/scan/run", {
+    method: "POST",
+    body: opts ? JSON.stringify(opts) : undefined,
+  });
+}
+
+// ── Prediction manual override ────────────────────────────────────────────────
+
+export function postPredictionHalt(): Promise<{ status: string; message: string }> {
+  return apiFetch<{ status: string; message: string }>("/api/prediction/manual-override", {
+    method: "POST",
+  });
+}
+
+export function postPredictionResume(): Promise<{ status: string; message: string }> {
+  return apiFetch<{ status: string; message: string }>("/api/prediction/manual-override/clear", {
     method: "POST",
   });
 }

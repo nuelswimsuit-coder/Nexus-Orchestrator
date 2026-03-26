@@ -47,6 +47,13 @@ interface NexusContextValue {
   // Command Control Suite active project
   activeCcProject: string;
   setActiveCcProject: (project: string) => void;
+  // Active project overview
+  activeProject?: {
+    project_type?: string;
+    dashboard_context?: Record<string, unknown> | null;
+    display_name?: string;
+  } | null;
+  activeProjectLoading?: boolean;
 }
 
 const NexusContext = createContext<NexusContextValue>({
@@ -63,6 +70,8 @@ const NexusContext = createContext<NexusContextValue>({
   setDeployPhase: () => {},
   activeCcProject: "nuel",
   setActiveCcProject: () => {},
+  activeProject: null,
+  activeProjectLoading: false,
 });
 
 export function NexusProvider({ children }: { children: ReactNode }) {

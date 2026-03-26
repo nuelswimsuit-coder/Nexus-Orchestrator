@@ -296,6 +296,7 @@ const translations = {
   profit_per_min:    { en: "Profit/Min",      he: "רווח/דקה" },
   healthy:           { en: "Healthy",         he: "תקין" },
   low:               { en: "Low",             he: "נמוך" },
+  medium:            { en: "Medium",          he: "בינוני" },
   otp_unavailable:   { en: "OTP unavailable", he: "OTP לא זמין" },
 
   // ── Dashboard / overview ──────────────────────────────────────────────────
@@ -305,6 +306,10 @@ const translations = {
   project_scope_hint:  { en: "Project scope",      he: "היקף פרויקט" },
   sidebar_command_bar: { en: "Command Bar",         he: "שורת פקודה" },
   regenerate:          { en: "Regenerate",          he: "צור מחדש" },
+  refresh_30s:         { en: "Refresh (30s)",        he: "רענן (30 שנ')" },
+  activity_24h:        { en: "Activity (24h)",       he: "פעילות (24 שע')" },
+  history_12:          { en: "12h History",          he: "היסטוריה 12 שע'" },
+  "2d":                { en: "2D",                   he: "2D" },
 } as const;
 
 export type TranslationKey = keyof typeof translations;

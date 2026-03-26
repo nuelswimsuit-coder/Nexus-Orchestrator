@@ -1211,7 +1211,7 @@ function PolymarketTradingView({
                 <Tooltip
                   contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: "12px" }}
                   itemStyle={{ color: "#22d3ee" }}
-                  formatter={(value: number, name: string) => [value.toFixed(2), name === "size" ? "Size" : name]}
+                  formatter={(value, name) => [typeof value === "number" ? value.toFixed(2) : String(value ?? ""), String(name ?? "") === "size" ? "Size" : String(name ?? "")]}
                 />
                 <Area
                   type="stepAfter"
