@@ -3489,6 +3489,11 @@ function NodeCard({
   cpu,
   status,
   cpuTemp,
+  role,
+  ramUsed,
+  ramTotal,
+  osInfo,
+  cpuModel,
 }: {
   nodeId: string;
   name: string;
@@ -3496,11 +3501,33 @@ function NodeCard({
   cpu: number;
   status: "LIVE" | "IDLE";
   cpuTemp: number | null;
+  role: string;
+  ramUsed: number | null;
+  ramTotal: number | null;
+  osInfo: string | null;
+  cpuModel: string | null;
 }) {
   const [showConsole, setShowConsole] = React.useState(false);
   const [paused, setPaused] = React.useState(false);
-  const isMaster = name === "Jacob-PC";
+  const isMaster = role === "master";
   const isCritical = cpuTemp !== null && cpuTemp !== undefined && cpuTemp > 95;
+
+  // Detect OS type from os_info string
+  const osType: "WIN" | "LINUX" | "MAC" | "UNKNOWN" = React.useMemo(() => {
+    if (!osInfo) return "UNKNOWN";
+    const lower = osInfo.toLowerCase();
+    if (lower.includes("win")) return "WIN";
+    if (lower.includes("darwin") || lower.includes("mac")) return "MAC";
+    if (lower.includes("linux") || lower.includes("ubuntu") || lower.includes("debian")) return "LINUX";
+    return "UNKNOWN";
+  }, [osInfo]);
+
+  const osLabel = osType === "WIN" ? "🪟 Windows" : osType === "MAC" ? "🍎 macOS" : osType === "LINUX" ? "🐧 Linux" : "? Unknown";
+  const osColor = osType === "WIN" ? "text-blue-400" : osType === "MAC" ? "text-slate-300" : osType === "LINUX" ? "text-orange-400" : "text-slate-500";
+
+  const ramPct = ramUsed != null && ramTotal != null && ramTotal > 0
+    ? Math.round((ramUsed / ramTotal) * 100)
+    : null;
 
   const handleThermalPause = async () => {
     try {
@@ -3519,55 +3546,123 @@ function NodeCard({
         <LiveConsoleModal nodeId={nodeId} onClose={() => setShowConsole(false)} />
       )}
       <div
-        className={`p-6 rounded-3xl flex flex-col items-center group transition ${
+        className={`p-5 rounded-3xl flex flex-col gap-3 group transition ${
           isCritical
             ? "bg-rose-950/30 border-2 border-rose-500/60 shadow-[0_0_24px_rgba(239,68,68,0.18)]"
-            :           isMaster
-          ? "bg-cyan-950/60 border-2 border-cyan-400 shadow-[0_0_32px_rgba(34,211,238,0.8),0_0_12px_rgba(34,211,238,0.2)_inset] animate-pulse"
+            : isMaster
+            ? "bg-cyan-950/60 border-2 border-cyan-400 shadow-[0_0_32px_rgba(34,211,238,0.8),0_0_12px_rgba(34,211,238,0.2)_inset]"
             : "bg-slate-900/40 border border-slate-800 hover:border-cyan-500/50"
         }`}
       >
-        <div
-          className={`w-12 h-12 rounded-full flex items-center justify-center mb-4 transition ${
-            isCritical
-              ? "bg-rose-500/20 text-rose-400"
-              : isMaster
-              ? "bg-cyan-500/20 text-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.5)]"
-              : "bg-slate-900 text-cyan-400 group-hover:bg-cyan-500 group-hover:text-white"
-          }`}
-        >
-          <Network size={24} />
-        </div>
-        <div className={`font-bold text-sm flex items-center gap-1.5 flex-wrap justify-center ${isMaster ? "text-cyan-300" : ""}`}>
-          {isMaster && (
-            <span className="text-[10px] font-black text-cyan-300 border border-cyan-400 px-2 py-0.5 rounded-md bg-cyan-500/20 shrink-0 shadow-[0_0_8px_rgba(34,211,238,0.6)] drop-shadow-[0_0_4px_rgba(34,211,238,0.8)]">
-              👑 MASTER
-            </span>
-          )}
-          {name}
-        </div>
-        <div className="text-[10px] text-slate-500 font-mono mt-1">{ip}</div>
-        <div className="mt-4 w-full flex justify-between text-[10px] font-bold uppercase tracking-tighter">
-          <span>CPU: {cpu}%</span>
-          <span className={status === "LIVE" ? "text-emerald-400" : "text-amber-400"}>
-            {status}
-          </span>
+        {/* ── Header row: icon + name + status badge ─────────────────────── */}
+        <div className="flex items-center gap-3">
+          <div
+            className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 transition ${
+              isCritical
+                ? "bg-rose-500/20 text-rose-400"
+                : isMaster
+                ? "bg-cyan-500/20 text-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.5)]"
+                : "bg-slate-800 text-cyan-400 group-hover:bg-cyan-500/20 group-hover:text-cyan-300"
+            }`}
+          >
+            <Network size={20} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {isMaster && (
+                <span className="text-[9px] font-black text-cyan-300 border border-cyan-400 px-1.5 py-0.5 rounded-md bg-cyan-500/20 shrink-0 shadow-[0_0_8px_rgba(34,211,238,0.6)]">
+                  👑 MASTER
+                </span>
+              )}
+              {!isMaster && (
+                <span className="text-[9px] font-black text-slate-400 border border-slate-700 px-1.5 py-0.5 rounded-md bg-slate-800/60 shrink-0">
+                  ⚙ WORKER
+                </span>
+              )}
+              <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md shrink-0 ${
+                status === "LIVE"
+                  ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                  : "bg-amber-500/15 text-amber-400 border border-amber-500/30"
+              }`}>
+                {status}
+              </span>
+            </div>
+            <div className={`font-black text-sm mt-0.5 truncate ${isMaster ? "text-cyan-300" : "text-white"}`}>
+              {name}
+            </div>
+          </div>
         </div>
 
-        {/* ── Temperature row ──────────────────────────────────────────────── */}
-        <div className="mt-3 w-full">
+        {/* ── OS + IP row ─────────────────────────────────────────────────── */}
+        <div className="flex items-center justify-between gap-2 bg-slate-950/40 rounded-xl px-3 py-2">
+          <span className={`text-[11px] font-black ${osColor}`}>{osLabel}</span>
+          <span className="text-[10px] font-mono text-slate-400">{ip}</span>
+        </div>
+
+        {/* ── CPU model ───────────────────────────────────────────────────── */}
+        {cpuModel && (
+          <div className="text-[10px] font-mono text-slate-500 truncate px-1" title={cpuModel}>
+            {cpuModel}
+          </div>
+        )}
+
+        {/* ── CPU + RAM bars ──────────────────────────────────────────────── */}
+        <div className="space-y-2">
+          {/* CPU */}
+          <div>
+            <div className="flex justify-between text-[10px] font-bold uppercase tracking-tighter mb-1">
+              <span className="text-slate-400">CPU</span>
+              <span className={cpu > 80 ? "text-rose-400" : cpu > 50 ? "text-amber-400" : "text-emerald-400"}>
+                {cpu}%
+              </span>
+            </div>
+            <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${
+                  cpu > 80 ? "bg-rose-500" : cpu > 50 ? "bg-amber-400" : "bg-emerald-400"
+                }`}
+                style={{ width: `${Math.min(cpu, 100)}%` }}
+              />
+            </div>
+          </div>
+          {/* RAM */}
+          {ramUsed != null && (
+            <div>
+              <div className="flex justify-between text-[10px] font-bold uppercase tracking-tighter mb-1">
+                <span className="text-slate-400">RAM</span>
+                <span className="text-slate-300">
+                  {Math.round(ramUsed / 1024 * 10) / 10} GB
+                  {ramTotal ? ` / ${Math.round(ramTotal / 1024 * 10) / 10} GB` : ""}
+                </span>
+              </div>
+              {ramPct != null && (
+                <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      ramPct > 85 ? "bg-rose-500" : ramPct > 60 ? "bg-amber-400" : "bg-cyan-400"
+                    }`}
+                    style={{ width: `${Math.min(ramPct, 100)}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Temperature ─────────────────────────────────────────────────── */}
+        <div>
           <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1">
             Temperature
           </div>
           <ThermalGauge temp={cpuTemp} />
         </div>
 
-        {/* ── Thermal shutdown toggle (auto-shown when temp > 95°C) ─────────── */}
+        {/* ── Thermal shutdown toggle ──────────────────────────────────────── */}
         {isCritical && (
           <button
             type="button"
             onClick={handleThermalPause}
-            className={`mt-3 w-full py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition border ${
+            className={`w-full py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition border ${
               paused
                 ? "bg-amber-500/20 border-amber-500/40 text-amber-400"
                 : "bg-rose-500/20 border-rose-500/40 text-rose-400 hover:bg-rose-500/30 animate-pulse"
@@ -3580,7 +3675,7 @@ function NodeCard({
         <button
           type="button"
           onClick={() => setShowConsole(true)}
-          className="mt-4 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-cyan-900/50 border border-slate-700 hover:border-cyan-500/50 text-[10px] font-black text-slate-400 hover:text-cyan-300 rounded-xl transition uppercase tracking-widest"
+          className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-cyan-900/50 border border-slate-700 hover:border-cyan-500/50 text-[10px] font-black text-slate-400 hover:text-cyan-300 rounded-xl transition uppercase tracking-widest"
         >
           <Terminal size={10} />
           LIVE CONSOLE
