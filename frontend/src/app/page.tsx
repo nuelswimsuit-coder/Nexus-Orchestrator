@@ -1,6 +1,17 @@
 "use client";
 
-import { type ReactNode, useEffect, useState } from "react";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+
+export default function HomePage() {
+  const router = useRouter();
+  useEffect(() => { router.replace("/dashboard"); }, [router]);
+  return null;
+}
+
+// ── Legacy components kept below for reference ────────────────────────────────
+
+import { type ReactNode, useState } from "react";
 import { motion } from "framer-motion";
 import useSWR from "swr";
 import CyberGrid from "@/components/CyberGrid";
@@ -394,9 +405,9 @@ function QuickSettingsModal({
   );
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
+// ── Legacy page (no longer rendered — kept for component reference) ───────────
 
-export default function HomePage() {
+function _LegacyHomePage() {
   const { data: sentinel } = useSWR<SentinelStatusResponse>(
     "/api/sentinel/status",
     swrFetcher<SentinelStatusResponse>,
