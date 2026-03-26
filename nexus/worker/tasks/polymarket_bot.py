@@ -275,6 +275,31 @@ async def _run_tick(redis: Any, params: dict[str, Any]) -> dict[str, Any]:
     open_pos_raw = await redis.get(POLY_BOT_OPEN_POS_KEY)
     open_pos: dict[str, Any] | None = json.loads(open_pos_raw) if open_pos_raw else None
 
+    # If there is an open position but no matching market was found this tick,
+    # try to fetch the live YES price directly from the CLOB so unrealized PnL
+    # stays accurate instead of falling back to zero.
+    if open_pos and market is None:
+        pos_token_id = open_pos.get("token_id", "")
+        if pos_token_id:
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as _hc:
+                    _r = await _hc.get(
+                        "https://clob.polymarket.com/price",
+                        params={"token_id": pos_token_id, "side": "BUY"},
+                    )
+                    if _r.status_code == 200:
+                        _price_data = _r.json()
+                        _yes_price = float(_price_data.get("price", 0))
+                        if _yes_price > 0:
+                            market = {
+                                "yes_price": _yes_price,
+                                "market_question": open_pos.get("market_question", ""),
+                                "strike_usd": None,
+                                "clob_token_ids": [pos_token_id],
+                            }
+            except Exception as _exc:
+                log.debug("polymarket_bot_live_price_fetch_failed", error=str(_exc))
+
     last_action = "idle"
     detail = ""
 

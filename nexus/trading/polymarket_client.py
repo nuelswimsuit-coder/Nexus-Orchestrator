@@ -212,13 +212,42 @@ class PolymarketClient:
         loop = asyncio.get_event_loop()
 
         if self._clob is not None:
-            for method_name in ("get_balance", "get_balance_allowance"):
-                fn = getattr(self._clob, method_name, None)
-                if fn is None:
-                    continue
+            # Try the preferred SDK method: get_balance_allowance(BalanceAllowanceParams)
+            fn = getattr(self._clob, "get_balance_allowance", None)
+            if fn is not None:
+                try:
+                    from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+                    params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                    resp = await asyncio.wait_for(
+                        loop.run_in_executor(None, fn, params),
+                        timeout=10.0,
+                    )
+                    if isinstance(resp, dict):
+                        raw = resp.get("balance", 0)
+                        # USDC on Polygon has 6 decimals — value may be in wei
+                        val = float(raw)
+                        if val > 1_000_000:
+                            val = val / 1_000_000
+                        return val
+                    if isinstance(resp, (int, float)):
+                        val = float(resp)
+                        if val > 1_000_000:
+                            val = val / 1_000_000
+                        return val
+                except asyncio.TimeoutError:
+                    log.error("polymarket.get_balance_timeout", method="get_balance_allowance")
+                    raise
+                except ImportError:
+                    pass
+                except Exception as exc:
+                    log.debug("polymarket.get_balance_sdk_miss", method="get_balance_allowance", error=str(exc))
+
+            # Legacy fallback: get_balance()
+            fn_legacy = getattr(self._clob, "get_balance", None)
+            if fn_legacy is not None:
                 try:
                     resp = await asyncio.wait_for(
-                        loop.run_in_executor(None, fn),
+                        loop.run_in_executor(None, fn_legacy),
                         timeout=10.0,
                     )
                     if isinstance(resp, (int, float)):
@@ -226,29 +255,10 @@ class PolymarketClient:
                     if isinstance(resp, dict):
                         return float(resp.get("balance", resp.get("USDC", 0.0)))
                 except asyncio.TimeoutError:
-                    log.error("polymarket.get_balance_timeout", method=method_name)
+                    log.error("polymarket.get_balance_timeout", method="get_balance")
                     raise
                 except Exception as exc:
-                    log.debug(
-                        "polymarket.get_balance_sdk_miss",
-                        method=method_name,
-                        error=str(exc),
-                    )
-
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as http:
-                r = await http.get(
-                    f"{_CLOB_HOST}/data/balance",
-                    params={"address": self._funder},
-                )
-                r.raise_for_status()
-                data = r.json()
-                return float(data.get("balance", 0.0))
-        except httpx.TimeoutException:
-            log.error("polymarket.get_balance_rest_timeout")
-            raise
-        except Exception as exc:
-            log.warning("polymarket.get_balance_rest_error", error=str(exc))
+                    log.debug("polymarket.get_balance_sdk_miss", method="get_balance", error=str(exc))
 
         log.warning("polymarket.get_balance_unavailable", default=100.0)
         return 100.0
