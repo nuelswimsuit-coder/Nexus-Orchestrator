@@ -1302,10 +1302,67 @@ def create_app() -> FastAPI:
         },
     )
 
+    # ── WebSocket: Live log stream for any node (Master Terminal) ─────────────
+    # Registered BEFORE middleware so SlowAPI / CORS don't block the WS upgrade.
+    from fastapi import WebSocket, WebSocketDisconnect  # noqa: PLC0415
+
+    @app.websocket("/api/v1/swarm/nodes/{node_id}/log_stream")
+    async def node_log_stream(websocket: WebSocket, node_id: str) -> None:
+        """
+        Real-time log stream for a node.  Reads from Redis list
+        ``nexus:log_stream:{node_id}`` (newest entries pushed by the master/worker)
+        and streams them to the WebSocket client.  Falls back to a heartbeat
+        keep-alive every 2 s when no new lines are available.
+        """
+        # Accept FIRST — before any state access so uvicorn never returns 403.
+        await websocket.accept()
+        _redis: Redis | None = getattr(websocket.app.state, "redis", None)
+        if _redis is None:
+            await websocket.send_text(__import__("json").dumps({"error": "Redis not ready", "node_id": node_id}))
+            await websocket.close()
+            return
+        key = f"nexus:log_stream:{node_id}"
+        last_len = 0
+        try:
+            while True:
+                try:
+                    current_len = await _redis.llen(key)
+                    if current_len > last_len:
+                        new_entries = await _redis.lrange(key, last_len, current_len - 1)
+                        for entry in new_entries:
+                            line = entry.decode() if isinstance(entry, bytes) else str(entry)
+                            await websocket.send_text(
+                                __import__("json").dumps({"line": line, "node_id": node_id})
+                            )
+                        last_len = current_len
+                    else:
+                        await websocket.send_text(
+                            __import__("json").dumps({"heartbeat": True, "node_id": node_id})
+                        )
+                except WebSocketDisconnect:
+                    break
+                except Exception:
+                    break
+                await asyncio.sleep(2.0)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+
     # ── Rate limiting ──────────────────────────────────────────────────────────
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-    app.add_middleware(SlowAPIMiddleware)
+    # Use a WebSocket-aware wrapper so SlowAPI doesn't block WS upgrade requests.
+    from starlette.types import ASGIApp, Receive, Scope, Send  # noqa: PLC0415
+
+    class _WSAwareSlowAPIMiddleware(SlowAPIMiddleware):
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            if scope["type"] == "websocket":
+                await self.app(scope, receive, send)
+                return
+            await super().__call__(scope, receive, send)
+
+    app.add_middleware(_WSAwareSlowAPIMiddleware)
 
     # ── CORS ───────────────────────────────────────────────────────────────────
     # Allow localhost dev server and Tailscale VPN range (100.x.x.x).
@@ -1316,7 +1373,9 @@ def create_app() -> FastAPI:
             "http://localhost:3000",
             "http://127.0.0.1:3000",
         ],
-        allow_origin_regex=r"http://100\.\d+\.\d+\.\d+(:\d+)?",
+        # Starlette CORS blocks WebSocket upgrades unless origin is in allow_origins.
+        # allow_origin_regex covers Tailscale VPN range + any localhost variant.
+        allow_origin_regex=r"(https?|wss?)://(localhost|127\.0\.0\.1|100\.\d+\.\d+\.\d+)(:\d+)?",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -1380,45 +1439,6 @@ def create_app() -> FastAPI:
             openapi_url=app.openapi_url or "/openapi.json",
             title="Nexus Orchestrator — Control Center",
         ))
-
-    # ── WebSocket: Live log stream for any node (Master Terminal) ─────────────
-    from fastapi import WebSocket, WebSocketDisconnect  # noqa: PLC0415
-
-    @app.websocket("/api/v1/swarm/nodes/{node_id}/log_stream")
-    async def node_log_stream(websocket: WebSocket, node_id: str) -> None:
-        """
-        Real-time log stream for a node.  Reads from Redis list
-        ``nexus:log_stream:{node_id}`` (newest entries pushed by the master/worker)
-        and streams them to the WebSocket client.  Falls back to a heartbeat
-        keep-alive every 5 s when no new lines are available.
-        """
-        await websocket.accept()
-        redis: Redis = websocket.app.state.redis
-        key = f"nexus:log_stream:{node_id}"
-        last_len = 0
-        try:
-            while True:
-                try:
-                    current_len = await redis.llen(key)
-                    if current_len > last_len:
-                        new_entries = await redis.lrange(key, last_len, current_len - 1)
-                        for entry in new_entries:
-                            line = entry.decode() if isinstance(entry, bytes) else str(entry)
-                            await websocket.send_text(
-                                __import__("json").dumps({"line": line, "node_id": node_id})
-                            )
-                        last_len = current_len
-                    else:
-                        await websocket.send_text(
-                            __import__("json").dumps({"heartbeat": True, "node_id": node_id})
-                        )
-                except Exception:
-                    break
-                await asyncio.sleep(2.0)
-        except WebSocketDisconnect:
-            pass
-        except Exception:
-            pass
 
     # ── Root redirect ──────────────────────────────────────────────────────────
     @app.get("/", include_in_schema=False)
