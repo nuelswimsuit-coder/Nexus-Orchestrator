@@ -12,7 +12,7 @@ from __future__ import annotations
 #  SIMULATION_MODE True  → paper trades only (no on-chain orders).
 #  SIMULATION_MODE False → live CLOB execution (requires wallet + POLY_* keys).
 #
-SIMULATION_MODE: bool = True
+SIMULATION_MODE: bool = False
 PAPER_TRADING: bool = SIMULATION_MODE
 
 # ── Execution sizing / history parameters ─────────────────────────────────────

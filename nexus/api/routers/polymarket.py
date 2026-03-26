@@ -94,16 +94,6 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
         "status": "OK" if hb_ok else "DEGRADED",
         "timestamp": clob_ts or poly_bot.updated_at or poly_bot.session_stage or "N/A",
     }
-    # #region agent log
-    import json as _json
-    try:
-        import urllib.request as _ur, urllib.error as _ue
-        _dbg = _json.dumps({"sessionId":"cba42c","runId":"post-fix","location":"polymarket.py:96","message":"clob_heartbeat_debug","data":{"clob_status_raw":str(clob_status_raw),"clob_hb_raw":str(clob_hb_raw),"clob_active":clob_active,"hb_ok":hb_ok,"poly_bot_session_active":getattr(poly_bot,"session_active",None),"poly_bot_updated_at":getattr(poly_bot,"updated_at",None),"poly_bot_available":getattr(poly_bot,"available",None)},"hypothesisId":"H-A,H-D","timestamp":__import__("time").time_ns()//1000000}).encode()
-        _req = _ur.Request("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a",data=_dbg,headers={"Content-Type":"application/json","X-Debug-Session-Id":"cba42c"},method="POST")
-        _ur.urlopen(_req,timeout=1)
-    except Exception:
-        pass
-    # #endregion
 
     points = chart.data[-40:] if chart.data else []
     base_pnl = float(poly_bot.total_pnl_usd) if poly_bot.available else 0.0

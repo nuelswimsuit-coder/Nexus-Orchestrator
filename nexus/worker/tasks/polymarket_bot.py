@@ -386,16 +386,6 @@ async def polymarket_bot_tick(parameters: dict[str, Any]) -> dict[str, Any]:
         return {"status": "error", "detail": "no_redis"}
 
     worker_id = os.getenv("NODE_ID", "worker")
-    # #region agent log
-    try:
-        import json as _json, urllib.request as _ur
-        _dbg_payload = _json.dumps({"sessionId":"cba42c","runId":"post-fix","location":"worker/polymarket_bot.py:379","message":"worker_tick_entry","data":{"worker_id":worker_id,"has_redis":redis is not None},"hypothesisId":"H-A,H-B","timestamp":__import__("time").time_ns()//1000000}).encode()
-        _req = _ur.Request("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a",data=_dbg_payload,headers={"Content-Type":"application/json","X-Debug-Session-Id":"cba42c"},method="POST")
-        _ur.urlopen(_req,timeout=1)
-    except Exception:
-        pass
-    # #endregion
-
     # Always emit a heartbeat — independent of private-key / trading state.
     await _write_clob_heartbeat(redis)
 
@@ -428,4 +418,12 @@ async def polymarket_bot_tick(parameters: dict[str, Any]) -> dict[str, Any]:
 @registry.register("trading.polymarket_bot_session")
 async def polymarket_bot_session(parameters: dict[str, Any]) -> dict[str, Any]:
     """Deprecated: use ``trading.polymarket_bot_tick``; master dispatches ticks on a cadence."""
+    return await polymarket_bot_tick(parameters)
+
+
+# Legacy alias: bare task_type dispatched by older Redis queue entries or
+# external callers that haven't adopted the namespaced form yet.
+@registry.register("polymarket_bot")
+async def polymarket_bot_legacy(parameters: dict[str, Any]) -> dict[str, Any]:
+    """Legacy alias for ``trading.polymarket_bot_tick`` — handles stale queue entries."""
     return await polymarket_bot_tick(parameters)

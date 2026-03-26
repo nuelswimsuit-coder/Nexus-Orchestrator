@@ -55,7 +55,7 @@ import nexus.worker.tasks.incubator_spawn  # noqa: F401 — registers nexus.incu
 import nexus.worker.tasks.account_mapper  # noqa: F401 — registers account_mapper.map
 import nexus.worker.tasks.moltbot  # noqa: F401 — registers bot.moltbot
 import nexus.worker.tasks.openclaw  # noqa: F401 — registers scraper.openclaw/openclaw.browser_scrape
-import nexus.worker.tasks.polymarket_bot  # noqa: F401 — trading.polymarket_bot_session
+import nexus.worker.tasks.polymarket_bot  # noqa: F401 — trading.polymarket_bot_tick / trading.polymarket_bot_session / polymarket_bot
 import nexus.worker.tasks.prediction  # noqa: F401 — registers prediction.cross_exchange
 import nexus.worker.tasks.retention_monitor  # noqa: F401 — retention.guardian.monitor
 import nexus.worker.tasks.staged_session_warmup  # noqa: F401 — registers telegram.run_warmup
