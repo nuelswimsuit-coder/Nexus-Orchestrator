@@ -739,10 +739,7 @@ def main() -> int:
             ),
             (
                 "polymarket",
-                [py, "-m", "scripts.nexus_core",
-                 "--task", "polymarket_bot",
-                 "--project", "default",
-                 "--priority", "8"],
+                [py, _subprocess_resource_path("scripts", "start_polymarket_bot.py")],
                 str(ROOT),
                 child_env,
             ),

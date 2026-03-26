@@ -389,7 +389,7 @@ async def polymarket_bot_tick(parameters: dict[str, Any]) -> dict[str, Any]:
     # #region agent log
     try:
         import json as _json, urllib.request as _ur
-        _dbg_payload = _json.dumps({"sessionId":"cba42c","location":"worker/polymarket_bot.py:379","message":"worker_tick_entry","data":{"worker_id":worker_id,"has_redis":redis is not None},"hypothesisId":"H-A,H-B","timestamp":__import__("time").time_ns()//1000000}).encode()
+        _dbg_payload = _json.dumps({"sessionId":"cba42c","runId":"post-fix","location":"worker/polymarket_bot.py:379","message":"worker_tick_entry","data":{"worker_id":worker_id,"has_redis":redis is not None},"hypothesisId":"H-A,H-B","timestamp":__import__("time").time_ns()//1000000}).encode()
         _req = _ur.Request("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a",data=_dbg_payload,headers={"Content-Type":"application/json","X-Debug-Session-Id":"cba42c"},method="POST")
         _ur.urlopen(_req,timeout=1)
     except Exception:

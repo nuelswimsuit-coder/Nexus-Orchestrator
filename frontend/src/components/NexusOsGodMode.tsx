@@ -1933,6 +1933,14 @@ interface Poly5mData {
   losses: number;
   decision: string | null;
   trading_halted: boolean;
+  paper_trading?: boolean;
+  btc_price?: number | null;
+  yes_price?: number | null;
+  velocity_pct_60s?: number | null;
+  market_question?: string | null;
+  sentiment?: Record<string, unknown>;
+  loss_streak?: number;
+  win_loss_ratio?: number | null;
 }
 
 interface CrossExchangeData {
@@ -2275,48 +2283,89 @@ function PolymarketTradingView({
           <div className="flex items-center gap-2 mb-3">
             <span className="text-[9px] font-black uppercase tracking-[0.3em] text-cyan-400/60">◈ NEXUS CORE AUGMENTED ANALYTICS</span>
             <span className="text-[9px] font-black text-fuchsia-400 animate-pulse">LIVE</span>
+            {!bot?.available && (
+              <span className="text-[8px] font-black text-amber-400/70 font-mono ml-auto">BOT OFFLINE — WAITING FOR WORKER</span>
+            )}
           </div>
           <div className="grid grid-cols-3 gap-3">
+            {/* Risk Adjusted Alpha = realized PnL × (winRate/100 + 0.5) */}
             <div className="rounded-xl p-3" style={{ background: "rgba(34,211,238,0.06)", border: "1px solid rgba(34,211,238,0.2)", boxShadow: "0 0 12px rgba(34,211,238,0.06)" }}>
               <div className="text-[9px] font-black uppercase tracking-widest text-cyan-400/60 mb-1">⬡ Risk Adjusted Alpha</div>
-              <div className="text-lg font-black font-mono text-cyan-300" style={{ textShadow: "0 0 10px rgba(34,211,238,0.4)" }}>+{fmtUsd(riskAdjAlpha)}</div>
-              <div className="text-[9px] text-slate-600 font-mono mt-0.5">6.2% adj. return</div>
+              <div className={`text-lg font-black font-mono ${riskAdjAlpha >= 0 ? "text-cyan-300" : "text-rose-400"}`} style={{ textShadow: "0 0 10px rgba(34,211,238,0.4)" }}>
+                {riskAdjAlpha >= 0 ? "+" : ""}{fmtUsd(riskAdjAlpha)}
+              </div>
+              <div className="text-[9px] text-slate-600 font-mono mt-0.5">
+                R: {fmtUsd(realizedPnl)} · WR: {winRate.toFixed(1)}%
+              </div>
             </div>
+            {/* Est. Returns by Nexus Core = unrealized + arb gap projection */}
             <div className="rounded-xl p-3" style={{ background: "rgba(168,85,247,0.06)", border: "1px solid rgba(168,85,247,0.2)", boxShadow: "0 0 12px rgba(168,85,247,0.06)" }}>
               <div className="text-[9px] font-black uppercase tracking-widest text-purple-400/60 mb-1">⬡ Est. Returns by Nexus Core</div>
-              <div className="text-lg font-black font-mono text-purple-300" style={{ textShadow: "0 0 10px rgba(168,85,247,0.4)" }}>+{fmtUsd(estReturnsNexus)}</div>
-              <div className="text-[9px] text-slate-600 font-mono mt-0.5">11.8% projected</div>
+              <div className={`text-lg font-black font-mono ${estReturnsNexus >= 0 ? "text-purple-300" : "text-rose-400"}`} style={{ textShadow: "0 0 10px rgba(168,85,247,0.4)" }}>
+                {estReturnsNexus >= 0 ? "+" : ""}{fmtUsd(estReturnsNexus)}
+              </div>
+              <div className="text-[9px] text-slate-600 font-mono mt-0.5">
+                U: {fmtUsd(unrealizedPnl)} · ARB: {((cx?.arbitrage_gap ?? 0) * 100).toFixed(3)}%
+              </div>
             </div>
+            {/* Est. Returns = total PnL from bot */}
             <div className="rounded-xl p-3" style={{ background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.2)", boxShadow: "0 0 12px rgba(52,211,153,0.06)" }}>
               <div className="text-[9px] font-black uppercase tracking-widest text-emerald-400/60 mb-1">⬡ Est. Returns</div>
-              <div className="text-lg font-black font-mono text-emerald-300" style={{ textShadow: "0 0 10px rgba(52,211,153,0.4)" }}>+{fmtUsd(estReturns)}</div>
-              <div className="text-[9px] text-slate-600 font-mono mt-0.5">9.4% baseline</div>
+              <div className={`text-lg font-black font-mono ${estReturns >= 0 ? "text-emerald-300" : "text-rose-400"}`} style={{ textShadow: "0 0 10px rgba(52,211,153,0.4)" }}>
+                {estReturns >= 0 ? "+" : ""}{fmtUsd(estReturns)}
+              </div>
+              <div className="text-[9px] text-slate-600 font-mono mt-0.5">
+                Total PnL · {bot?.last_action || (bot?.available ? "active" : "no session")}
+              </div>
             </div>
           </div>
         </div>
 
-        {/* ── PHASE 2: 3D Wireframe Mesh PnL Graph ── */}
+        {/* ── PHASE 2: 3D Wireframe Mesh PnL Graph — driven by real pnl_series ── */}
         <div className="mt-4">
-          <div className="text-[9px] font-black uppercase tracking-widest text-fuchsia-400/50 mb-2">◈ P/L 3D WIREFRAME MESH</div>
-          <div className="relative rounded-xl overflow-hidden" style={{ height: 90, background: "rgba(0,0,0,0.5)", border: "1px solid rgba(236,72,153,0.2)" }}>
-            <svg width="100%" height="90" viewBox="0 0 600 90" preserveAspectRatio="none" className="absolute inset-0">
-              <defs>
-                <linearGradient id="pnlMeshFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.5" />
-                  <stop offset="100%" stopColor="#f43f5e" stopOpacity="0.03" />
-                </linearGradient>
-                <filter id="meshGlow"><feGaussianBlur stdDeviation="1.5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-              </defs>
-              {[0,1,2,3].map(i => <line key={`mh${i}`} x1="0" y1={i*22+10} x2="600" y2={i*22+10} stroke="rgba(236,72,153,0.1)" strokeWidth="1"/>)}
-              {[0,1,2,3,4,5,6,7,8,9,10,11,12].map(i => <line key={`mv${i}`} x1={i*50} y1="0" x2={i*50} y2="90" stroke="rgba(236,72,153,0.07)" strokeWidth="1"/>)}
-              {[0,1,2,3,4,5,6].map(i => <line key={`mp${i}`} x1={i*100} y1="90" x2="300" y2="10" stroke="rgba(168,85,247,0.12)" strokeWidth="0.5"/>)}
-              <path d="M0,20 C60,25 120,45 180,55 C240,65 300,60 360,70 C420,78 480,82 540,85 L600,87 L600,90 L0,90 Z" fill="url(#pnlMeshFill)"/>
-              <path d="M0,20 C60,25 120,45 180,55 C240,65 300,60 360,70 C420,78 480,82 540,85 L600,87" fill="none" stroke="#f43f5e" strokeWidth="1.5" filter="url(#meshGlow)"/>
-              {[[0,20],[120,45],[240,65],[360,70],[480,82],[600,87]].map(([x,y],i) => <circle key={i} cx={x} cy={y} r="2.5" fill="#f43f5e" style={{filter:"drop-shadow(0 0 3px #f43f5e)"}}/>)}
-              {[[0,20],[120,45],[240,65],[360,70],[480,82]].map(([x,y],i) => <line key={`mc${i}`} x1={x} y1={y} x2={x+120} y2={[45,65,70,82,87][i]??87} stroke="rgba(236,72,153,0.25)" strokeWidth="0.8" strokeDasharray="3,3"/>)}
-            </svg>
-            <div className="absolute bottom-1.5 right-2 text-[8px] font-black text-fuchsia-400/40 uppercase tracking-widest">3D WIREFRAME · PnL SERIES</div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[9px] font-black uppercase tracking-widest text-fuchsia-400/50">◈ P/L 3D WIREFRAME MESH</span>
+            <span className="text-[8px] text-slate-600 font-mono">{pnlSeries.length} pts</span>
           </div>
+          {pnlSeries.length > 1 ? (
+            <div className="h-[90px]">
+              <ResponsiveContainer width="100%" height={90}>
+                <AreaChart data={pnlSeries}>
+                  <defs>
+                    <linearGradient id="pnlMeshFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={isPnlPositive ? "#22d3ee" : "#f43f5e"} stopOpacity="0.4" />
+                      <stop offset="100%" stopColor={isPnlPositive ? "#22d3ee" : "#f43f5e"} stopOpacity="0.02" />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(236,72,153,0.08)" vertical={false} />
+                  <XAxis dataKey="time" hide />
+                  <YAxis hide />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: "#0a0f1a", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "8px", fontSize: "10px" }}
+                    formatter={(v) => [fmtUsd(Number(v ?? 0)), "PnL"]}
+                  />
+                  <ReferenceLine y={0} stroke="rgba(236,72,153,0.3)" strokeDasharray="4 4" />
+                  <Area type="monotone" dataKey="pnl" stroke={isPnlPositive ? "#22d3ee" : "#f43f5e"} fill="url(#pnlMeshFill)" strokeWidth={2} dot={false} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="relative rounded-xl overflow-hidden" style={{ height: 90, background: "rgba(0,0,0,0.5)", border: "1px solid rgba(236,72,153,0.15)" }}>
+              <svg width="100%" height="90" viewBox="0 0 600 90" preserveAspectRatio="none" className="absolute inset-0">
+                <defs>
+                  <linearGradient id="pnlMeshFillStatic" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.3" />
+                    <stop offset="100%" stopColor="#f43f5e" stopOpacity="0.02" />
+                  </linearGradient>
+                  <filter id="meshGlow"><feGaussianBlur stdDeviation="1.5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+                </defs>
+                {[0,1,2,3].map(i => <line key={`mh${i}`} x1="0" y1={i*22+10} x2="600" y2={i*22+10} stroke="rgba(236,72,153,0.08)" strokeWidth="1"/>)}
+                {[0,1,2,3,4,5,6,7,8,9,10,11,12].map(i => <line key={`mv${i}`} x1={i*50} y1="0" x2={i*50} y2="90" stroke="rgba(236,72,153,0.05)" strokeWidth="1"/>)}
+                <line x1="0" y1="45" x2="600" y2="45" stroke="rgba(236,72,153,0.2)" strokeWidth="1" strokeDasharray="4,4"/>
+              </svg>
+              <div className="absolute inset-0 flex items-center justify-center text-[9px] font-black text-slate-700 uppercase tracking-widest font-mono">AWAITING PnL DATA FROM WORKER</div>
+            </div>
+          )}
         </div>
       </HackerCard>
 
@@ -2327,6 +2376,9 @@ function PolymarketTradingView({
           <div className="flex items-center gap-2 mb-3">
             <Cpu size={14} className="text-cyan-400" />
             <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Bot Total PnL</span>
+            {bot?.within_target_band && (
+              <span className="ml-auto text-[8px] font-black text-emerald-400 animate-pulse">◈ IN BAND</span>
+            )}
           </div>
           <div className={`text-2xl font-black font-mono ${totalPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
             {fmtUsd(totalPnl)}
@@ -2334,8 +2386,17 @@ function PolymarketTradingView({
           <div className="text-[10px] text-slate-600 font-mono mt-1">
             R: {fmtUsd(bot?.realized_pnl_usd ?? 0)} · U: {fmtUsd(bot?.unrealized_pnl_usd ?? 0)}
           </div>
+          {bot?.btc_spot != null && (
+            <div className="text-[10px] text-slate-500 font-mono mt-1">
+              BTC: <span className="text-amber-400">${bot.btc_spot.toLocaleString()}</span>
+              {bot.target_strike != null && <> · Strike: <span className="text-cyan-400">${bot.target_strike.toLocaleString()}</span></>}
+            </div>
+          )}
+          {bot?.yes_price != null && (
+            <div className="text-[10px] text-slate-500 font-mono">YES: <span className="text-cyan-400">{(bot.yes_price * 100).toFixed(1)}¢</span></div>
+          )}
           {bot?.market_question && (
-            <div className="text-[10px] text-slate-500 mt-2 truncate">{bot.market_question}</div>
+            <div className="text-[10px] text-slate-500 mt-1 truncate">{bot.market_question}</div>
           )}
         </HackerCard>
 
@@ -2361,6 +2422,9 @@ function PolymarketTradingView({
           <div className="flex items-center gap-2 mb-3">
             <Zap size={14} className="text-cyan-400" />
             <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">5m Scalper</span>
+            {poly5m?.paper_trading && (
+              <span className="ml-auto text-[8px] font-black text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded uppercase">PAPER</span>
+            )}
           </div>
           <div className="text-2xl font-black font-mono text-cyan-400">
             {poly5m?.wins ?? 0}W / {poly5m?.losses ?? 0}L
@@ -2368,6 +2432,17 @@ function PolymarketTradingView({
           <div className="text-[10px] text-slate-600 font-mono mt-1">
             {poly5m?.trading_halted ? "⛔ HALTED" : (poly5m?.decision ?? "—")}
           </div>
+          {poly5m?.btc_price != null && (
+            <div className="text-[10px] text-slate-500 font-mono mt-1">
+              BTC: <span className="text-amber-400">${poly5m.btc_price.toLocaleString()}</span>
+              {poly5m.yes_price != null && <> · YES: <span className="text-cyan-400">{(poly5m.yes_price * 100).toFixed(1)}¢</span></>}
+            </div>
+          )}
+          {poly5m?.velocity_pct_60s != null && (
+            <div className="text-[10px] font-mono mt-0.5" style={{ color: (poly5m.velocity_pct_60s ?? 0) >= 0 ? "#34d399" : "#f87171" }}>
+              VEL 60s: {(poly5m.velocity_pct_60s ?? 0) >= 0 ? "+" : ""}{poly5m.velocity_pct_60s.toFixed(3)}%
+            </div>
+          )}
         </HackerCard>
 
         {/* Cross-exchange signal */}
