@@ -430,6 +430,18 @@ NODE_HISTORY_KEY = "node:history"
 NODE_HISTORY_MAX = 20
 
 
+@router.get("/redis-ping", summary="Quick Redis connectivity check for the dashboard")
+async def redis_ping(redis: RedisDep) -> dict[str, Any]:
+    """Returns ok=true and latency_ms when Redis is reachable."""
+    t0 = time.monotonic()
+    try:
+        await redis.ping()
+        latency_ms = round((time.monotonic() - t0) * 1000, 2)
+        return {"ok": True, "latency_ms": latency_ms}
+    except Exception as exc:
+        return {"ok": False, "latency_ms": None, "error": str(exc)}
+
+
 @router.get("/node-history", summary="Rolling node action history for AI Decision Log")
 async def get_node_history(redis: RedisDep) -> dict[str, Any]:
     """

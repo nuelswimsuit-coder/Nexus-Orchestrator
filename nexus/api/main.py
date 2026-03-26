@@ -196,7 +196,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     log.info("nexus_api_started", docs="/docs", rate_limit="100/min")
 
+    # Push live system lines to the Redis log stream so the Live Terminal shows data.
+    async def _master_log_streamer() -> None:
+        import socket as _sock  # noqa: PLC0415
+        _key = f"nexus:log_stream:{settings.node_id}"
+        _hostname = _sock.gethostname()
+        _max_lines = 200
+        while True:
+            try:
+                await asyncio.sleep(3.0)
+                _ts = __import__("datetime").datetime.now().strftime("%H:%M:%S")
+                _cpu = __import__("psutil").cpu_percent(interval=None)
+                _ram = __import__("psutil").virtual_memory()
+                _line = (
+                    f"[{_ts}] [{_hostname}] CPU {_cpu:.1f}% | "
+                    f"RAM {_ram.used // 1024 // 1024}MB/{_ram.total // 1024 // 1024}MB"
+                )
+                await redis.rpush(_key, _line)
+                await redis.ltrim(_key, -_max_lines, -1)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+
+    log_stream_task = asyncio.create_task(_master_log_streamer(), name="master_log_streamer")
+
     yield
+
+    log_stream_task.cancel()
+    try:
+        await log_stream_task
+    except asyncio.CancelledError:
+        pass
 
     stability_task.cancel()
     try:
