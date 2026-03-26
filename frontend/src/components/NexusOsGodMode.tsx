@@ -128,6 +128,11 @@ interface ClusterHealthNode {
   status: string;
   online: boolean;
   cpu_temp?: number | null;
+  role?: string;
+  ram_used_mb?: number;
+  ram_total_mb?: number;
+  os_info?: string;
+  cpu_model?: string;
 }
 
 // ── Tailwind-safe color maps (dynamic `bg-${x}` is purged by JIT) ─────────────
@@ -782,21 +787,175 @@ function MasterHubView({ data }: { data: GodModeDashboard | null }) {
   );
 }
 
+// ── Create Group Modal ──────────────────────────────────────────────────────
+
+interface CreateGroupModalProps {
+  onClose: () => void;
+  onCreated: (group: TelefixGroup) => void;
+}
+
+function CreateGroupModal({ onClose, onCreated }: CreateGroupModalProps) {
+  const [nameHe, setNameHe] = useState("");
+  const [inviteLink, setInviteLink] = useState("");
+  const [isPrivate, setIsPrivate] = useState(true);
+  const [warmupDays, setWarmupDays] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!nameHe.trim()) { setError("שם הקבוצה הוא שדה חובה"); return; }
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/telefix/group-infiltration`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name_he: nameHe.trim(),
+          invite_link: inviteLink.trim() || null,
+          is_private: isPrivate,
+          warmup_days: warmupDays,
+        }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({})) as { detail?: string };
+        throw new Error(j.detail ?? `שגיאה ${res.status}`);
+      }
+      const j = (await res.json()) as { group: TelefixGroup };
+      onCreated(j.group);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "שגיאה לא ידועה");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-slate-900 border border-slate-700 rounded-3xl p-8 w-full max-w-md shadow-2xl animate-in fade-in zoom-in-95">
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-xl font-black text-white">צור קבוצה חדשה</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-slate-500 hover:text-white transition text-2xl leading-none"
+          >
+            ×
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-5" dir="rtl">
+          <div>
+            <label className="block text-xs font-bold text-slate-400 mb-1.5">שם הקבוצה (עברית) *</label>
+            <input
+              type="text"
+              value={nameHe}
+              onChange={(e) => setNameHe(e.target.value)}
+              placeholder="לדוגמה: קהילת משקיעים תל אביב"
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition text-sm"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-400 mb-1.5">קישור הזמנה (אופציונלי)</label>
+            <input
+              type="url"
+              value={inviteLink}
+              onChange={(e) => setInviteLink(e.target.value)}
+              placeholder="https://t.me/..."
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition text-sm"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-400 mb-1.5">
+              ימי חימום התחלתיים: <span className="text-cyan-400">{warmupDays}</span>
+            </label>
+            <input
+              type="range"
+              min={1}
+              max={14}
+              value={warmupDays}
+              onChange={(e) => setWarmupDays(Number(e.target.value))}
+              className="w-full accent-cyan-500"
+            />
+            <div className="flex justify-between text-[10px] text-slate-600 mt-0.5">
+              <span>1</span><span>7</span><span>14</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setIsPrivate(!isPrivate)}
+              className={`relative w-11 h-6 rounded-full transition-colors ${isPrivate ? "bg-cyan-600" : "bg-slate-700"}`}
+            >
+              <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${isPrivate ? "translate-x-5" : "translate-x-0.5"}`} />
+            </button>
+            <span className="text-sm text-slate-300">קבוצה פרטית</span>
+          </div>
+
+          {error && (
+            <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl px-4 py-2.5 text-rose-400 text-sm">
+              {error}
+            </div>
+          )}
+
+          <div className="flex gap-3 pt-1">
+            <button
+              type="submit"
+              disabled={loading}
+              className="flex-1 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-xl font-bold transition"
+            >
+              {loading ? "יוצר..." : "צור קבוצה"}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl font-bold transition"
+            >
+              ביטול
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// ── Group Factory View ───────────────────────────────────────────────────────
+
 function GroupFactoryView() {
   const [warmupGroups, setWarmupGroups] = useState<TelefixGroup[]>([]);
   const [dbGroups, setDbGroups] = useState<TelefixDbGroup[]>([]);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [forceSearchLoading, setForceSearchLoading] = useState<string | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+
+  const showToast = (msg: string, ok = true) => {
+    setToast({ msg, ok });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const loadWarmup = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/telefix/group-infiltration`);
+      if (!res.ok) return;
+      const j = (await res.json()) as { groups: TelefixGroup[] };
+      setWarmupGroups(j.groups ?? []);
+    } catch { /* ignore */ }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
-
-    const loadWarmup = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/telefix/group-infiltration`);
-        if (!res.ok) return;
-        const j = (await res.json()) as { groups: TelefixGroup[] };
-        if (!cancelled) setWarmupGroups(j.groups ?? []);
-      } catch { /* ignore */ }
-    };
 
     const loadDbGroups = async () => {
       try {
@@ -810,7 +969,36 @@ function GroupFactoryView() {
     void loadWarmup();
     void loadDbGroups();
     return () => { cancelled = true; };
-  }, []);
+  }, [loadWarmup]);
+
+  const handleForceSearch = async (groupId: string) => {
+    setForceSearchLoading(groupId);
+    try {
+      const res = await fetch(`${API_BASE}/api/telefix/group-infiltration/${groupId}/force-search`, { method: "POST" });
+      if (!res.ok) throw new Error(`שגיאה ${res.status}`);
+      showToast("הקבוצה הועלתה לחיפוש ✅");
+      await loadWarmup();
+    } catch {
+      showToast("נכשל — נסה שוב", false);
+    } finally {
+      setForceSearchLoading(null);
+    }
+  };
+
+  const handleDelete = async (groupId: string) => {
+    if (!confirm("האם למחוק קבוצה זו?")) return;
+    setDeleteLoading(groupId);
+    try {
+      const res = await fetch(`${API_BASE}/api/telefix/group-infiltration/${groupId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`שגיאה ${res.status}`);
+      showToast("הקבוצה נמחקה");
+      await loadWarmup();
+    } catch {
+      showToast("מחיקה נכשלה", false);
+    } finally {
+      setDeleteLoading(null);
+    }
+  };
 
   // Build invite lookup from real DB records
   const inviteByTitle = new Map<string, string>();
@@ -824,6 +1012,7 @@ function GroupFactoryView() {
       ? dbGroups.map((g, i) => {
           const warmup = warmupGroups.find((w) => w.id === String(g.id));
           return {
+            id: String(g.id),
             name: g.title,
             invite: g.invite_link,
             days: warmup?.warmup_days ?? (i % 2 === 0 ? 14 : 7),
@@ -833,9 +1022,11 @@ function GroupFactoryView() {
                 ? "FAILED_RETRY"
                 : "WARMING",
             search: warmup?.in_search ?? false,
+            isPrivate: false,
           };
         })
       : warmupGroups.map((g) => ({
+          id: g.id,
           name: g.name_he,
           invite: inviteByTitle.get(g.name_he) ?? null,
           days: g.warmup_days,
@@ -845,97 +1036,174 @@ function GroupFactoryView() {
               ? "FAILED_RETRY"
               : "WARMING",
           search: g.in_search,
+          isPrivate: false,
         }));
 
+  const totalReady = rows.filter((r) => r.status === "READY").length;
+  const totalWarming = rows.filter((r) => r.status === "WARMING").length;
+  const avgDays = rows.length > 0 ? Math.round(rows.reduce((s, r) => s + r.days, 0) / rows.length) : 0;
+
   return (
-    <div className="bg-slate-900/40 border border-slate-800 rounded-[2.5rem] p-10 animate-in fade-in">
-      <div className="flex justify-between items-center mb-10 flex-wrap gap-4">
-        <div>
-          <h3 className="text-2xl font-black text-white">
-            מפעל קבוצות - חדירה לחיפוש
-          </h3>
-          <p className="text-slate-500 text-sm mt-1">
-            ניהול חימום שבועיים ואוטומציית אינדוקס (vault/
-            group_infiltration.json)
-          </p>
+    <div className="space-y-6 animate-in fade-in">
+      {/* Toast */}
+      {toast && (
+        <div className={`fixed top-6 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-2xl font-bold text-sm shadow-xl transition-all ${toast.ok ? "bg-emerald-600 text-white" : "bg-rose-600 text-white"}`}>
+          {toast.msg}
         </div>
-        <button
-          type="button"
-          className="bg-cyan-600 hover:bg-cyan-500 text-white px-6 py-3 rounded-2xl font-bold transition"
-        >
-          צור קבוצה חדשה
-        </button>
-      </div>
-      <div className="grid gap-4">
-        {rows.map((group, i) => (
-          <div
-            key={i}
-            className="bg-slate-950/50 p-6 rounded-3xl border border-slate-800 flex items-center justify-between group hover:border-cyan-500/50 transition flex-wrap gap-4"
-          >
-            <div className="flex items-center gap-6">
-              <div
-                className={`w-14 h-14 rounded-2xl flex items-center justify-center ${
-                  group.status === "READY"
-                    ? "bg-emerald-500/20 text-emerald-400"
-                    : "bg-amber-500/20 text-amber-400"
-                }`}
-              >
-                {group.status === "READY" ? (
-                  <CheckCircle2 size={28} />
-                ) : (
-                  <Clock size={28} />
-                )}
-              </div>
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <div className="text-lg font-bold text-white">{group.name}</div>
-                  {group.invite && group.invite.startsWith("https://t.me/") ? (
-                    <a
-                      href={group.invite}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[10px] text-cyan-400 hover:text-cyan-300 font-bold border border-cyan-500/30 px-2 py-0.5 rounded-lg transition"
-                    >
-                      הצטרף ↗
-                    </a>
+      )}
+
+      {/* Header */}
+      <div className="bg-slate-900/40 border border-slate-800 rounded-[2.5rem] p-10">
+        <div className="flex justify-between items-center mb-8 flex-wrap gap-4">
+          <div>
+            <h3 className="text-2xl font-black text-white">
+              מפעל קבוצות - חדירה לחיפוש
+            </h3>
+            <p className="text-slate-500 text-sm mt-1">
+              ניהול חימום שבועיים ואוטומציית אינדוקס (vault/group_infiltration.json)
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void loadWarmup()}
+              className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-3 rounded-2xl font-bold transition flex items-center gap-2"
+              title="רענן נתונים"
+            >
+              <RefreshCw size={16} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCreateModal(true)}
+              className="bg-cyan-600 hover:bg-cyan-500 text-white px-6 py-3 rounded-2xl font-bold transition flex items-center gap-2"
+            >
+              <span className="text-lg leading-none">+</span>
+              צור קבוצה חדשה
+            </button>
+          </div>
+        </div>
+
+        {/* Stats bar */}
+        <div className="grid grid-cols-3 gap-4 mb-8">
+          <div className="bg-slate-950/60 rounded-2xl p-4 border border-slate-800 text-center">
+            <div className="text-2xl font-black text-white">{rows.length}</div>
+            <div className="text-xs text-slate-500 font-bold mt-0.5">סה״כ קבוצות</div>
+          </div>
+          <div className="bg-emerald-500/10 rounded-2xl p-4 border border-emerald-500/20 text-center">
+            <div className="text-2xl font-black text-emerald-400">{totalReady}</div>
+            <div className="text-xs text-emerald-600 font-bold mt-0.5">מוכנות לחיפוש</div>
+          </div>
+          <div className="bg-amber-500/10 rounded-2xl p-4 border border-amber-500/20 text-center">
+            <div className="text-2xl font-black text-amber-400">{totalWarming}</div>
+            <div className="text-xs text-amber-600 font-bold mt-0.5">בחימום · ממוצע {avgDays}/14 יום</div>
+          </div>
+        </div>
+
+        {/* Group list */}
+        <div className="grid gap-4">
+          {rows.length === 0 && (
+            <div className="text-center py-16 text-slate-600">
+              <Users size={40} className="mx-auto mb-3 opacity-30" />
+              <div className="font-bold">אין קבוצות עדיין</div>
+              <div className="text-sm mt-1">לחץ &quot;צור קבוצה חדשה&quot; כדי להתחיל</div>
+            </div>
+          )}
+          {rows.map((group) => (
+            <div
+              key={group.id}
+              className="bg-slate-950/50 p-6 rounded-3xl border border-slate-800 flex items-center justify-between group hover:border-cyan-500/50 transition flex-wrap gap-4"
+            >
+              <div className="flex items-center gap-6">
+                <div
+                  className={`w-14 h-14 rounded-2xl flex items-center justify-center ${
+                    group.status === "READY"
+                      ? "bg-emerald-500/20 text-emerald-400"
+                      : "bg-amber-500/20 text-amber-400"
+                  }`}
+                >
+                  {group.status === "READY" ? (
+                    <CheckCircle2 size={28} />
                   ) : (
-                    <button
-                      type="button"
-                      className="text-[10px] text-rose-400 font-bold border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 px-2 py-0.5 rounded-lg transition"
-                      title="הקישור פג תוקף — יש לרענן"
-                    >
-                      🔴 REFRESH LINK
-                    </button>
+                    <Clock size={28} />
                   )}
                 </div>
-                <div className="flex items-center gap-3 mt-1">
-                  <span className="text-xs text-slate-500 font-bold">
-                    חימום: {group.days}/14 יום
-                  </span>
-                  <div className="w-32 bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                    <div
-                      className="bg-cyan-500 h-full"
-                      style={{ width: `${(group.days / 14) * 100}%` }}
-                    />
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="text-lg font-bold text-white">{group.name}</div>
+                    {group.invite && group.invite.startsWith("https://t.me/") ? (
+                      <a
+                        href={group.invite}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] text-cyan-400 hover:text-cyan-300 font-bold border border-cyan-500/30 px-2 py-0.5 rounded-lg transition"
+                      >
+                        הצטרף ↗
+                      </a>
+                    ) : (
+                      <span className="text-[10px] text-rose-400 font-bold border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 rounded-lg">
+                        🔴 אין קישור
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 mt-1">
+                    <span className="text-xs text-slate-500 font-bold">
+                      חימום: {group.days}/14 יום
+                    </span>
+                    <div className="w-32 bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                      <div
+                        className="bg-cyan-500 h-full transition-all"
+                        style={{ width: `${Math.min((group.days / 14) * 100, 100)}%` }}
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-            <div className="text-left">
-              <div className="text-[10px] text-slate-500 uppercase font-bold">
-                אינדוקס
+
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="text-right">
+                  <div className="text-[10px] text-slate-500 uppercase font-bold">אינדוקס</div>
+                  <div className={`text-sm font-bold ${group.search ? "text-emerald-400" : "text-rose-400"}`}>
+                    {group.search ? "מופיע בחיפוש ✅" : "ממתין..."}
+                  </div>
+                </div>
+
+                {!group.search && (
+                  <button
+                    type="button"
+                    onClick={() => void handleForceSearch(group.id)}
+                    disabled={forceSearchLoading === group.id}
+                    className="text-xs bg-cyan-600/20 hover:bg-cyan-600/40 text-cyan-400 border border-cyan-500/30 px-3 py-1.5 rounded-xl font-bold transition disabled:opacity-50"
+                    title="כפה העלאה לחיפוש"
+                  >
+                    {forceSearchLoading === group.id ? "..." : "⚡ Force Search"}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => void handleDelete(group.id)}
+                  disabled={deleteLoading === group.id}
+                  className="text-xs bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 px-3 py-1.5 rounded-xl font-bold transition disabled:opacity-50 opacity-0 group-hover:opacity-100"
+                  title="מחק קבוצה"
+                >
+                  {deleteLoading === group.id ? "..." : "🗑"}
+                </button>
               </div>
-              <div
-                className={`text-sm font-bold ${
-                  group.search ? "text-emerald-400" : "text-rose-400"
-                }`}
-              >
-                {group.search ? "מופיע בחיפוש ✅" : "ממתין..."}
-              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
+
+      {/* Create modal */}
+      {showCreateModal && (
+        <CreateGroupModal
+          onClose={() => setShowCreateModal(false)}
+          onCreated={(g) => {
+            setWarmupGroups((prev) => [...prev, g]);
+            showToast(`קבוצה "${g.name_he}" נוצרה בהצלחה ✅`);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1935,9 +2203,18 @@ function SwarmMonitorView() {
                 ? ("LIVE" as const)
                 : ("IDLE" as const),
             cpuTemp: n.cpu_temp ?? null,
+            role: n.role ?? "worker",
+            ramUsed: n.ram_used_mb ?? null,
+            ramTotal: n.ram_total_mb ?? null,
+            osInfo: n.os_info ?? null,
+            cpuModel: n.cpu_model ?? null,
           }))
-          // Pin Jacob-PC (master) to the top of the list
-          .sort((a, b) => (a.name === "Jacob-PC" ? -1 : b.name === "Jacob-PC" ? 1 : 0))
+          // Pin master nodes to the top of the list
+          .sort((a, b) => {
+            const aM = a.role === "master" ? 0 : 1;
+            const bM = b.role === "master" ? 0 : 1;
+            return aM - bM;
+          })
       : [];
 
   // Flatten inventory sessions sorted: Jacob-PC first
@@ -2149,9 +2426,9 @@ function SwarmMonitorView() {
 
       {/* ── Node cards ─────────────────────────────────────────────────────── */}
       {cards.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
           {cards.map((c) => (
-            <NodeCard key={c.name} {...c} />
+            <NodeCard key={c.nodeId} {...c} />
           ))}
         </div>
       )}
@@ -2182,14 +2459,6 @@ function SwarmMonitorView() {
         </div>
       )}
 
-      {/* ── Live Console log streams (one per laptop card) ─────────────────── */}
-      {cards.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
-          {cards.map((c) => (
-            <LiveConsole key={`log-${c.nodeId}`} nodeId={c.nodeId} label={c.name} />
-          ))}
-        </div>
-      )}
 
       {/* ── Full inventory table ───────────────────────────────────────────── */}
       <div className="w-full bg-slate-900/60 border border-cyan-500/30 rounded-[2.5rem] p-8 shadow-2xl shadow-cyan-500/10 backdrop-blur-xl overflow-y-auto nexus-os-scrollbar">

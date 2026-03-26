@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { swrFetcher } from "@/lib/api";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type TranslationKey } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
 import { useStealth } from "@/lib/stealth";
 import type { PaperTradesResponse, VirtualTradeEntry } from "@/lib/api";
@@ -108,7 +108,7 @@ function TradeRow({
   trade: VirtualTradeEntry;
   stealth: boolean;
   isHighContrast: boolean;
-  t: (k: string) => string;
+  t: (k: TranslationKey) => string;
 }) {
   const sigColor = stealth
     ? "#1e293b"

@@ -155,7 +155,7 @@ export default function Sidebar() {
             </AnimatePresence>
 
             {items.map(({ href, icon, labelKey, descKey }) => {
-              const active = pathname === href || pathname.startsWith(href + "/");
+              const active = pathname === href || (pathname?.startsWith(href + "/") ?? false);
               const activeBg = isHighContrast
                 ? tokens.accentSubtle
                 : stealth ? "#0f172a" : `${accentC}18`;

@@ -54,6 +54,11 @@ interface NexusContextValue {
     display_name?: string;
   } | null;
   activeProjectLoading?: boolean;
+  // Smart sleep / auto-approve HITL
+  smartSleep:         boolean;
+  setSmartSleep:      (v: boolean) => void;
+  autoApproveHitl:    boolean;
+  setAutoApproveHitl: (v: boolean) => void;
 }
 
 const NexusContext = createContext<NexusContextValue>({
@@ -72,6 +77,10 @@ const NexusContext = createContext<NexusContextValue>({
   setActiveCcProject: () => {},
   activeProject: null,
   activeProjectLoading: false,
+  smartSleep:         false,
+  setSmartSleep:      () => {},
+  autoApproveHitl:    false,
+  setAutoApproveHitl: () => {},
 });
 
 export function NexusProvider({ children }: { children: ReactNode }) {
@@ -106,6 +115,8 @@ export function NexusProvider({ children }: { children: ReactNode }) {
   const [deployingNodes, setDeployingNodes] = useState<Set<string>>(new Set());
   const [deployPhase, setDeployPhase]       = useState<DeployPhase>("idle");
   const [activeCcProject, setActiveCcProject] = useState<string>("nuel");
+  const [smartSleep, setSmartSleep]           = useState<boolean>(false);
+  const [autoApproveHitl, setAutoApproveHitl] = useState<boolean>(false);
 
   const setDeployingNode = useCallback((node_id: string, active: boolean) => {
     setDeployingNodes((prev) => {
@@ -132,6 +143,10 @@ export function NexusProvider({ children }: { children: ReactNode }) {
         setDeployPhase,
         activeCcProject,
         setActiveCcProject,
+        smartSleep,
+        setSmartSleep,
+        autoApproveHitl,
+        setAutoApproveHitl,
       }}
     >
       {children}

@@ -169,6 +169,67 @@ async def get_group_infiltration() -> GroupInfiltrationResponse:
     )
 
 
+class CreateGroupRequest(BaseModel):
+    name_he: str = Field(min_length=1, max_length=120)
+    invite_link: str | None = None
+    is_private: bool = True
+    warmup_days: int = Field(default=1, ge=1, le=14)
+
+
+class CreateGroupResponse(BaseModel):
+    ok: bool
+    group: GroupInfiltrationRow
+
+
+@router.post("/group-infiltration", response_model=CreateGroupResponse, status_code=201)
+async def create_group(body: CreateGroupRequest) -> CreateGroupResponse:
+    st = _load_group_state()
+    groups: list[dict[str, Any]] = list(st.get("groups") or [])
+    new_id = f"g{uuid.uuid4().hex[:8]}"
+    new_group: dict[str, Any] = {
+        "id": new_id,
+        "name_he": body.name_he,
+        "invite_link": body.invite_link,
+        "is_private": body.is_private,
+        "warmup_days": body.warmup_days,
+        "in_search": False,
+    }
+    groups.append(new_group)
+    st["groups"] = groups
+    st["updated_at"] = _utc_now_iso()
+    _write_json(_GROUP_STATE, st)
+    log.info("group_created", id=new_id, name=body.name_he)
+    return CreateGroupResponse(
+        ok=True,
+        group=GroupInfiltrationRow(
+            id=new_id,
+            name_he=body.name_he,
+            warmup_days=body.warmup_days,
+            is_private=body.is_private,
+            in_search=False,
+        ),
+    )
+
+
+class DeleteGroupResponse(BaseModel):
+    ok: bool
+    group_id: str
+
+
+@router.delete("/group-infiltration/{group_id}", response_model=DeleteGroupResponse)
+async def delete_group(group_id: str) -> DeleteGroupResponse:
+    st = _load_group_state()
+    groups: list[dict[str, Any]] = list(st.get("groups") or [])
+    new_groups = [g for g in groups if isinstance(g, dict) and str(g.get("id")) != group_id]
+    if len(new_groups) == len(groups):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown group")
+    st["groups"] = new_groups
+    st["updated_at"] = _utc_now_iso()
+    _write_json(_GROUP_STATE, st)
+    log.info("group_deleted", id=group_id)
+    return DeleteGroupResponse(ok=True, group_id=group_id)
+
+
 class ForceSearchResponse(BaseModel):
     ok: bool
     group_id: str
