@@ -4219,6 +4219,8 @@ function GlobalSwarmTableView() {
   const [data, setData] = useState<InventoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [selectedMachine, setSelectedMachine] = useState<string | null>(null);
+  const [detailSession, setDetailSession] = useState<InventorySession | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -4226,6 +4228,11 @@ function GlobalSwarmTableView() {
       if (!res.ok) throw new Error(String(res.status));
       const j = (await res.json()) as InventoryResponse;
       setData(j);
+      setSelectedMachine((prev) => {
+        if (prev) return prev;
+        const machines = Object.keys(j.inventory_by_machine ?? {});
+        return machines[0] ?? null;
+      });
     } catch (err) {
       console.error("SwarmInventory fetch error:", err);
     } finally {
@@ -4241,25 +4248,53 @@ function GlobalSwarmTableView() {
 
   const q = search.trim().toLowerCase();
 
-  const filteredMachines: [string, InventorySession[]][] = data
-    ? Object.entries(data.inventory_by_machine ?? {})
-        .map(([machine, sessions]) => {
-          const filtered = q
-            ? (sessions ?? []).filter(
-                (s) =>
-                  (s.phone ?? "").toLowerCase().includes(q) ||
-                  (s.machine_id ?? "").toLowerCase().includes(q) ||
-                  (s.status ?? "").toLowerCase().includes(q),
-              )
-            : (sessions ?? []);
-          return [machine, filtered] as [string, InventorySession[]];
-        })
-        .filter(([, sessions]) => sessions.length > 0)
+  const allMachines: [string, InventorySession[]][] = data
+    ? Object.entries(data.inventory_by_machine ?? {}).map(([machine, sessions]) => [
+        machine,
+        sessions ?? [],
+      ])
     : [];
 
+  const filteredMachines: [string, InventorySession[]][] = allMachines
+    .map(([machine, sessions]) => {
+      if (!q) return [machine, sessions] as [string, InventorySession[]];
+      const matchesMachine = machine.toLowerCase().includes(q);
+      const filteredSessions = sessions.filter(
+        (s) =>
+          (s.phone ?? "").toLowerCase().includes(q) ||
+          (s.status ?? "").toLowerCase().includes(q) ||
+          (s.current_task ?? "").toLowerCase().includes(q),
+      );
+      if (matchesMachine || filteredSessions.length > 0) {
+        return [machine, matchesMachine ? sessions : filteredSessions] as [string, InventorySession[]];
+      }
+      return null;
+    })
+    .filter(Boolean) as [string, InventorySession[]][];
+
+  const selectedSessions: InventorySession[] = (() => {
+    if (!selectedMachine) return [];
+    const entry = filteredMachines.find(([m]) => m === selectedMachine);
+    if (!entry) return [];
+    const [, sessions] = entry;
+    return sessions;
+  })();
+
+  const statusBadge = (status: string) => {
+    const s = status?.toLowerCase() ?? "";
+    if (s === "active" || s === "online")
+      return "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20";
+    if (s === "banned" || s === "error")
+      return "bg-rose-500/15 text-rose-400 border border-rose-500/20";
+    if (s === "idle")
+      return "bg-amber-500/15 text-amber-400 border border-amber-500/20";
+    return "bg-slate-800 text-slate-400 border border-slate-700";
+  };
+
   return (
-    <div className="bg-slate-900/40 border border-slate-800 rounded-[2.5rem] p-10 animate-in fade-in">
-      <div className="flex justify-between items-start mb-8 flex-wrap gap-4">
+    <div className="bg-slate-900/40 border border-slate-800 rounded-[2.5rem] p-8 animate-in fade-in relative overflow-hidden">
+      {/* Header */}
+      <div className="flex justify-between items-start mb-6 flex-wrap gap-4">
         <div>
           <h3 className="text-2xl font-black text-white flex items-center gap-3">
             <Users size={22} className="text-cyan-400" />
@@ -4270,9 +4305,6 @@ function GlobalSwarmTableView() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <div className="text-xs text-slate-500 font-mono bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-xl">
-            {data?.total ?? 0} sessions
-          </div>
           <button
             type="button"
             onClick={() => { setLoading(true); void load(); }}
@@ -4283,11 +4315,21 @@ function GlobalSwarmTableView() {
         </div>
       </div>
 
+      {/* KPI Bar */}
+      <div className="mb-6">
+        <div className="inline-flex items-center gap-3 bg-slate-950/60 border border-slate-800 rounded-2xl px-5 py-3">
+          <div className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.6)]" />
+          <span className="text-slate-500 text-xs uppercase tracking-widest font-bold">Total Sessions</span>
+          <span className="text-2xl font-black text-white font-mono">{data?.total ?? 0}</span>
+        </div>
+      </div>
+
+      {/* Search */}
       <div className="mb-6 relative">
         <Search size={16} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
         <input
           type="text"
-          placeholder="חפש לפי טלפון, מחשב, סטטוס..."
+          placeholder="חפש לפי טלפון, סטטוס, משימה..."
           className="w-full bg-slate-950 border border-slate-800 rounded-2xl py-3 pr-11 pl-4 text-sm text-slate-200 placeholder:text-slate-600 focus:border-cyan-500/50 focus:outline-none transition"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -4308,115 +4350,196 @@ function GlobalSwarmTableView() {
         </div>
       )}
 
-      <div className="space-y-8">
-        {filteredMachines.map(([machine, sessions]) => {
-          const isMaster = machine === "Jacob-PC";
-          return (
-            <div key={machine}>
-              <div
-                className={`flex items-center gap-3 mb-3 ${
-                  isMaster ? "text-cyan-300" : "text-slate-400"
-                }`}
-              >
-                <div
-                  className={`w-2 h-2 rounded-full ${
-                    isMaster
-                      ? "bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.6)]"
-                      : "bg-slate-600"
-                  }`}
-                />
-                <span
-                  className={`text-sm font-black uppercase tracking-widest ${
-                    isMaster ? "text-cyan-300" : "text-slate-400"
+      {/* Split View */}
+      {filteredMachines.length > 0 && (
+        <div className="flex gap-4 min-h-[400px]">
+          {/* Left Panel — Machine List */}
+          <div className="w-56 shrink-0 flex flex-col gap-1.5">
+            <div className="text-[10px] uppercase tracking-widest text-slate-600 font-bold px-2 mb-1">
+              מחשבים ({filteredMachines.length})
+            </div>
+            {filteredMachines.map(([machine, sessions]) => {
+              const isMaster = machine === "Jacob-PC";
+              const isSelected = selectedMachine === machine;
+              return (
+                <button
+                  key={machine}
+                  type="button"
+                  onClick={() => { setSelectedMachine(machine); setDetailSession(null); }}
+                  className={`w-full text-left px-4 py-3 rounded-2xl border transition-all flex flex-col gap-0.5 ${
+                    isSelected
+                      ? isMaster
+                        ? "bg-cyan-500/10 border-cyan-500/40 shadow-[0_0_12px_rgba(34,211,238,0.08)]"
+                        : "bg-slate-800/60 border-slate-600"
+                      : "bg-slate-950/40 border-slate-800/50 hover:border-slate-700 hover:bg-slate-900/40"
                   }`}
                 >
-                  {isMaster ? "👑 " : ""}
-                  {machine}
-                </span>
-                {isMaster && (
-                  <span className="text-[10px] font-black text-cyan-300 bg-cyan-500/20 border border-cyan-400 px-2 py-0.5 rounded-lg uppercase tracking-widest shadow-[0_0_8px_rgba(34,211,238,0.5)]">
-                    👑 MASTER
-                  </span>
-                )}
-                <span className="text-xs text-slate-600 font-mono">
-                  ({sessions.length} sessions)
-                </span>
-              </div>
-              <div
-                className={`overflow-x-auto rounded-2xl border ${
-                  isMaster
-                    ? "border-cyan-500/40 shadow-[0_0_20px_rgba(34,211,238,0.08)]"
-                    : "border-slate-800"
-                }`}
-              >
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr
-                      className={`text-[11px] uppercase tracking-widest ${
+                  <div className="flex items-center gap-2">
+                    <div
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                         isMaster
-                          ? "bg-cyan-950/60 text-cyan-500"
-                          : "bg-slate-950/60 text-slate-500"
+                          ? "bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.7)]"
+                          : isSelected
+                          ? "bg-slate-400"
+                          : "bg-slate-600"
+                      }`}
+                    />
+                    <span
+                      className={`text-xs font-black truncate ${
+                        isMaster
+                          ? "text-cyan-300"
+                          : isSelected
+                          ? "text-white"
+                          : "text-slate-400"
                       }`}
                     >
-                      <th className="px-5 py-3 text-right font-bold">טלפון</th>
-                      <th className="px-5 py-3 text-right font-bold">מחשב מקור</th>
-                      <th className="px-5 py-3 text-right font-bold">סטטוס</th>
-                      <th className="px-5 py-3 text-right font-bold">פעיל לאחרונה</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sessions.map((s, i) => (
-                      <tr
-                        key={s.redis_key + i}
-                        className={`border-t transition ${
-                          isMaster
-                            ? "border-cyan-900/40 hover:bg-cyan-500/5"
-                            : "border-slate-800/50 hover:bg-slate-800/20"
-                        }`}
-                      >
-                        <td
-                          className={`px-5 py-3 font-mono font-bold ${
-                            isMaster ? "text-cyan-300" : "text-slate-200"
-                          }`}
-                        >
-                          {s.phone || "—"}
-                        </td>
-                        <td
-                          className={`px-5 py-3 font-bold ${
-                            isMaster ? "text-cyan-300" : "text-slate-300"
-                          }`}
-                        >
-                          {isMaster ? (
-                            <span className="font-black">👑 {machine}</span>
-                          ) : (
-                            machine
-                          )}
-                        </td>
-                        <td className="px-5 py-3">
-                          <span
-                            className={`text-[11px] font-bold px-2 py-0.5 rounded-lg ${
-                              s.status === "active" || s.status === "online"
-                                ? "bg-emerald-500/15 text-emerald-400"
-                                : s.status === "banned" || s.status === "error"
-                                  ? "bg-rose-500/15 text-rose-400"
-                                  : "bg-slate-800 text-slate-400"
+                      {isMaster ? "👑 " : ""}{machine}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 pl-3.5">
+                    <span className="text-[10px] font-mono text-slate-600">
+                      {sessions.length} sessions
+                    </span>
+                    {isMaster && (
+                      <span className="text-[9px] font-black text-cyan-400 bg-cyan-500/10 border border-cyan-500/30 px-1.5 py-0.5 rounded-md uppercase tracking-widest">
+                        MASTER
+                      </span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Right Panel — Sessions Table */}
+          <div className="flex-1 min-w-0">
+            {selectedMachine ? (
+              <>
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-xs font-black uppercase tracking-widest text-slate-400">
+                    {selectedMachine === "Jacob-PC" ? "👑 " : ""}{selectedMachine}
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-600">
+                    {selectedSessions.length} sessions
+                  </span>
+                </div>
+                {selectedSessions.length === 0 ? (
+                  <div className="flex items-center justify-center h-40 text-slate-600 text-sm">
+                    אין סשנים להצגה
+                  </div>
+                ) : (
+                  <div className={`overflow-x-auto rounded-2xl border ${
+                    selectedMachine === "Jacob-PC"
+                      ? "border-cyan-500/30 shadow-[0_0_20px_rgba(34,211,238,0.06)]"
+                      : "border-slate-800"
+                  }`}>
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className={`text-[10px] uppercase tracking-widest ${
+                          selectedMachine === "Jacob-PC"
+                            ? "bg-cyan-950/50 text-cyan-600"
+                            : "bg-slate-950/60 text-slate-500"
+                        }`}>
+                          <th className="px-4 py-3 text-right font-bold">טלפון</th>
+                          <th className="px-4 py-3 text-right font-bold">סטטוס</th>
+                          <th className="px-4 py-3 text-right font-bold">משימה נוכחית</th>
+                          <th className="px-4 py-3 text-right font-bold">פעיל לאחרונה</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedSessions.map((s, i) => (
+                          <tr
+                            key={s.redis_key + i}
+                            onClick={() => setDetailSession(s)}
+                            className={`border-t cursor-pointer transition ${
+                              selectedMachine === "Jacob-PC"
+                                ? "border-cyan-900/30 hover:bg-cyan-500/5"
+                                : "border-slate-800/50 hover:bg-slate-800/20"
                             }`}
                           >
-                            {s.status || "—"}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3 text-slate-500 font-mono text-xs truncate max-w-[200px]">
-                          {s.last_active || "—"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                            <td className={`px-4 py-3 font-mono font-bold ${
+                              selectedMachine === "Jacob-PC" ? "text-cyan-300" : "text-slate-200"
+                            }`}>
+                              {s.phone || "—"}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-lg ${statusBadge(s.status)}`}>
+                                {s.status || "—"}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-slate-400 text-xs font-mono truncate max-w-[180px]">
+                              {s.current_task || "—"}
+                            </td>
+                            <td className="px-4 py-3 text-slate-600 font-mono text-xs truncate max-w-[160px]">
+                              {s.last_active || "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex items-center justify-center h-full text-slate-600 text-sm">
+                בחר מחשב מהרשימה
               </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Detail Drawer */}
+      {detailSession && (
+        <div
+          className="fixed inset-0 z-50 flex justify-end"
+          onClick={() => setDetailSession(null)}
+        >
+          <div
+            className="w-full max-w-sm h-full bg-slate-950 border-l border-slate-800 shadow-2xl p-8 overflow-y-auto flex flex-col gap-6 animate-in slide-in-from-right duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h4 className="text-lg font-black text-white">פרטי סשן</h4>
+              <button
+                type="button"
+                onClick={() => setDetailSession(null)}
+                className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white transition"
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+              </button>
             </div>
-          );
-        })}
-      </div>
+
+            <div className="space-y-4">
+              {[
+                { label: "טלפון", value: detailSession.phone },
+                { label: "מחשב מקור", value: detailSession.machine_id },
+                { label: "סטטוס", value: detailSession.status, badge: true },
+                { label: "משימה נוכחית", value: detailSession.current_task },
+                { label: "פעיל לאחרונה", value: detailSession.last_active },
+                { label: "Redis Key", value: detailSession.redis_key, mono: true, small: true },
+              ].map(({ label, value, badge, mono, small }) => (
+                <div key={label} className="bg-slate-900/60 border border-slate-800 rounded-2xl px-5 py-4">
+                  <div className="text-[10px] uppercase tracking-widest text-slate-600 font-bold mb-1.5">
+                    {label}
+                  </div>
+                  {badge ? (
+                    <span className={`text-xs font-bold px-2.5 py-1 rounded-lg ${statusBadge(value ?? "")}`}>
+                      {value || "—"}
+                    </span>
+                  ) : (
+                    <div className={`font-bold text-slate-200 break-all ${mono ? "font-mono" : ""} ${small ? "text-xs text-slate-400" : "text-sm"}`}>
+                      {value || "—"}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
