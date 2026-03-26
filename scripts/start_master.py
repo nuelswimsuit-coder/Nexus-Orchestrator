@@ -246,7 +246,7 @@ async def run() -> None:
     asyncio.create_task(_system_settings_sync_loop(guard), name="system-settings-sync")
 
     # ── 2b. Process supervisor (TERM → 3s → KILL for worker restarts) ──────────
-    supervisor = ProcessSupervisor(term_timeout_s=3.0)
+    proc_supervisor = ProcessSupervisor(term_timeout_s=3.0)
 
     # ── 3. Vault ───────────────────────────────────────────────────────────────
     # Reads secrets from NEXUS_SECRET_<KEY> environment variables by default.

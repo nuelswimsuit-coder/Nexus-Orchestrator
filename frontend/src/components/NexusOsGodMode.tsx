@@ -2069,7 +2069,7 @@ function SwarmMonitorView() {
           </button>
           <button
             type="button"
-            onClick={() => { console.error('[NEXUS-DEBUG] SYNC button clicked, setting syncModalOpen=true'); setSyncModalOpen(true); }}
+            onClick={() => setSyncModalOpen(true)}
             disabled={syncing}
             className="flex items-center gap-2 px-5 py-2.5 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white rounded-2xl font-black text-sm transition shadow-[0_0_20px_rgba(34,211,238,0.2)]"
           >

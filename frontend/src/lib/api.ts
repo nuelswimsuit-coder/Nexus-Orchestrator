@@ -353,8 +353,14 @@ export function resolveHitl(body: HitlResolveRequest): Promise<HitlResolveRespon
   });
 }
 
-export function scaleWorker(): Promise<{ message: string; command: string }> {
-  return apiFetch("/api/business/scale-worker", { method: "POST" });
+export interface ScaleWorkerResponse {
+  message:  string;
+  command:  string;
+  success?: boolean;
+}
+
+export function scaleWorker(): Promise<ScaleWorkerResponse> {
+  return apiFetch<ScaleWorkerResponse>("/api/business/scale-worker", { method: "POST" });
 }
 
 // ── Content Factory ───────────────────────────────────────────────────────────

@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import sys, os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# Prefer the canonical nexus/ package (root-level) over the legacy src/nexus/ layout.
+# The root package is installed via pyproject.toml; add the repo root so imports work
+# when running this script directly (not via pip install -e).
+_repo_root = os.path.join(os.path.dirname(__file__), "..")
+sys.path.insert(0, _repo_root)
 sys.path.insert(0, os.getcwd())
 
 import atexit

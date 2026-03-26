@@ -18,7 +18,6 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from nexus.master.services import session_factory as session_factory_svc
-from nexus.shared.config import settings
 
 log = structlog.get_logger(__name__)
 

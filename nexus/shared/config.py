@@ -104,6 +104,17 @@ class Settings(BaseSettings):
         default_factory=lambda: str(Path.home() / "Desktop" / "Nexus-Projects")
     )
 
+    # ── TeleFix integration paths ─────────────────────────────────────────────
+    # Root of the Mangement Ahu / TeleFix project on this machine.
+    # Override with TELEFIX_ROOT env var.
+    telefix_root: str = Field(
+        default_factory=lambda: str(Path.home() / "Desktop" / "Mangement Ahu")
+    )
+    # Telefix SQLite database path. Override with TELEFIX_DB env var.
+    telefix_db: str = Field(default="")
+    # Telefix sessions directory. Override with TELEFIX_SESSIONS_DIR env var.
+    telefix_sessions_dir: str = Field(default="")
+
     # ── Auto-Deployer — SSH credentials & targets ────────────────────────────
     # Used by DeployerService to SSH into worker laptops and push updates.
     # Store the password in the Vault (NEXUS_SECRET_WORKER_SSH_PASSWORD) for
@@ -121,8 +132,9 @@ class Settings(BaseSettings):
         default="/home/yadmin/Desktop/Nexus-Orchestrator"
     )
     # Remote project root on Windows workers
+    # Defaults to ~/Desktop/Nexus-Orchestrator — override with WORKER_DEPLOY_ROOT_WIN env var.
     worker_deploy_root_win: str = Field(
-        default=r"C:\Users\Yarin\Desktop\Nexus-Orchestrator"
+        default_factory=lambda: str(Path.home() / "Desktop" / "Nexus-Orchestrator")
     )
 
 

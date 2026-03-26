@@ -53,6 +53,9 @@ dependencies = [
 
     # --- Auto-Deployer: SSH/SCP to worker nodes (Phase 15) ---
     "paramiko>=3.4",
+
+    # --- .env file loading (used by config.py and start scripts) ---
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
