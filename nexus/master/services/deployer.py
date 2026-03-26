@@ -71,7 +71,7 @@ SYNC_FILES = [
 
 # Redis key prefix for progress events
 PROGRESS_KEY_PREFIX = "nexus:deploy:progress:"
-PROGRESS_MAX_LEN = 100
+PROGRESS_MAX_LEN = 250
 
 DeployStep = Literal[
     "connecting",
@@ -246,6 +246,11 @@ class DeployerService:
                 None,
                 lambda: ssh.connect(**_connect_kwargs),
             )
+            _t = ssh.get_transport()
+            _t.set_keepalive(30)
+            if _t.sock:
+                try: _t.sock.settimeout(60)
+                except Exception: pass
             await self._emit(node_id, "connecting", "done",
                              f"Connected to {ip}")
 
@@ -288,6 +293,7 @@ class DeployerService:
         from pathlib import Path
 
         sftp = ssh.open_sftp()
+        sftp.get_channel().settimeout(120)
         local_path = Path(local_project_path)
         file_count = 0
 
@@ -438,6 +444,11 @@ class DeployerService:
                 None,
                 lambda: ssh.connect(**_ckw2),
             )
+            _t2 = ssh.get_transport()
+            _t2.set_keepalive(30)
+            if _t2.sock:
+                try: _t2.sock.settimeout(60)
+                except Exception: pass
             await self._emit(node_id, "connecting", "done",
                              f"Connected to {ip}")
 
@@ -449,14 +460,45 @@ class DeployerService:
             # Start draining upload events while the upload runs
             drain_task = asyncio.create_task(_drain_upload_queue())
 
-            await loop.run_in_executor(
+            upload_future = loop.run_in_executor(
                 None,
                 lambda: self._upload_with_progress(ssh, remote_root, _progress_cb),
             )
+            # Poll every 5s; detect dead transport and abort immediately
+            upload_ok = False
+            upload_err = ""
+            try:
+                deadline = loop.time() + 600  # 10-min hard cap
+                while not upload_future.done():
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        upload_err = "Upload timed out after 10 minutes"
+                        break
+                    try:
+                        await asyncio.wait_for(asyncio.shield(upload_future), timeout=min(5.0, remaining))
+                        upload_ok = True
+                        break
+                    except asyncio.TimeoutError:
+                        _tr = ssh.get_transport()
+                        if _tr and not _tr.is_active():
+                            upload_err = "SSH transport died mid-upload"
+                            break
+                if not upload_ok and not upload_err:
+                    # future completed — check for exception
+                    exc = upload_future.exception()
+                    if exc:
+                        upload_err = str(exc)
+                    else:
+                        upload_ok = True
+            except Exception as exc:
+                upload_err = str(exc)
 
-            # Signal the drain task to stop and wait for it
             await upload_queue.put(None)
             await drain_task
+
+            if not upload_ok:
+                await self._emit(node_id, "error", "error", upload_err)
+                return f"error: {upload_err}"
 
             await self._emit(node_id, "uploading", "done",
                              f"{total_files} files synced to {remote_root}")
@@ -510,7 +552,16 @@ class DeployerService:
         """
         from typing import Callable  # local import to avoid circular
 
+        # Set socket-level timeout so dead TCP connections are detected quickly
+        transport = ssh.get_transport()
+        if transport and transport.sock:
+            try:
+                transport.sock.settimeout(60)
+            except Exception:
+                pass
+
         sftp = ssh.open_sftp()
+        sftp.get_channel().settimeout(60)
         try:
             _sftp_mkdir_p(sftp, remote_root)
 
@@ -530,7 +581,6 @@ class DeployerService:
 
             total = len(pairs)
             for idx, (local_path, remote_path) in enumerate(pairs, start=1):
-                # Ensure parent directory exists
                 remote_parent = "/".join(remote_path.split("/")[:-1])
                 _sftp_mkdir_p(sftp, remote_parent)
                 try:
@@ -539,6 +589,8 @@ class DeployerService:
                     log.warning("sftp_put_error",
                                 local=str(local_path), remote=remote_path,
                                 error=str(exc))
+                    if not (transport and transport.is_active()):
+                        raise
                 rel = str(local_path.relative_to(NEXUS_ROOT))
                 progress_cb(rel, idx, total)
 
@@ -557,6 +609,7 @@ class DeployerService:
         Returns (exit_code, combined_output_tail).
         """
         _, stdout, stderr = ssh.exec_command(cmd, timeout=300)
+        stdout.channel.settimeout(300)
         out = stdout.read().decode(errors="replace")
         err = stderr.read().decode(errors="replace")
         exit_code = stdout.channel.recv_exit_status()
@@ -707,6 +760,11 @@ class DeployerService:
                 None,
                 lambda: ssh.connect(**_ckw3),
             )
+            _t3 = ssh.get_transport()
+            _t3.set_keepalive(30)
+            if _t3.sock:
+                try: _t3.sock.settimeout(60)
+                except Exception: pass
             await self._emit(node_id, "connecting", "done", f"Connected to {ip}")
 
             # ── 2. Detect remote OS and resolve destination path ───────────────
@@ -818,6 +876,7 @@ class DeployerService:
     def _upload_dirs(self, ssh, remote_root: str, remote_os: str) -> None:
         """SFTP-upload nexus/, scripts/, and root-level files."""
         sftp = ssh.open_sftp()
+        sftp.get_channel().settimeout(120)
         try:
             sep = "/" if remote_os == "Linux" else "\\"
 
@@ -1045,3 +1104,106 @@ def _sftp_mkdir_p(sftp, remote_path: str) -> None:
                 sftp.mkdir(current)
             except Exception:
                 pass
+
+
+def _check_rsync_available() -> bool:
+    """Return True if rsync and sshpass are both available on this machine."""
+    import shutil
+    return shutil.which("rsync") is not None and shutil.which("sshpass") is not None
+
+
+def _rsync_upload(
+    ip: str,
+    ssh_user: str,
+    ssh_pass: str,
+    ssh_key: str,
+    remote_root: str,
+    progress_cb: "Callable[[str, int, int], None]",
+) -> str:
+    """
+    Use rsync over SSH to sync nexus/ and scripts/ to the worker.
+    Returns "ok" on success, or an error string.
+    rsync is resumable, delta-syncs only changed files, and respects OS timeouts.
+    """
+    import subprocess
+    from typing import Callable
+
+    sync_sources = []
+    for dir_name in SYNC_DIRS:
+        local_dir = NEXUS_ROOT / dir_name
+        if local_dir.exists():
+            sync_sources.append(str(local_dir) + "/")
+
+    # Count total files for progress reporting
+    total = _count_sync_files()
+    done = 0
+
+    ssh_opts = (
+        "ssh -o StrictHostKeyChecking=no "
+        "-o ConnectTimeout=15 "
+        "-o ServerAliveInterval=10 "
+        "-o ServerAliveCountMax=3 "
+        "-o BatchMode=no"
+    )
+    if ssh_key and os.path.isfile(ssh_key):
+        ssh_opts += f" -i {ssh_key}"
+
+    for dir_name in SYNC_DIRS:
+        local_dir = NEXUS_ROOT / dir_name
+        if not local_dir.exists():
+            continue
+
+        remote_dir = f"{ssh_user}@{ip}:{remote_root}/{dir_name}"
+
+        if ssh_pass:
+            cmd = [
+                "sshpass", f"-p{ssh_pass}",
+                "rsync", "-az", "--delete",
+                "--exclude=__pycache__", "--exclude=*.pyc", "--exclude=.git",
+                "--exclude=.venv", "--exclude=node_modules",
+                "-e", ssh_opts,
+                str(local_dir) + "/",
+                remote_dir,
+            ]
+        else:
+            cmd = [
+                "rsync", "-az", "--delete",
+                "--exclude=__pycache__", "--exclude=*.pyc", "--exclude=.git",
+                "--exclude=.venv", "--exclude=node_modules",
+                "-e", ssh_opts,
+                str(local_dir) + "/",
+                remote_dir,
+            ]
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=300
+            )
+            if result.returncode != 0:
+                return f"rsync failed (rc={result.returncode}): {result.stderr[-500:]}"
+        except subprocess.TimeoutExpired:
+            return f"rsync timed out syncing {dir_name}/"
+        except Exception as exc:
+            return f"rsync error: {exc}"
+
+        done += 1
+        progress_cb(f"{dir_name}/", done, max(total, 2))
+
+    # Sync individual root files
+    for file_name in SYNC_FILES:
+        local_file = NEXUS_ROOT / file_name
+        if not local_file.exists():
+            continue
+        remote_path = f"{ssh_user}@{ip}:{remote_root}/{file_name}"
+        if ssh_pass:
+            cmd = ["sshpass", f"-p{ssh_pass}", "rsync", "-az", "-e", ssh_opts,
+                   str(local_file), remote_path]
+        else:
+            cmd = ["rsync", "-az", "-e", ssh_opts, str(local_file), remote_path]
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        except Exception:
+            pass
+
+    progress_cb("done", total, total)
+    return "ok"

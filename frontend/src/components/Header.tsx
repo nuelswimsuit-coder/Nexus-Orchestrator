@@ -202,15 +202,56 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
     const es = openDeployProgressStream(node_id);
     streamsRef.current.set(node_id, es);
 
+    // Track max file progress seen so far for this stream
+    let _maxFile = 0, _totFile = 0;
+
     es.onmessage = (e) => {
       try {
         const ev = JSON.parse(e.data) as DeployProgressEvent;
-        if (ev.status === "running" || ev.step === "done" || ev.step === "error") {
-          const tag   = MODAL_STEP_TAG[ev.step]   ?? ev.step.toUpperCase();
-          const color = MODAL_STEP_COLOR[ev.step] ?? "#94a3b8";
-          const text  = ev.detail || (ev as DeployProgressEvent & { label?: string }).label || tag;
-          addLine(tag, text, color);
+        const tag   = MODAL_STEP_TAG[ev.step]   ?? ev.step.toUpperCase();
+        const color = MODAL_STEP_COLOR[ev.step] ?? "#94a3b8";
+        const text  = ev.detail || (ev as DeployProgressEvent & { label?: string }).label || tag;
+
+        // #region agent log
+        if (ev.step === "uploading" || ev.step === "done") {
+          fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'99ad89'},body:JSON.stringify({sessionId:'99ad89',location:'Header.tsx:onmessage',message:'SSE event received',data:{step:ev.step,status:ev.status,text:text.slice(0,80),_maxFile,_totFile},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
         }
+        // #endregion
+
+        // For individual file upload events, track max and collapse into one updating line
+        if (ev.step === "uploading" && ev.status === "running" && text.match(/^\[(\d+)\/(\d+)\]/)) {
+          const m = text.match(/^\[(\d+)\/(\d+)\]/);
+          const cur = parseInt(m![1]), tot = parseInt(m![2]);
+          if (cur > _maxFile) { _maxFile = cur; _totFile = tot; }
+          const pct = Math.round(_maxFile / _totFile * 100);
+          const bar = "▓".repeat(Math.round(pct / 5)) + "░".repeat(20 - Math.round(pct / 5));
+          setLines(prev => {
+            const last = prev[prev.length - 1];
+            const uploadLine = { ts: nowHMS(), tag: "UPLOADING", text: `[${_maxFile}/${_totFile}] ${pct}%  ${bar}`, color: "#a855f7" };
+            if (last?.tag === "UPLOADING" && last.text.startsWith("[")) {
+              return [...prev.slice(0, -1), uploadLine];
+            }
+            return [...prev, uploadLine];
+          });
+        } else {
+          // Force progress bar to 100% when upload step completes
+          if (ev.step === "uploading" && ev.status === "done") {
+            const tot = _totFile > 0 ? _totFile : 173;
+            const bar = "▓".repeat(20);
+            setLines(prev => {
+              const last = prev[prev.length - 1];
+              const uploadLine = { ts: nowHMS(), tag: "UPLOADING", text: `[${tot}/${tot}] 100%  ${bar}`, color: "#a855f7" };
+              if (last?.tag === "UPLOADING" && last.text.startsWith("[")) {
+                return [...prev.slice(0, -1), uploadLine];
+              }
+              return [...prev, uploadLine];
+            });
+          }
+          if (ev.status === "running" || ev.step === "done" || ev.step === "error" || ev.status === "done") {
+            addLine(tag, text, color);
+          }
+        }
+
         if (ev.step === "done" || ev.step === "error") {
           es.close();
           streamsRef.current.delete(node_id);
@@ -225,6 +266,19 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
       es.close();
       streamsRef.current.delete(node_id);
       setDeployingNode(node_id, false);
+      // SSE closed without a terminal event — poll status to get final phase
+      if (streamsRef.current.size === 0) {
+        getDeployStatus().then(st => {
+          const ev = st.nodes[node_id];
+          if (ev?.step === "done") {
+            addLine("DONE", ev.detail || "Deployment complete ✓", "#22c55e");
+            setPhase("done");
+          } else if (ev?.step === "error") {
+            addLine("ERROR", ev.detail || "Deployment failed", "#ef4444");
+            setPhase("error");
+          }
+        }).catch(() => {});
+      }
     };
   }, [addLine, setDeployingNode, setPhase]);
 
@@ -265,6 +319,33 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
 
       // Also open worker_linux stream directly (it's always the target)
       setTimeout(() => openStream("worker_linux"), 1200);
+
+      // Fallback polling every 10s — catches cases where SSE misses the done event
+      let _pollCount = 0;
+      const statusPoll = setInterval(async () => {
+        _pollCount++;
+        try {
+          const st = await getDeployStatus();
+          const ev = st.nodes["worker_linux"];
+          if (ev?.step === "done" || ev?.step === "error") {
+            clearInterval(statusPoll);
+            if (streamsRef.current.size > 0) {
+              // SSE is still open but backend is done — close it and update UI
+              streamsRef.current.forEach(s => s.close());
+              streamsRef.current.clear();
+              setDeployingNode("worker_linux", false);
+            }
+            if (ev.step === "done") {
+              addLine("DONE", ev.detail || "Deployment complete ✓", "#22c55e");
+              setPhase("done");
+            } else {
+              addLine("ERROR", ev.detail || "Deployment failed", "#ef4444");
+              setPhase("error");
+            }
+          }
+        } catch {}
+        if (_pollCount >= 72) clearInterval(statusPoll); // stop after 12 min
+      }, 10_000);
 
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
