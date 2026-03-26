@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import useSWR from "swr";
 import {
   LayoutDashboard,
   TrendingUp,
@@ -24,6 +25,17 @@ import {
   MessageSquareCode,
   Terminal,
   AlertTriangle,
+  DollarSign,
+  BarChart2,
+  Percent,
+  ArrowUpRight,
+  ArrowDownRight,
+  Activity,
+  Target,
+  Cpu,
+  Radio,
+  ChevronRight,
+  Crosshair,
 } from "lucide-react";
 import {
   XAxis,
@@ -33,8 +45,11 @@ import {
   ResponsiveContainer,
   AreaChart,
   Area,
+  LineChart,
+  Line,
+  ReferenceLine,
 } from "recharts";
-import { API_BASE, triggerPanic } from "@/lib/api";
+import { API_BASE, triggerPanic, swrFetcher } from "@/lib/api";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -1208,129 +1223,673 @@ function GroupFactoryView() {
   );
 }
 
-function AhuManagementView() {
-  const ENV_FALLBACK = "https://t.me/Ahu_Management_Private";
-  const [ahuInvite, setAhuInvite] = useState<string>("");
-  const [linkLoaded, setLinkLoaded] = useState(false);
+// ── Ahu Management Types ──────────────────────────────────────────────────────
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/telefix/ops-config`);
-        if (!res.ok) throw new Error(String(res.status));
-        const j = (await res.json()) as { operations_chat_link?: string };
-        if (!cancelled) {
-          // Use the env-sourced link from the API; only fall back if truly absent
-          setAhuInvite(j.operations_chat_link || ENV_FALLBACK);
-          setLinkLoaded(true);
-        }
-      } catch {
-        if (!cancelled) {
-          setAhuInvite(ENV_FALLBACK);
-          setLinkLoaded(true);
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+interface AhuStatus {
+  bot_running: boolean;
+  bot_pid: number | null;
+  db_available: boolean;
+  sessions_available: boolean;
+  total_sessions: number;
+  session_counts: Record<string, number>;
+}
 
-  const displayInvite = linkLoaded ? ahuInvite : "…טוען";
+interface AhuStats {
+  users: { total: number; premium: number; sources: number; premium_pct: number };
+  targets: Record<string, number>;
+  enrollments: { total: number; by_status: Record<string, number> };
+  last_runs: Record<string, string>;
+}
 
-  const channels = [
-    {
-      name: "Management Ahu — Ops Sync",
-      invite: displayInvite,
-      description: "ערוץ ניהול פנימי לסנכרון פעולות שוטפות",
-      type: "PRIVATE",
-    },
-  ];
+interface AhuSessions {
+  [category: string]: { count: number; sessions: string[] };
+}
+
+interface AhuTargets {
+  targets: { id: number; title: string; link: string; role: string }[];
+  count: number;
+}
+
+interface AhuLogs {
+  lines: string[];
+  count: number;
+}
+
+// ── Ahu Sub-components ────────────────────────────────────────────────────────
+
+function AhuStatCard({
+  label,
+  value,
+  sub,
+  icon,
+  accent = "cyan",
+}: {
+  label: string;
+  value: string | number;
+  sub?: string;
+  icon: React.ReactNode;
+  accent?: "cyan" | "purple" | "green" | "yellow";
+}) {
+  const colors: Record<string, string> = {
+    cyan: "text-cyan-400 bg-cyan-500/10 border-cyan-500/20",
+    purple: "text-purple-400 bg-purple-500/10 border-purple-500/20",
+    green: "text-green-400 bg-green-500/10 border-green-500/20",
+    yellow: "text-yellow-400 bg-yellow-500/10 border-yellow-500/20",
+  };
+  return (
+    <div className={`rounded-2xl border p-4 flex flex-col gap-1 ${colors[accent]}`}>
+      <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest opacity-70">
+        {icon}
+        {label}
+      </div>
+      <div className="text-2xl font-black">{value}</div>
+      {sub && <div className="text-[11px] opacity-60">{sub}</div>}
+    </div>
+  );
+}
+
+function AhuDashboardTab({
+  status,
+  stats,
+  onStart,
+  onStop,
+  actionLoading,
+  onRefresh,
+}: {
+  status: AhuStatus | null;
+  stats: AhuStats | null;
+  onStart: () => void;
+  onStop: () => void;
+  actionLoading: boolean;
+  onRefresh: () => void;
+}) {
+  const running = status?.bot_running ?? false;
+
+  const formatTs = (ts: string | undefined) => {
+    if (!ts) return "—";
+    const n = parseFloat(ts);
+    if (!isNaN(n) && n > 1e9) {
+      return new Date(n * 1000).toLocaleString("he-IL");
+    }
+    return ts;
+  };
 
   return (
-    <div className="bg-slate-900/40 border border-slate-800 rounded-[2.5rem] p-10 animate-in fade-in">
-      <div className="flex justify-between items-center mb-10 flex-wrap gap-4">
-        <div>
-          <h3 className="text-2xl font-black text-white">ניהול אהו — Ops Sync</h3>
-          <p className="text-slate-500 text-sm mt-1">
-            ערוצי ניהול פנימיים וקישורי גישה ישירה
-          </p>
+    <div className="space-y-6">
+      {/* Bot status card */}
+      <div className={`rounded-2xl border p-5 flex items-center justify-between flex-wrap gap-4 ${running ? "border-green-500/30 bg-green-500/5" : "border-slate-700 bg-slate-950/40"}`}>
+        <div className="flex items-center gap-4">
+          <div className={`w-3 h-3 rounded-full ${running ? "bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.8)]" : "bg-slate-600"}`} />
+          <div>
+            <div className="font-bold text-white text-lg">
+              {running ? "הבוט פעיל" : "הבוט כבוי"}
+            </div>
+            {status?.bot_pid && (
+              <div className="text-xs text-slate-500 font-mono">PID: {status.bot_pid}</div>
+            )}
+          </div>
         </div>
-        {linkLoaded && ahuInvite && (
-          <a
-            href={ahuInvite}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="bg-cyan-600 hover:bg-cyan-500 text-white px-6 py-3 rounded-2xl font-bold transition flex items-center gap-2"
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onRefresh}
+            className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition"
+            title="רענן"
           >
-            <Users size={16} />
-            כניסה לערוץ
-          </a>
-        )}
+            <RefreshCw size={15} />
+          </button>
+          {running ? (
+            <button
+              onClick={onStop}
+              disabled={actionLoading}
+              className="bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white px-5 py-2 rounded-xl font-bold text-sm transition flex items-center gap-2"
+            >
+              <Activity size={14} />
+              עצור בוט
+            </button>
+          ) : (
+            <button
+              onClick={onStart}
+              disabled={actionLoading}
+              className="bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white px-5 py-2 rounded-xl font-bold text-sm transition flex items-center gap-2"
+            >
+              <Zap size={14} />
+              הפעל בוט
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="grid gap-4">
-        {channels.map((ch, i) => (
-          <div
-            key={i}
-            className="bg-slate-950/50 p-6 rounded-3xl border border-cyan-500/20 flex items-center justify-between group hover:border-cyan-500/50 transition flex-wrap gap-4"
-          >
-            <div className="flex items-center gap-6">
-              <div className="w-14 h-14 rounded-2xl flex items-center justify-center bg-cyan-500/20 text-cyan-400">
-                <MessageSquareCode size={28} />
-              </div>
-              <div>
-                <div className="text-lg font-bold text-white">{ch.name}</div>
-                <div className="text-xs text-slate-500 mt-1">{ch.description}</div>
-                <a
-                  href={ch.invite}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[11px] text-cyan-400 hover:text-cyan-300 font-mono mt-1 inline-block transition"
-                >
-                  {ch.invite}
-                </a>
-              </div>
-            </div>
-            <div className="text-left flex flex-col items-end gap-2">
-              <span className="text-[10px] font-bold text-cyan-400 bg-cyan-500/10 border border-cyan-500/30 px-3 py-1 rounded-lg uppercase tracking-widest">
-                {ch.type}
-              </span>
-              <a
-                href={ch.invite}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs font-bold text-white bg-cyan-600 hover:bg-cyan-500 px-4 py-2 rounded-xl transition"
-              >
-                פתח ↗
-              </a>
-            </div>
+      {/* Stats grid */}
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <AhuStatCard
+            label="משתמשים"
+            value={stats.users.total.toLocaleString()}
+            sub={`${stats.users.premium_pct}% פרימיום`}
+            icon={<Users size={12} />}
+            accent="cyan"
+          />
+          <AhuStatCard
+            label="פרימיום"
+            value={stats.users.premium.toLocaleString()}
+            icon={<Zap size={12} />}
+            accent="yellow"
+          />
+          <AhuStatCard
+            label="מקורות"
+            value={stats.users.sources}
+            icon={<Database size={12} />}
+            accent="purple"
+          />
+          <AhuStatCard
+            label="יעדים"
+            value={stats.targets["target"] ?? 0}
+            sub={`${stats.targets["source"] ?? 0} מקורות`}
+            icon={<Target size={12} />}
+            accent="cyan"
+          />
+          <AhuStatCard
+            label="Enrollments"
+            value={stats.enrollments.total.toLocaleString()}
+            icon={<CheckCircle2 size={12} />}
+            accent="green"
+          />
+          <AhuStatCard
+            label="סשנים"
+            value={status?.total_sessions ?? "—"}
+            icon={<HardDrive size={12} />}
+            accent="purple"
+          />
+        </div>
+      )}
+
+      {/* Last runs */}
+      {stats && Object.keys(stats.last_runs).length > 0 && (
+        <div className="bg-slate-950/40 rounded-2xl border border-slate-800 p-4">
+          <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-3">
+            הרצות אחרונות
           </div>
+          <div className="grid grid-cols-2 gap-2">
+            {Object.entries(stats.last_runs).map(([key, val]) => (
+              <div key={key} className="flex items-center justify-between text-xs">
+                <span className="text-slate-400 font-mono">{key}</span>
+                <span className="text-cyan-400">{formatTs(val)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Enrollment status breakdown */}
+      {stats && Object.keys(stats.enrollments.by_status).length > 0 && (
+        <div className="bg-slate-950/40 rounded-2xl border border-slate-800 p-4">
+          <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-3">
+            סטטוסי Enrollment
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(stats.enrollments.by_status).map(([status, count]) => (
+              <span
+                key={status}
+                className="text-[11px] font-bold bg-slate-800 text-slate-300 px-3 py-1 rounded-lg border border-slate-700"
+              >
+                {status}: {count}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AhuSessionsTab({ sessions }: { sessions: AhuSessions | null }) {
+  const [activeCategory, setActiveCategory] = useState("adders");
+  const categories = ["managers", "adders", "frozen", "bots", "spammers"];
+  const categoryLabels: Record<string, string> = {
+    managers: "Managers",
+    adders: "Adders",
+    frozen: "Frozen",
+    bots: "Bots",
+    spammers: "Spammers",
+  };
+
+  if (!sessions) {
+    return <div className="text-slate-500 text-sm">טוען סשנים...</div>;
+  }
+
+  const current = sessions[activeCategory];
+
+  return (
+    <div className="space-y-4">
+      {/* Category tabs */}
+      <div className="flex gap-2 flex-wrap">
+        {categories.map((cat) => {
+          const count = sessions[cat]?.count ?? 0;
+          return (
+            <button
+              key={cat}
+              onClick={() => setActiveCategory(cat)}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
+                activeCategory === cat
+                  ? "bg-cyan-600 text-white"
+                  : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+              }`}
+            >
+              {categoryLabels[cat]}
+              <span className={`px-1.5 py-0.5 rounded-md text-[10px] ${activeCategory === cat ? "bg-cyan-700" : "bg-slate-700"}`}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Session list */}
+      {current && current.sessions.length > 0 ? (
+        <div className="bg-slate-950/40 rounded-2xl border border-slate-800 overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+              {categoryLabels[activeCategory]} — {current.count} סשנים
+            </span>
+          </div>
+          <div className="max-h-72 overflow-y-auto divide-y divide-slate-800/50">
+            {current.sessions.map((sess) => (
+              <div key={sess} className="px-4 py-2.5 flex items-center gap-3 hover:bg-slate-800/30 transition">
+                <div className="w-2 h-2 rounded-full bg-cyan-500/60" />
+                <span className="text-xs font-mono text-slate-300">{sess}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="text-slate-500 text-sm bg-slate-950/40 rounded-2xl border border-slate-800 p-6 text-center">
+          אין סשנים בקטגוריה זו
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AhuScraperTab({ targets }: { targets: AhuTargets | null }) {
+  const [filter, setFilter] = useState<"all" | "source" | "target">("all");
+
+  if (!targets) {
+    return <div className="text-slate-500 text-sm">טוען נתונים...</div>;
+  }
+
+  const filtered = filter === "all" ? targets.targets : targets.targets.filter((t) => t.role === filter);
+  const sourceCount = targets.targets.filter((t) => t.role === "source").length;
+  const targetCount = targets.targets.filter((t) => t.role === "target").length;
+
+  return (
+    <div className="space-y-4">
+      {/* Summary */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-slate-950/40 rounded-2xl border border-purple-500/20 p-4 text-center">
+          <div className="text-2xl font-black text-purple-400">{sourceCount}</div>
+          <div className="text-[11px] text-slate-500 uppercase tracking-widest mt-1">קבוצות מקור</div>
+        </div>
+        <div className="bg-slate-950/40 rounded-2xl border border-cyan-500/20 p-4 text-center">
+          <div className="text-2xl font-black text-cyan-400">{targetCount}</div>
+          <div className="text-[11px] text-slate-500 uppercase tracking-widest mt-1">קבוצות יעד</div>
+        </div>
+      </div>
+
+      {/* Filter */}
+      <div className="flex gap-2">
+        {(["all", "source", "target"] as const).map((f) => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+              filter === f ? "bg-cyan-600 text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+            }`}
+          >
+            {f === "all" ? "הכל" : f === "source" ? "מקורות" : "יעדים"}
+          </button>
         ))}
       </div>
 
-      <div className="mt-8 p-6 bg-slate-950/30 rounded-2xl border border-slate-800/50">
+      {/* Table */}
+      {filtered.length > 0 ? (
+        <div className="bg-slate-950/40 rounded-2xl border border-slate-800 overflow-hidden">
+          <div className="max-h-80 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-slate-900 border-b border-slate-800">
+                <tr>
+                  <th className="text-left px-4 py-2.5 text-slate-400 font-bold uppercase tracking-widest">שם</th>
+                  <th className="text-left px-4 py-2.5 text-slate-400 font-bold uppercase tracking-widest">קישור</th>
+                  <th className="text-left px-4 py-2.5 text-slate-400 font-bold uppercase tracking-widest">תפקיד</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/50">
+                {filtered.map((t) => (
+                  <tr key={t.id} className="hover:bg-slate-800/30 transition">
+                    <td className="px-4 py-2.5 text-slate-300 font-medium">{t.title || "—"}</td>
+                    <td className="px-4 py-2.5">
+                      <a
+                        href={t.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-cyan-400 hover:text-cyan-300 font-mono transition"
+                      >
+                        {t.link}
+                      </a>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <span className={`px-2 py-0.5 rounded-md font-bold uppercase text-[10px] ${
+                        t.role === "source"
+                          ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
+                          : "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30"
+                      }`}>
+                        {t.role}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div className="text-slate-500 text-sm bg-slate-950/40 rounded-2xl border border-slate-800 p-6 text-center">
+          אין קבוצות מוגדרות
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AhuLogsTab() {
+  const [lines, setLines] = useState<string[]>([]);
+  const [filter, setFilter] = useState<"all" | "INFO" | "WARNING" | "ERROR">("all");
+  const [connected, setConnected] = useState(false);
+  const bottomRef = React.useRef<HTMLDivElement>(null);
+  const wsRef = React.useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    const wsBase = API_BASE.replace(/^http/, "ws");
+    const ws = new WebSocket(`${wsBase}/api/ahu/logs/stream`);
+    wsRef.current = ws;
+
+    ws.onopen = () => setConnected(true);
+    ws.onmessage = (e) => {
+      setLines((prev) => {
+        const next = [...prev, e.data as string];
+        return next.length > 500 ? next.slice(-500) : next;
+      });
+    };
+    ws.onclose = () => setConnected(false);
+    ws.onerror = () => setConnected(false);
+
+    return () => {
+      ws.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [lines]);
+
+  const filtered = filter === "all" ? lines : lines.filter((l) => l.includes(filter));
+
+  const lineColor = (line: string) => {
+    if (line.includes("ERROR") || line.includes("error")) return "text-red-400";
+    if (line.includes("WARNING") || line.includes("warning") || line.includes("WARN")) return "text-yellow-400";
+    if (line.includes("INFO")) return "text-slate-300";
+    return "text-slate-400";
+  };
+
+  return (
+    <div className="space-y-3">
+      {/* Controls */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2">
+          <div className={`w-2 h-2 rounded-full ${connected ? "bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.8)]" : "bg-slate-600"}`} />
+          <span className="text-xs text-slate-500">{connected ? "מחובר — לוגים חיים" : "מנותק"}</span>
+        </div>
+        <div className="flex gap-2">
+          {(["all", "INFO", "WARNING", "ERROR"] as const).map((f) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`px-3 py-1 rounded-lg text-[11px] font-bold transition ${
+                filter === f
+                  ? f === "ERROR" ? "bg-red-600 text-white"
+                    : f === "WARNING" ? "bg-yellow-600 text-white"
+                    : "bg-cyan-600 text-white"
+                  : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+              }`}
+            >
+              {f === "all" ? "הכל" : f}
+            </button>
+          ))}
+          <button
+            onClick={() => setLines([])}
+            className="px-3 py-1 rounded-lg text-[11px] font-bold bg-slate-800 text-slate-400 hover:bg-slate-700 transition"
+          >
+            נקה
+          </button>
+        </div>
+      </div>
+
+      {/* Log output */}
+      <div className="bg-slate-950 rounded-2xl border border-slate-800 h-80 overflow-y-auto p-4 font-mono text-[11px] leading-5">
+        {filtered.length === 0 ? (
+          <div className="text-slate-600 text-center mt-8">
+            {connected ? "ממתין ללוגים..." : "מתחבר..."}
+          </div>
+        ) : (
+          filtered.map((line, i) => (
+            <div key={i} className={lineColor(line)}>
+              {line}
+            </div>
+          ))
+        )}
+        <div ref={bottomRef} />
+      </div>
+    </div>
+  );
+}
+
+function AhuQuickLinkTab({ invite }: { invite: string }) {
+  return (
+    <div className="space-y-4">
+      <div className="bg-slate-950/50 p-6 rounded-3xl border border-cyan-500/20 flex items-center justify-between group hover:border-cyan-500/50 transition flex-wrap gap-4">
+        <div className="flex items-center gap-6">
+          <div className="w-14 h-14 rounded-2xl flex items-center justify-center bg-cyan-500/20 text-cyan-400">
+            <MessageSquareCode size={28} />
+          </div>
+          <div>
+            <div className="text-lg font-bold text-white">Management Ahu — Ops Sync</div>
+            <div className="text-xs text-slate-500 mt-1">ערוץ ניהול פנימי לסנכרון פעולות שוטפות</div>
+            <a
+              href={invite}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[11px] text-cyan-400 hover:text-cyan-300 font-mono mt-1 inline-block transition"
+            >
+              {invite}
+            </a>
+          </div>
+        </div>
+        <div className="flex flex-col items-end gap-2">
+          <span className="text-[10px] font-bold text-cyan-400 bg-cyan-500/10 border border-cyan-500/30 px-3 py-1 rounded-lg uppercase tracking-widest">
+            PRIVATE
+          </span>
+          <a
+            href={invite}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs font-bold text-white bg-cyan-600 hover:bg-cyan-500 px-4 py-2 rounded-xl transition"
+          >
+            פתח ↗
+          </a>
+        </div>
+      </div>
+
+      <div className="p-5 bg-slate-950/30 rounded-2xl border border-slate-800/50">
         <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-3">
           קישור ישיר — Management Ahu
         </div>
         <div className="flex items-center gap-4 flex-wrap">
           <code className="text-cyan-400 font-mono text-sm bg-slate-900 px-4 py-2 rounded-xl border border-slate-800">
-            {linkLoaded ? ahuInvite : "…טוען מ-OPERATIONS_CHAT_LINK"}
+            {invite}
           </code>
-          {linkLoaded && ahuInvite && (
-            <a
-              href={ahuInvite}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs font-bold text-white bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-xl transition"
-            >
-              פתח בטלגרם
-            </a>
-          )}
+          <a
+            href={invite}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs font-bold text-white bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-xl transition"
+          >
+            פתח בטלגרם
+          </a>
         </div>
       </div>
     </div>
   );
 }
+
+// ── Main AhuManagementView ────────────────────────────────────────────────────
+
+function AhuManagementView() {
+  const TG_FALLBACK = "https://t.me/Ahu_Management_Private";
+
+  const [activeTab, setActiveTab] = useState<"dashboard" | "sessions" | "scraper" | "logs" | "link">("dashboard");
+  const [status, setStatus] = useState<AhuStatus | null>(null);
+  const [stats, setStats] = useState<AhuStats | null>(null);
+  const [sessions, setSessions] = useState<AhuSessions | null>(null);
+  const [targets, setTargets] = useState<AhuTargets | null>(null);
+  const [tgInvite, setTgInvite] = useState(TG_FALLBACK);
+  const [actionLoading, setActionLoading] = useState(false);
+
+  const fetchAll = useCallback(async () => {
+    try {
+      const [statusRes, statsRes, sessionsRes, targetsRes, opsRes] = await Promise.allSettled([
+        fetch(`${API_BASE}/api/ahu/status`),
+        fetch(`${API_BASE}/api/ahu/stats`),
+        fetch(`${API_BASE}/api/ahu/sessions`),
+        fetch(`${API_BASE}/api/ahu/targets`),
+        fetch(`${API_BASE}/api/telefix/ops-config`),
+      ]);
+
+      if (statusRes.status === "fulfilled" && statusRes.value.ok) {
+        setStatus(await statusRes.value.json());
+      }
+      if (statsRes.status === "fulfilled" && statsRes.value.ok) {
+        setStats(await statsRes.value.json());
+      }
+      if (sessionsRes.status === "fulfilled" && sessionsRes.value.ok) {
+        setSessions(await sessionsRes.value.json());
+      }
+      if (targetsRes.status === "fulfilled" && targetsRes.value.ok) {
+        setTargets(await targetsRes.value.json());
+      }
+      if (opsRes.status === "fulfilled" && opsRes.value.ok) {
+        const j = (await opsRes.value.json()) as { operations_chat_link?: string };
+        if (j.operations_chat_link) setTgInvite(j.operations_chat_link);
+      }
+    } catch {
+      // silent
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchAll();
+    const interval = setInterval(() => void fetchAll(), 10_000);
+    return () => clearInterval(interval);
+  }, [fetchAll]);
+
+  const handleStart = async () => {
+    setActionLoading(true);
+    try {
+      await fetch(`${API_BASE}/api/ahu/bot/start`, { method: "POST" });
+      await fetchAll();
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleStop = async () => {
+    setActionLoading(true);
+    try {
+      await fetch(`${API_BASE}/api/ahu/bot/stop`, { method: "POST" });
+      await fetchAll();
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const tabs = [
+    { id: "dashboard" as const, label: "Dashboard", icon: <LayoutDashboard size={14} /> },
+    { id: "sessions" as const, label: "Sessions", icon: <HardDrive size={14} /> },
+    { id: "scraper" as const, label: "Scraper/Adder", icon: <Search size={14} /> },
+    { id: "logs" as const, label: "Logs", icon: <Terminal size={14} /> },
+    { id: "link" as const, label: "Quick Link", icon: <MessageSquareCode size={14} /> },
+  ];
+
+  return (
+    <div className="bg-slate-900/40 border border-slate-800 rounded-[2.5rem] p-8 animate-in fade-in">
+      {/* Header */}
+      <div className="flex justify-between items-center mb-8 flex-wrap gap-4">
+        <div>
+          <h3 className="text-2xl font-black text-white">ניהול אהו — Ops Sync</h3>
+          <p className="text-slate-500 text-sm mt-1">ניהול בוט, סשנים, Scraper ולוגים חיים</p>
+        </div>
+        <div className="flex items-center gap-3">
+          {status && (
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold ${
+              status.bot_running
+                ? "border-green-500/30 bg-green-500/10 text-green-400"
+                : "border-slate-700 bg-slate-800 text-slate-500"
+            }`}>
+              <div className={`w-2 h-2 rounded-full ${status.bot_running ? "bg-green-400" : "bg-slate-600"}`} />
+              {status.bot_running ? "LIVE" : "OFFLINE"}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Tab bar */}
+      <div className="flex gap-1 mb-6 bg-slate-950/50 p-1 rounded-2xl border border-slate-800 flex-wrap">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition flex-1 justify-center ${
+              activeTab === tab.id
+                ? "bg-cyan-600 text-white shadow-lg"
+                : "text-slate-400 hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            {tab.icon}
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      <div>
+        {activeTab === "dashboard" && (
+          <AhuDashboardTab
+            status={status}
+            stats={stats}
+            onStart={handleStart}
+            onStop={handleStop}
+            actionLoading={actionLoading}
+            onRefresh={fetchAll}
+          />
+        )}
+        {activeTab === "sessions" && <AhuSessionsTab sessions={sessions} />}
+        {activeTab === "scraper" && <AhuScraperTab targets={targets} />}
+        {activeTab === "logs" && <AhuLogsTab />}
+        {activeTab === "link" && <AhuQuickLinkTab invite={tgInvite} />}
+      </div>
+    </div>
+  );
+}
+
+// ── Polymarket Tab Types ─────────────────────────────────────────────────────
 
 interface OrderbookData {
   token_id: string;
@@ -1344,6 +1903,111 @@ interface OrderbookData {
   source: string;
 }
 
+interface PolyBotPnL {
+  available: boolean;
+  realized_pnl_usd: number;
+  unrealized_pnl_usd: number;
+  total_pnl_usd: number;
+  btc_spot: number | null;
+  target_strike: number | null;
+  yes_price: number | null;
+  market_question: string | null;
+  open_position: Record<string, unknown> | null;
+  within_target_band: boolean;
+  last_action: string;
+  session_active: boolean;
+  session_stage: string;
+  updated_at: string;
+}
+
+interface PaperPerf {
+  total_trades: number;
+  wins: number;
+  losses: number;
+  virtual_pnl: number;
+  win_rate: number;
+}
+
+interface Poly5mData {
+  wins: number;
+  losses: number;
+  decision: string | null;
+  trading_halted: boolean;
+}
+
+interface CrossExchangeData {
+  status: string;
+  signal: string;
+  signal_label: string;
+  high_confidence: boolean;
+  arbitrage_gap: number | null;
+  polymarket: { yes_price: number | null; market_question: string | null } | null;
+  binance: { price: number | null } | null;
+}
+
+interface TradeLogEntry {
+  timestamp: string;
+  side: string;
+  price: number;
+  shares: number;
+  spent_usd: number;
+  market_question: string;
+  status: string;
+  log_text: string;
+  paper: boolean;
+}
+
+interface TradeLogData {
+  entries: TradeLogEntry[];
+  total: number;
+  paper_trading: boolean;
+  kill_switch_balance_usd: number;
+}
+
+// ── Helper ───────────────────────────────────────────────────────────────────
+
+function fmtUsd(n: number, decimals = 2) {
+  const abs = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  return `${n < 0 ? "-" : ""}$${abs}`;
+}
+
+function fmtPct(n: number) {
+  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+}
+
+// ── Sub-components ───────────────────────────────────────────────────────────
+
+function HackerCard({ children, className = "", glow = "cyan" }: { children: React.ReactNode; className?: string; glow?: "cyan" | "emerald" | "rose" | "violet" }) {
+  const glowMap = { cyan: "border-cyan-500/20 shadow-cyan-500/5", emerald: "border-emerald-500/20 shadow-emerald-500/5", rose: "border-rose-500/20 shadow-rose-500/5", violet: "border-violet-500/20 shadow-violet-500/5" };
+  return (
+    <div className={`bg-[#0a0f1a] border rounded-2xl shadow-lg ${glowMap[glow]} ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+function StatBadge({ label, value, sub, icon: Icon, color = "cyan" }: { label: string; value: string; sub?: string; icon?: React.ElementType; color?: "cyan" | "emerald" | "rose" | "violet" | "amber" }) {
+  const colorMap = { cyan: "text-cyan-400", emerald: "text-emerald-400", rose: "text-rose-400", violet: "text-violet-400", amber: "text-amber-400" };
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-slate-500">
+        {Icon && <Icon size={10} />}
+        {label}
+      </div>
+      <div className={`text-xl font-black font-mono ${colorMap[color]}`}>{value}</div>
+      {sub && <div className="text-[10px] text-slate-600 font-mono">{sub}</div>}
+    </div>
+  );
+}
+
+function LiveDot({ active = true }: { active?: boolean }) {
+  return (
+    <span className={`inline-block w-1.5 h-1.5 rounded-full ${active ? "bg-emerald-400 animate-pulse" : "bg-slate-600"}`} />
+  );
+}
+
+// ── Main Component ───────────────────────────────────────────────────────────
+
 function PolymarketTradingView({
   data,
   fetchDashboardData,
@@ -1356,7 +2020,18 @@ function PolymarketTradingView({
   const [orderbook, setOrderbook] = useState<OrderbookData | null>(null);
   const [obError, setObError] = useState<string | null>(null);
   const [obLoading, setObLoading] = useState(false);
+  const [pnlRange, setPnlRange] = useState<"1D" | "1W" | "1M" | "ALL">("1M");
+  const [orderStatus, setOrderStatus] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [selectedPosition, setSelectedPosition] = useState<string | null>(null);
 
+  // ── SWR data feeds ───────────────────────────────────────────────────────
+  const { data: bot } = useSWR<PolyBotPnL>(`${API_BASE}/api/prediction/polymarket-bot`, swrFetcher, { refreshInterval: 5_000 });
+  const { data: perf } = useSWR<PaperPerf>(`${API_BASE}/api/prediction/performance`, swrFetcher, { refreshInterval: 12_000 });
+  const { data: poly5m } = useSWR<Poly5mData>(`${API_BASE}/api/prediction/poly5m-scalper`, swrFetcher, { refreshInterval: 10_000 });
+  const { data: cx } = useSWR<CrossExchangeData>(`${API_BASE}/api/prediction/cross-exchange`, swrFetcher, { refreshInterval: 8_000 });
+  const { data: tradeLog } = useSWR<TradeLogData>(`${API_BASE}/api/prediction/trade-log`, swrFetcher, { refreshInterval: 6_000 });
+
+  // ── Orderbook polling ────────────────────────────────────────────────────
   const fetchOrderbook = useCallback(async (tid?: string) => {
     const id = (tid ?? tokenId).trim();
     const url = id
@@ -1374,11 +2049,7 @@ function PolymarketTradingView({
       setObError(null);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("404") || msg.includes("Failed to fetch")) {
-        setObError("⚠️ Database initializing on Master...");
-      } else {
-        setObError(`Sync error — ${msg}`);
-      }
+      setObError(msg.includes("404") || msg.includes("Failed to fetch") ? "TOKEN_ID REQUIRED — NO ACTIVE BOT TOKEN FOUND IN REDIS" : msg);
       setOrderbook(null);
     } finally {
       setObLoading(false);
@@ -1391,224 +2062,610 @@ function PolymarketTradingView({
     return () => clearInterval(t);
   }, [fetchOrderbook]);
 
-  const handleOrder = async (side: "BUY" | "SELL") => {
-    if (!tokenId.trim()) {
-      window.alert("הכנס מזהה חוזה (Token ID)");
-      return;
+  // ── Derived analytics ────────────────────────────────────────────────────
+  const pnlSeries = useMemo(() => {
+    const series = data?.pnl_series ?? [];
+    const now = Date.now();
+    const cutoffs: Record<string, number> = { "1D": 86400000, "1W": 604800000, "1M": 2592000000, ALL: Infinity };
+    const cutoff = cutoffs[pnlRange] ?? Infinity;
+    return series.filter((p) => now - new Date(p.time).getTime() <= cutoff);
+  }, [data?.pnl_series, pnlRange]);
+
+  const portfolioValue = parseFloat(data?.collateral_usdc ?? "0");
+  const totalPnl = bot?.total_pnl_usd ?? 0;
+  const isPnlPositive = totalPnl >= 0;
+
+  const positions = useMemo(() => {
+    const history = data?.trading_history ?? [];
+    const map = new Map<string, { asset: string; buys: number; sells: number; totalSpent: number; count: number; lastPrice: string }>();
+    for (const t of history) {
+      const key = t.asset;
+      const existing = map.get(key) ?? { asset: t.asset, buys: 0, sells: 0, totalSpent: 0, count: 0, lastPrice: t.price };
+      if (t.side === "BUY") { existing.buys += t.amount; existing.totalSpent += t.amount; }
+      else existing.sells += t.amount;
+      existing.count += 1;
+      existing.lastPrice = t.price;
+      map.set(key, existing);
     }
+    return Array.from(map.values()).map((p) => {
+      const netShares = p.buys - p.sells;
+      const avgPrice = p.count > 0 ? p.totalSpent / p.buys : 0;
+      const nowPrice = parseFloat(p.lastPrice) || 0;
+      const value = netShares * nowPrice;
+      const pnlDelta = netShares * (nowPrice - avgPrice);
+      const pnlPct = avgPrice > 0 ? ((nowPrice - avgPrice) / avgPrice) * 100 : 0;
+      return { ...p, netShares, avgPrice, nowPrice, value, pnlDelta, pnlPct };
+    }).filter((p) => p.netShares > 0);
+  }, [data?.trading_history]);
+
+  const aiRecs = useMemo(() => {
+    const signal = cx?.signal ?? "NEUTRAL";
+    return positions.map((p) => {
+      const edge = p.pnlPct;
+      const isBullish = signal === "BULLISH" || signal === "BUY";
+      const arbGap = Math.abs(cx?.arbitrage_gap ?? 0);
+      const confidence = Math.min(100, arbGap * 1000 + 20);
+      let action: "BUY MORE" | "HOLD" | "REDUCE" = "HOLD";
+      if (isBullish && edge > 5) action = "BUY MORE";
+      else if (!isBullish && edge < -5) action = "REDUCE";
+      return { ...p, action, confidence, signal };
+    });
+  }, [positions, cx]);
+
+  // ── Order handler ────────────────────────────────────────────────────────
+  const handleOrder = async (side: "BUY" | "SELL") => {
+    if (!tokenId.trim()) { setOrderStatus({ msg: "Enter Token ID first", ok: false }); return; }
+    setOrderStatus(null);
     try {
       const res = await fetch(`${API_BASE}/api/polymarket/manual-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token_id: tokenId.trim(),
-          side,
-          amount: parseFloat(amount),
-        }),
+        body: JSON.stringify({ token_id: tokenId.trim(), side, amount: parseFloat(amount) }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const detail = (j as { detail?: string | { msg?: string } }).detail;
-        const msg =
-          typeof detail === "string"
-            ? detail
-            : Array.isArray(detail)
-              ? detail.map((x: { msg?: string }) => x.msg).join(", ")
-              : "הפקודה נדחתה";
-        window.alert(msg);
+        const detail = (j as { detail?: string | { msg?: string }[] }).detail;
+        const msg = typeof detail === "string" ? detail : Array.isArray(detail) ? detail.map((x) => x.msg).join(", ") : "Order rejected";
+        setOrderStatus({ msg, ok: false });
         return;
       }
+      setOrderStatus({ msg: `${side} executed — order placed`, ok: true });
       await fetchDashboardData();
     } catch {
-      window.alert("שגיאה בביצוע פקודה");
+      setOrderStatus({ msg: "Execution error — check master connection", ok: false });
     }
   };
 
+  const signalColor = cx?.signal === "BULLISH" || cx?.signal === "BUY" ? "text-emerald-400" : cx?.signal === "BEARISH" || cx?.signal === "SELL" ? "text-rose-400" : "text-amber-400";
+  const signalBg = cx?.signal === "BULLISH" || cx?.signal === "BUY" ? "bg-emerald-500/10 border-emerald-500/30" : cx?.signal === "BEARISH" || cx?.signal === "SELL" ? "bg-rose-500/10 border-rose-500/30" : "bg-amber-500/10 border-amber-500/30";
+
   return (
-    <div className="grid grid-cols-12 gap-8">
-      {/* ── Live CLOB Orderbook ─────────────────────────────────────────── */}
-      <div className="col-span-12 bg-slate-900/40 border border-cyan-500/30 rounded-[2.5rem] p-8 space-y-4">
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <h3 className="text-xl font-bold flex items-center gap-3">
-            <TrendingUp size={20} className="text-cyan-400" />
-            CLOB Live Orderbook
-            {orderbook?.source && (
-              <span className="text-[10px] font-black text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-lg uppercase tracking-widest animate-pulse">
-                {orderbook.source}
-              </span>
-            )}
-          </h3>
-          <div className="flex items-center gap-4 text-sm font-mono flex-wrap">
-            {orderbook ? (
-              <>
-                <span className="text-emerald-400 font-black">BID: {orderbook.best_bid?.toFixed(4) ?? "—"}</span>
-                <span className="text-rose-400 font-black">ASK: {orderbook.best_ask?.toFixed(4) ?? "—"}</span>
-                <span className="text-cyan-400">MID: {orderbook.mid_price?.toFixed(4) ?? "—"}</span>
-                <span className="text-slate-400">SPREAD: {orderbook.spread?.toFixed(4) ?? "—"}</span>
-              </>
-            ) : obLoading ? (
-              <span className="text-slate-500 text-xs">טוען...</span>
-            ) : null}
+    <div className="space-y-6" style={{ background: "transparent" }}>
+
+      {/* ══ PORTFOLIO HEADER (Polymarket clone) ══════════════════════════════ */}
+      <HackerCard className="p-6" glow="cyan">
+        <div className="flex flex-wrap items-start justify-between gap-6">
+          {/* Left: portfolio value */}
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
+              <LiveDot active={!!bot?.session_active} />
+              <span>Portfolio</span>
+              {bot?.session_active && <span className="text-emerald-400 animate-pulse">· SESSION ACTIVE</span>}
+            </div>
+            <div className="text-4xl font-black font-mono text-white">
+              {fmtUsd(portfolioValue)}
+            </div>
+            <div className={`text-sm font-mono font-bold ${isPnlPositive ? "text-emerald-400" : "text-rose-400"}`}>
+              {isPnlPositive ? <ArrowUpRight size={14} className="inline" /> : <ArrowDownRight size={14} className="inline" />}
+              {fmtUsd(totalPnl)} ({fmtPct(portfolioValue > 0 ? (totalPnl / portfolioValue) * 100 : 0)}) bot session
+            </div>
+          </div>
+
+          {/* Center: cash + stats */}
+          <div className="flex flex-wrap gap-8">
+            <StatBadge label="Cash (USDC)" value={fmtUsd(portfolioValue)} icon={DollarSign} color="cyan" />
+            <StatBadge label="Realized PnL" value={fmtUsd(bot?.realized_pnl_usd ?? 0)} icon={BarChart2} color={( bot?.realized_pnl_usd ?? 0) >= 0 ? "emerald" : "rose"} />
+            <StatBadge label="Unrealized" value={fmtUsd(bot?.unrealized_pnl_usd ?? 0)} icon={Activity} color={(bot?.unrealized_pnl_usd ?? 0) >= 0 ? "emerald" : "rose"} />
+            <StatBadge label="Win Rate" value={`${(perf?.win_rate ?? 0).toFixed(1)}%`} sub={`${perf?.total_trades ?? 0} trades`} icon={Percent} color="violet" />
+          </div>
+
+          {/* Right: action buttons */}
+          <div className="flex gap-3">
+            <button type="button" className="px-5 py-2 bg-cyan-500 hover:bg-cyan-400 text-black font-black text-xs rounded-xl transition shadow-lg shadow-cyan-500/20 uppercase tracking-widest">
+              Deposit
+            </button>
+            <button type="button" className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-black text-xs rounded-xl transition border border-slate-700 uppercase tracking-widest">
+              Withdraw
+            </button>
           </div>
         </div>
 
-        {obError && (
-          <div className="flex items-center gap-2 p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-xs font-black uppercase tracking-widest">
-            <AlertTriangle size={14} />
-            {obError}
+        {/* PnL sparkline */}
+        <div className="mt-6">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Profit / Loss</span>
+            <div className="flex gap-1 ml-auto">
+              {(["1D", "1W", "1M", "ALL"] as const).map((r) => (
+                <button key={r} type="button" onClick={() => setPnlRange(r)}
+                  className={`px-2 py-0.5 text-[10px] font-black rounded transition ${pnlRange === r ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/40" : "text-slate-500 hover:text-slate-300"}`}>
+                  {r}
+                </button>
+              ))}
+            </div>
           </div>
-        )}
-
-        {orderbook && orderbook.price_series.length > 0 && (
-          <div className="h-[200px] w-full block">
-            <ResponsiveContainer width="100%" height={200}>
-              <AreaChart data={orderbook.price_series}>
+          <div className="h-[80px]">
+            <ResponsiveContainer width="100%" height={80}>
+              <AreaChart data={pnlSeries.length ? pnlSeries : [{ time: "—", pnl: 0 }]}>
                 <defs>
-                  <linearGradient id="bidGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#34d399" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="#34d399" stopOpacity={0} />
-                  </linearGradient>
-                  <linearGradient id="askGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#f87171" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="#f87171" stopOpacity={0} />
+                  <linearGradient id="pnlGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={isPnlPositive ? "#34d399" : "#f87171"} stopOpacity={0.3} />
+                    <stop offset="95%" stopColor={isPnlPositive ? "#34d399" : "#f87171"} stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis dataKey="price" stroke="#475569" fontSize={9} tickLine={false} axisLine={false} tickFormatter={(v: number) => v.toFixed(3)} />
-                <YAxis stroke="#475569" fontSize={9} tickLine={false} axisLine={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#0f172a" vertical={false} />
+                <XAxis dataKey="time" hide />
+                <YAxis hide />
                 <Tooltip
-                  contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: "12px" }}
-                  itemStyle={{ color: "#22d3ee" }}
-                  formatter={(value, name) => [typeof value === "number" ? value.toFixed(2) : String(value ?? ""), String(name ?? "") === "size" ? "Size" : String(name ?? "")]}
+                  contentStyle={{ backgroundColor: "#0a0f1a", border: "1px solid #1e293b", borderRadius: "8px", fontSize: "11px" }}
+                  formatter={(v) => [fmtUsd(Number(v ?? 0)), "PnL"]}
                 />
-                <Area
-                  type="stepAfter"
-                  dataKey="size"
-                  stroke="#34d399"
-                  fill="url(#bidGrad)"
-                  strokeWidth={2}
-                  dot={false}
-                />
+                <ReferenceLine y={0} stroke="#334155" strokeDasharray="4 4" />
+                <Area type="monotone" dataKey="pnl" stroke={isPnlPositive ? "#34d399" : "#f87171"} fill="url(#pnlGrad)" strokeWidth={2} dot={false} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
-        )}
+        </div>
+      </HackerCard>
 
-        {orderbook && (
-          <div className="grid grid-cols-2 gap-4 text-xs font-mono max-h-[160px] overflow-y-auto nexus-os-scrollbar">
-            <div>
-              <div className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mb-2">BIDS</div>
-              {orderbook.bids.slice(0, 8).map((b, i) => (
-                <div key={i} className="flex justify-between py-0.5 border-b border-slate-800/40">
-                  <span className="text-emerald-400">{parseFloat(b.price).toFixed(4)}</span>
-                  <span className="text-slate-400">{parseFloat(b.size).toFixed(2)}</span>
-                </div>
-              ))}
-            </div>
-            <div>
-              <div className="text-[10px] font-black text-rose-400 uppercase tracking-widest mb-2">ASKS</div>
-              {orderbook.asks.slice(0, 8).map((a, i) => (
-                <div key={i} className="flex justify-between py-0.5 border-b border-slate-800/40">
-                  <span className="text-rose-400">{parseFloat(a.price).toFixed(4)}</span>
-                  <span className="text-slate-400">{parseFloat(a.size).toFixed(2)}</span>
-                </div>
-              ))}
-            </div>
+      {/* ══ ANALYTICS STRIP ══════════════════════════════════════════════════ */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Bot PnL */}
+        <HackerCard className="p-5" glow={totalPnl >= 0 ? "emerald" : "rose"}>
+          <div className="flex items-center gap-2 mb-3">
+            <Cpu size={14} className="text-cyan-400" />
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Bot Total PnL</span>
           </div>
-        )}
+          <div className={`text-2xl font-black font-mono ${totalPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+            {fmtUsd(totalPnl)}
+          </div>
+          <div className="text-[10px] text-slate-600 font-mono mt-1">
+            R: {fmtUsd(bot?.realized_pnl_usd ?? 0)} · U: {fmtUsd(bot?.unrealized_pnl_usd ?? 0)}
+          </div>
+          {bot?.market_question && (
+            <div className="text-[10px] text-slate-500 mt-2 truncate">{bot.market_question}</div>
+          )}
+        </HackerCard>
+
+        {/* Win Rate */}
+        <HackerCard className="p-5" glow="violet">
+          <div className="flex items-center gap-2 mb-3">
+            <Target size={14} className="text-violet-400" />
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Win Rate</span>
+          </div>
+          <div className="text-2xl font-black font-mono text-violet-400">
+            {(perf?.win_rate ?? 0).toFixed(1)}%
+          </div>
+          <div className="text-[10px] text-slate-600 font-mono mt-1">
+            {perf?.wins ?? 0}W / {perf?.losses ?? 0}L · {perf?.total_trades ?? 0} total
+          </div>
+          <div className="mt-2 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+            <div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${perf?.win_rate ?? 0}%` }} />
+          </div>
+        </HackerCard>
+
+        {/* 5m Scalper */}
+        <HackerCard className="p-5" glow="cyan">
+          <div className="flex items-center gap-2 mb-3">
+            <Zap size={14} className="text-cyan-400" />
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">5m Scalper</span>
+          </div>
+          <div className="text-2xl font-black font-mono text-cyan-400">
+            {poly5m?.wins ?? 0}W / {poly5m?.losses ?? 0}L
+          </div>
+          <div className="text-[10px] text-slate-600 font-mono mt-1">
+            {poly5m?.trading_halted ? "⛔ HALTED" : (poly5m?.decision ?? "—")}
+          </div>
+        </HackerCard>
+
+        {/* Cross-exchange signal */}
+        <HackerCard className="p-5" glow={cx?.signal === "BULLISH" || cx?.signal === "BUY" ? "emerald" : "rose"}>
+          <div className="flex items-center gap-2 mb-3">
+            <Radio size={14} className="text-slate-400" />
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Cross-Exchange</span>
+          </div>
+          <div className={`text-xl font-black font-mono ${signalColor}`}>
+            {cx?.signal_label ?? cx?.signal ?? "—"}
+          </div>
+          <div className="text-[10px] text-slate-600 font-mono mt-1">
+            ARB GAP: {cx?.arbitrage_gap != null ? (cx.arbitrage_gap * 100).toFixed(3) + "%" : "—"}
+          </div>
+          {cx?.high_confidence && (
+            <div className="mt-2 text-[10px] font-black text-amber-400 uppercase tracking-widest animate-pulse">⚡ HIGH CONFIDENCE</div>
+          )}
+        </HackerCard>
       </div>
 
-      <div className="col-span-12 lg:col-span-8 space-y-8">
-        <div className="bg-slate-900/40 border border-slate-800 rounded-[2.5rem] p-10">
-          <h3 className="text-xl font-bold mb-8">היסטוריית טריידים (CLOB)</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-right text-sm">
-              <thead>
-                <tr className="text-slate-500 border-b border-slate-800">
-                  <th className="pb-4">זמן</th>
-                  <th className="pb-4">חוזה</th>
-                  <th className="pb-4">פעולה</th>
-                  <th className="pb-4">כמות</th>
-                  <th className="pb-4">מחיר</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(data?.trading_history?.length ? data.trading_history : []).map(
-                  (trade, i) => (
-                    <tr
-                      key={i}
-                      className="border-b border-slate-800/50 hover:bg-slate-800/20 transition"
-                    >
-                      <td className="py-4 text-slate-500 font-mono">
-                        {trade.time}
+      {/* ══ POSITIONS + ORDERBOOK ════════════════════════════════════════════ */}
+      <div className="grid grid-cols-12 gap-6">
+
+        {/* Positions table */}
+        <div className="col-span-12 lg:col-span-7">
+          <HackerCard className="overflow-hidden" glow="cyan">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800/60">
+              <div className="flex items-center gap-2">
+                <BarChart2 size={16} className="text-cyan-400" />
+                <span className="text-sm font-black uppercase tracking-widest text-white">Positions</span>
+                <span className="text-[10px] font-black text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full">{positions.length}</span>
+              </div>
+              <div className="flex gap-2 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                <button type="button" className="px-3 py-1 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">Positions</button>
+                <button type="button" className="px-3 py-1 rounded-lg hover:bg-slate-800 transition">Open orders</button>
+                <button type="button" className="px-3 py-1 rounded-lg hover:bg-slate-800 transition">History</button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-slate-800/60">
+                    <th className="px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">Market</th>
+                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">AVG → NOW</th>
+                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">Traded</th>
+                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">To Win</th>
+                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">Value</th>
+                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {positions.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-10 text-center text-slate-600 text-xs font-mono">
+                        No open positions — trade history will populate this table
                       </td>
-                      <td className="py-4 font-bold">{trade.asset}</td>
-                      <td
-                        className={`py-4 font-bold ${
-                          trade.side === "BUY"
-                            ? "text-emerald-400"
-                            : "text-rose-400"
-                        }`}
-                      >
-                        {trade.side}
-                      </td>
-                      <td className="py-4">{trade.amount}</td>
-                      <td className="py-4 font-mono">${trade.price}</td>
                     </tr>
-                  ),
+                  )}
+                  {positions.map((pos, i) => (
+                    <tr key={i}
+                      onClick={() => { setTokenId(pos.asset); setSelectedPosition(pos.asset); void fetchOrderbook(pos.asset); }}
+                      className={`border-b border-slate-800/40 hover:bg-cyan-500/5 cursor-pointer transition ${selectedPosition === pos.asset ? "bg-cyan-500/5 border-l-2 border-l-cyan-500" : ""}`}>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-6 h-6 rounded-full bg-slate-800 flex items-center justify-center text-[8px] font-black text-cyan-400 border border-cyan-500/20">
+                            {pos.asset.slice(0, 2).toUpperCase()}
+                          </div>
+                          <div>
+                            <div className="font-bold text-white truncate max-w-[140px]">{pos.asset}</div>
+                            <div className="text-[10px] text-slate-500 font-mono">{pos.netShares.toFixed(1)} shares</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono">
+                        <span className="text-slate-400">{(pos.avgPrice * 100).toFixed(1)}¢</span>
+                        <span className="text-slate-600 mx-1">→</span>
+                        <span className={pos.nowPrice >= pos.avgPrice ? "text-emerald-400" : "text-rose-400"}>
+                          {(pos.nowPrice * 100).toFixed(1)}¢
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono text-slate-300">{fmtUsd(pos.totalSpent)}</td>
+                      <td className="px-4 py-3 text-right font-mono text-slate-300">{fmtUsd(pos.netShares)}</td>
+                      <td className="px-4 py-3 text-right">
+                        <div className={`font-black font-mono ${pos.pnlDelta >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                          {fmtUsd(pos.value)}
+                        </div>
+                        <div className={`text-[10px] font-mono ${pos.pnlDelta >= 0 ? "text-emerald-500/70" : "text-rose-500/70"}`}>
+                          {pos.pnlDelta >= 0 ? "+" : ""}{fmtUsd(pos.pnlDelta)} ({fmtPct(pos.pnlPct)})
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button type="button"
+                          onClick={(e) => { e.stopPropagation(); setTokenId(pos.asset); setSelectedPosition(pos.asset); }}
+                          className="px-3 py-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/20 rounded-lg text-[10px] font-black uppercase tracking-widest transition">
+                          Trade
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </HackerCard>
+        </div>
+
+        {/* Live CLOB Orderbook */}
+        <div className="col-span-12 lg:col-span-5 space-y-4">
+          <HackerCard className="p-5" glow="cyan">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <TrendingUp size={14} className="text-cyan-400" />
+                <span className="text-xs font-black uppercase tracking-widest text-white">CLOB Live Orderbook</span>
+                {orderbook?.source && (
+                  <span className="text-[9px] font-black text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded uppercase tracking-widest animate-pulse">
+                    {orderbook.source}
+                  </span>
                 )}
-              </tbody>
-            </table>
-            {!data?.trading_history?.length ? (
-              <p className="text-slate-500 text-sm mt-4">אין רשומות עדיין.</p>
-            ) : null}
-          </div>
+              </div>
+              <LiveDot active={!obLoading && !obError} />
+            </div>
+
+            {/* Bid/Ask stats */}
+            <div className="grid grid-cols-4 gap-2 mb-4">
+              {[
+                { label: "BID", value: orderbook?.best_bid?.toFixed(4) ?? "—", color: "text-emerald-400" },
+                { label: "ASK", value: orderbook?.best_ask?.toFixed(4) ?? "—", color: "text-rose-400" },
+                { label: "MID", value: orderbook?.mid_price?.toFixed(4) ?? "—", color: "text-cyan-400" },
+                { label: "SPREAD", value: orderbook?.spread?.toFixed(4) ?? "—", color: "text-slate-400" },
+              ].map((s) => (
+                <div key={s.label} className="bg-slate-900/60 rounded-lg p-2 text-center">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-slate-600">{s.label}</div>
+                  <div className={`text-xs font-black font-mono mt-0.5 ${s.color}`}>{s.value}</div>
+                </div>
+              ))}
+            </div>
+
+            {obError && (
+              <div className="flex items-center gap-2 p-2.5 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-400 text-[10px] font-black uppercase tracking-widest mb-3">
+                <AlertTriangle size={12} />
+                SYNC ERROR — {obError}
+              </div>
+            )}
+
+            {/* Depth chart */}
+            {orderbook && orderbook.price_series.length > 0 && (
+              <div className="h-[120px] mb-4">
+                <ResponsiveContainer width="100%" height={120}>
+                  <AreaChart data={orderbook.price_series}>
+                    <defs>
+                      <linearGradient id="depthGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#34d399" stopOpacity={0.4} />
+                        <stop offset="95%" stopColor="#34d399" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#0f172a" vertical={false} />
+                    <XAxis dataKey="price" stroke="#1e293b" fontSize={8} tickLine={false} axisLine={false} tickFormatter={(v: number) => v.toFixed(3)} />
+                    <YAxis stroke="#1e293b" fontSize={8} tickLine={false} axisLine={false} width={28} />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: "#0a0f1a", border: "1px solid #1e293b", borderRadius: "8px", fontSize: "10px" }}
+                      formatter={(v) => [Number(v ?? 0).toFixed(2), "Size"]}
+                    />
+                    <Area type="stepAfter" dataKey="size" stroke="#34d399" fill="url(#depthGrad)" strokeWidth={1.5} dot={false} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+
+            {/* Bids / Asks table */}
+            <div className="grid grid-cols-2 gap-3 text-[10px] font-mono max-h-[180px] overflow-y-auto">
+              <div>
+                <div className="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-1.5 flex justify-between">
+                  <span>BIDS</span><span className="text-slate-600">SIZE</span>
+                </div>
+                {(orderbook?.bids ?? []).slice(0, 10).map((b, i) => (
+                  <div key={i} className="flex justify-between py-0.5 border-b border-slate-800/30 hover:bg-emerald-500/5 transition">
+                    <span className="text-emerald-400">{parseFloat(b.price).toFixed(4)}</span>
+                    <span className="text-slate-500">{parseFloat(b.size).toFixed(1)}</span>
+                  </div>
+                ))}
+                {!orderbook?.bids?.length && <div className="text-slate-700 py-2">—</div>}
+              </div>
+              <div>
+                <div className="text-[9px] font-black text-rose-400 uppercase tracking-widest mb-1.5 flex justify-between">
+                  <span>ASKS</span><span className="text-slate-600">SIZE</span>
+                </div>
+                {(orderbook?.asks ?? []).slice(0, 10).map((a, i) => (
+                  <div key={i} className="flex justify-between py-0.5 border-b border-slate-800/30 hover:bg-rose-500/5 transition">
+                    <span className="text-rose-400">{parseFloat(a.price).toFixed(4)}</span>
+                    <span className="text-slate-500">{parseFloat(a.size).toFixed(1)}</span>
+                  </div>
+                ))}
+                {!orderbook?.asks?.length && <div className="text-slate-700 py-2">—</div>}
+              </div>
+            </div>
+          </HackerCard>
         </div>
       </div>
 
-      <div className="col-span-12 lg:col-span-4 space-y-6">
-        <div className="bg-slate-900/40 border border-slate-800 rounded-[2.5rem] p-8 flex flex-col gap-6">
-          <h3 className="text-lg font-bold">ביצוע פקודה ידנית</h3>
-          <p className="text-[11px] text-slate-500 leading-relaxed">
-            BUY = רכישת YES ב-CLOB (מחיר ברירת מחדל מסנאפשוט הבוט או 0.5). SELL =
-            מכירת חוזים לפי גודל בש&quot;ח/מחיר.
-          </p>
-          <input
-            type="text"
-            placeholder="Token ID (CLOB outcome token)"
-            className="bg-slate-950 border border-slate-800 p-3 rounded-xl focus:border-cyan-500 outline-none text-sm"
-            value={tokenId}
-            onChange={(e) => setTokenId(e.target.value)}
-          />
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-            <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">
-              כמות (USDC)
+      {/* ══ AI RECOMMENDATIONS ═══════════════════════════════════════════════ */}
+      <HackerCard className="p-6" glow="violet">
+        <div className="flex items-center gap-2 mb-5">
+          <Crosshair size={16} className="text-violet-400" />
+          <span className="text-sm font-black uppercase tracking-widest text-white">AI Recommendations</span>
+          <span className={`ml-auto text-[10px] font-black px-2 py-0.5 rounded border uppercase tracking-widest ${signalBg} ${signalColor}`}>
+            {cx?.signal_label ?? "NEUTRAL"} · {cx?.high_confidence ? "HIGH CONF" : "LOW CONF"}
+          </span>
+        </div>
+
+        {aiRecs.length === 0 ? (
+          <div className="text-slate-600 text-xs font-mono text-center py-6">
+            No open positions to analyze — place trades to see AI recommendations
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {aiRecs.map((rec, i) => {
+              const actionColor = rec.action === "BUY MORE" ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/30" : rec.action === "REDUCE" ? "text-rose-400 bg-rose-500/10 border-rose-500/30" : "text-amber-400 bg-amber-500/10 border-amber-500/30";
+              return (
+                <div key={i} className="flex items-center gap-4 p-3 bg-slate-900/40 rounded-xl border border-slate-800/40 hover:border-violet-500/20 transition">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-bold text-white truncate">{rec.asset}</div>
+                    <div className="text-[10px] text-slate-500 font-mono">
+                      Edge: <span className={rec.pnlPct >= 0 ? "text-emerald-400" : "text-rose-400"}>{fmtPct(rec.pnlPct)}</span>
+                      {" · "}Mid: {(rec.nowPrice * 100).toFixed(1)}¢
+                      {" · "}Avg: {(rec.avgPrice * 100).toFixed(1)}¢
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {/* Confidence bar */}
+                    <div className="hidden sm:block w-20">
+                      <div className="text-[9px] text-slate-600 font-mono mb-1 text-right">{rec.confidence.toFixed(0)}% conf</div>
+                      <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
+                        <div className="h-full bg-violet-500 rounded-full" style={{ width: `${rec.confidence}%` }} />
+                      </div>
+                    </div>
+                    <span className={`text-[10px] font-black px-2.5 py-1 rounded-lg border uppercase tracking-widest ${actionColor}`}>
+                      {rec.action}
+                    </span>
+                    <button type="button"
+                      onClick={() => { setTokenId(rec.asset); setSelectedPosition(rec.asset); }}
+                      className="text-slate-600 hover:text-cyan-400 transition">
+                      <ChevronRight size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </HackerCard>
+
+      {/* ══ TRADE EXECUTION + LOG ════════════════════════════════════════════ */}
+      <div className="grid grid-cols-12 gap-6">
+
+        {/* Manual order */}
+        <div className="col-span-12 lg:col-span-4">
+          <HackerCard className="p-6 flex flex-col gap-5 h-full" glow="cyan">
+            <div className="flex items-center gap-2">
+              <Crosshair size={14} className="text-cyan-400" />
+              <span className="text-xs font-black uppercase tracking-widest text-white">Execute Order</span>
+              {tradeLog?.paper_trading && (
+                <span className="ml-auto text-[9px] font-black text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded uppercase tracking-widest">PAPER</span>
+              )}
             </div>
-            <input
-              type="number"
-              className="bg-transparent text-2xl font-black w-full outline-none"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <button
-              type="button"
-              onClick={() => handleOrder("BUY")}
-              className="py-4 bg-emerald-500 hover:bg-emerald-400 text-white rounded-2xl font-black shadow-lg shadow-emerald-500/20 transition"
-            >
-              BUY
-            </button>
-            <button
-              type="button"
-              onClick={() => handleOrder("SELL")}
-              className="py-4 bg-rose-500 hover:bg-rose-400 text-white rounded-2xl font-black shadow-lg shadow-rose-500/20 transition"
-            >
-              SELL
-            </button>
-          </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-1.5">Token ID (CLOB outcome token)</label>
+                <input
+                  type="text"
+                  placeholder="0x... or select position above"
+                  className="w-full bg-slate-900/60 border border-slate-700 hover:border-cyan-500/40 focus:border-cyan-500 p-3 rounded-xl outline-none text-xs font-mono text-slate-300 transition"
+                  value={tokenId}
+                  onChange={(e) => setTokenId(e.target.value)}
+                />
+              </div>
+
+              <div className="bg-slate-900/60 p-4 rounded-xl border border-slate-700">
+                <div className="text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Amount (USDC)</div>
+                <input
+                  type="number"
+                  className="bg-transparent text-2xl font-black w-full outline-none text-white font-mono"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                />
+                <div className="flex gap-2 mt-2">
+                  {["25", "50", "100", "250"].map((v) => (
+                    <button key={v} type="button" onClick={() => setAmount(v)}
+                      className="text-[9px] font-black text-slate-500 hover:text-cyan-400 px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 transition">
+                      ${v}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {orderStatus && (
+              <div className={`flex items-center gap-2 p-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest border ${orderStatus.ok ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "bg-rose-500/10 border-rose-500/30 text-rose-400"}`}>
+                {orderStatus.ok ? <CheckCircle2 size={12} /> : <AlertTriangle size={12} />}
+                {orderStatus.msg}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3 mt-auto">
+              <button type="button" onClick={() => void handleOrder("BUY")}
+                className="py-3.5 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-black rounded-xl font-black text-sm shadow-lg shadow-emerald-500/20 transition uppercase tracking-widest">
+                BUY YES
+              </button>
+              <button type="button" onClick={() => void handleOrder("SELL")}
+                className="py-3.5 bg-rose-500 hover:bg-rose-400 active:scale-95 text-white rounded-xl font-black text-sm shadow-lg shadow-rose-500/20 transition uppercase tracking-widest">
+                SELL
+              </button>
+            </div>
+
+            {orderbook?.mid_price != null && (
+              <div className="text-[10px] text-slate-600 font-mono text-center">
+                Est. fill @ {orderbook.mid_price.toFixed(4)} · {fmtUsd(parseFloat(amount) * orderbook.mid_price)} to win
+              </div>
+            )}
+          </HackerCard>
+        </div>
+
+        {/* Trade log */}
+        <div className="col-span-12 lg:col-span-8">
+          <HackerCard className="overflow-hidden h-full" glow="cyan">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800/60">
+              <div className="flex items-center gap-2">
+                <FileText size={14} className="text-cyan-400" />
+                <span className="text-xs font-black uppercase tracking-widest text-white">Trade Log</span>
+                <span className="text-[10px] font-black text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full">{tradeLog?.total ?? data?.trading_history?.length ?? 0}</span>
+              </div>
+              <div className="flex items-center gap-2 text-[10px] font-mono text-slate-500">
+                <span>Kill switch:</span>
+                <span className="text-amber-400 font-black">{fmtUsd(tradeLog?.kill_switch_balance_usd ?? 90)}</span>
+              </div>
+            </div>
+            <div className="overflow-x-auto max-h-[320px] overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-[#0a0f1a]">
+                  <tr className="border-b border-slate-800/60">
+                    <th className="px-4 py-2.5 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Time</th>
+                    <th className="px-4 py-2.5 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Market</th>
+                    <th className="px-4 py-2.5 text-center text-[10px] font-black uppercase tracking-widest text-slate-600">Side</th>
+                    <th className="px-4 py-2.5 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Price</th>
+                    <th className="px-4 py-2.5 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Spent</th>
+                    <th className="px-4 py-2.5 text-center text-[10px] font-black uppercase tracking-widest text-slate-600">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* Prediction trade log entries */}
+                  {(tradeLog?.entries ?? []).slice(0, 20).map((e, i) => (
+                    <tr key={`log-${i}`} className="border-b border-slate-800/30 hover:bg-slate-800/20 transition">
+                      <td className="px-4 py-2 font-mono text-slate-500">
+                        {e.timestamp ? new Date(e.timestamp).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}
+                      </td>
+                      <td className="px-4 py-2 text-slate-300 max-w-[200px] truncate">{e.market_question || e.log_text || "—"}</td>
+                      <td className="px-4 py-2 text-center">
+                        <span className={`text-[9px] font-black px-2 py-0.5 rounded uppercase ${e.side === "BUY" ? "text-emerald-400 bg-emerald-500/10" : "text-rose-400 bg-rose-500/10"}`}>
+                          {e.side}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2 text-right font-mono text-slate-300">{e.price.toFixed(4)}</td>
+                      <td className="px-4 py-2 text-right font-mono text-slate-300">{fmtUsd(e.spent_usd)}</td>
+                      <td className="px-4 py-2 text-center">
+                        <span className={`text-[9px] font-black px-2 py-0.5 rounded uppercase ${e.status === "filled" ? "text-emerald-400" : e.status === "paper" ? "text-amber-400" : "text-slate-500"}`}>
+                          {e.paper ? "PAPER" : e.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                  {/* Dashboard trading history fallback */}
+                  {!(tradeLog?.entries?.length) && (data?.trading_history ?? []).map((t, i) => (
+                    <tr key={`hist-${i}`} className="border-b border-slate-800/30 hover:bg-slate-800/20 transition">
+                      <td className="px-4 py-2 font-mono text-slate-500">{t.time}</td>
+                      <td className="px-4 py-2 text-slate-300 max-w-[200px] truncate">{t.asset}</td>
+                      <td className="px-4 py-2 text-center">
+                        <span className={`text-[9px] font-black px-2 py-0.5 rounded uppercase ${t.side === "BUY" ? "text-emerald-400 bg-emerald-500/10" : "text-rose-400 bg-rose-500/10"}`}>
+                          {t.side}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2 text-right font-mono text-slate-300">${t.price}</td>
+                      <td className="px-4 py-2 text-right font-mono text-slate-300">{fmtUsd(t.amount)}</td>
+                      <td className="px-4 py-2 text-center">
+                        <span className="text-[9px] font-black px-2 py-0.5 rounded uppercase text-cyan-400">CLOB</span>
+                      </td>
+                    </tr>
+                  ))}
+                  {!(tradeLog?.entries?.length) && !(data?.trading_history?.length) && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-10 text-center text-slate-600 text-xs font-mono">
+                        No trade history yet
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </HackerCard>
         </div>
       </div>
+
     </div>
   );
 }

@@ -33,6 +33,7 @@ from slowapi.util import get_remote_address
 
 from nexus.api.hitl_store import HitlStore
 from nexus.api.routers import (
+    ahu,
     ai,
     business,
     cluster,
@@ -1423,6 +1424,7 @@ def create_app() -> FastAPI:
     app.include_router(scan.router, prefix="/api")
     app.include_router(proxy.router, prefix="/api")
     app.include_router(telefix.router, prefix="/api")
+    app.include_router(ahu.router, prefix="/api")
 
     # ── Custom Swagger UI docs ─────────────────────────────────────────────────
     @app.get("/docs", include_in_schema=False)
