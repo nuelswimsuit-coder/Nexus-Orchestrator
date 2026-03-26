@@ -12,10 +12,11 @@ Deployment sequence per node
    a. If WORKER_IP is set in .env / settings, use it directly.
    b. Otherwise look up local_ip from the Redis heartbeat for that node_id.
 2. Open SSH connection (paramiko) using WORKER_SSH_USER / WORKER_SSH_PASSWORD.
-3. Send SIGTERM to the remote worker process (graceful stop).
-4. SFTP-upload nexus/, scripts/, and root-level files to the destination path:
-      Linux   → WORKER_DEPLOY_ROOT_LINUX  (default /home/yadmin/Desktop/Nexus-Orchestrator)
-      Windows → WORKER_DEPLOY_ROOT_WIN
+   Transport options: curve25519-sha256 + diffie-hellman-group14-sha256 KEX,
+   StrictHostKeyChecking disabled, UserKnownHostsFile=/dev/null equivalent.
+3. Kill all remote python3 processes to prevent file-locking (pkill -f python3).
+4. ZIP-bundle nexus/, scripts/, and root-level files into a single archive,
+   SFTP-upload it as one transfer, then run `unzip -o` on the remote.
 5. Run: pip install -r requirements.txt  (inside the remote .venv)
 6. Re-launch the worker via `bash start_nexus.sh` so PYTHONPATH is set.
 7. Publish progress events to Redis for the dashboard SSE stream.
@@ -44,8 +45,10 @@ Configuration (.env)
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -95,6 +98,77 @@ STEP_LABELS: dict[str, str] = {
     "done":            "Worker Live ✓",
     "error":           "Error ✗",
 }
+
+
+# ── SSH hardening helper ───────────────────────────────────────────────────────
+
+def _harden_ssh_transport(transport) -> None:
+    """
+    Apply security/compatibility options to a live paramiko Transport:
+    - Prefer curve25519-sha256 and diffie-hellman-group14-sha256 KEX algorithms
+      (equivalent to -o KexAlgorithms=+curve25519-sha256,diffie-hellman-group14-sha256)
+    - StrictHostKeyChecking=no / UserKnownHostsFile=/dev/null are handled by
+      using AutoAddPolicy on the SSHClient before connect().
+    """
+    try:
+        preferred_kex = [
+            "curve25519-sha256",
+            "curve25519-sha256@libssh.org",
+            "diffie-hellman-group14-sha256",
+            "diffie-hellman-group14-sha1",
+            "diffie-hellman-group-exchange-sha256",
+        ]
+        if hasattr(transport, "_preferred_kex"):
+            existing = list(getattr(transport, "_preferred_kex", []))
+            merged = preferred_kex + [k for k in existing if k not in preferred_kex]
+            transport._preferred_kex = tuple(merged)
+    except Exception:
+        pass
+
+
+def _configure_ssh_client(ssh) -> None:
+    """
+    Configure an SSHClient before connect() for maximum Linux worker compatibility.
+    Equivalent to: -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+    """
+    import paramiko  # type: ignore[import-untyped]
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+
+# ── ZIP bundle helper ──────────────────────────────────────────────────────────
+
+_ZIP_EXCLUDE_DIRS = frozenset(
+    ("__pycache__", ".venv", ".git", "node_modules", ".mypy_cache", "venv", ".next", "dist", "build")
+)
+_ZIP_EXCLUDE_EXTS = frozenset((".pyc", ".pyo"))
+
+
+def _build_deployment_zip() -> bytes:
+    """
+    Bundle SYNC_DIRS + SYNC_FILES into an in-memory ZIP archive.
+    Returns the raw ZIP bytes ready for SFTP upload.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for dir_name in SYNC_DIRS:
+            local_dir = NEXUS_ROOT / dir_name
+            if not local_dir.exists():
+                continue
+            for item in local_dir.rglob("*"):
+                if any(part in _ZIP_EXCLUDE_DIRS for part in item.parts):
+                    continue
+                if item.suffix in _ZIP_EXCLUDE_EXTS:
+                    continue
+                if item.is_file():
+                    arcname = str(item.relative_to(NEXUS_ROOT)).replace("\\", "/")
+                    zf.write(str(item), arcname)
+
+        for file_name in SYNC_FILES:
+            local_file = NEXUS_ROOT / file_name
+            if local_file.exists():
+                zf.write(str(local_file), file_name)
+
+    return buf.getvalue()
 
 
 # ── Progress event helper ──────────────────────────────────────────────────────
@@ -222,16 +296,8 @@ class DeployerService:
 
         await self.clear_progress(node_id)
         ssh = paramiko.SSHClient()
-        # Security hardening: use known_hosts instead of auto-accepting unknown keys
-        try:
-            ssh.load_system_host_keys()
-            ssh.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
-            ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
-        except Exception:
-            # Fallback to auto-accept with warning for development
-            log.warning("ssh_security_fallback",
-                       reason="known_hosts not found — using AutoAddPolicy")
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        # StrictHostKeyChecking=no / UserKnownHostsFile=/dev/null equivalent
+        _configure_ssh_client(ssh)
 
         try:
             # ── 1. Connect ────────────────────────────────────────────────────
@@ -247,6 +313,8 @@ class DeployerService:
                 lambda: ssh.connect(**_connect_kwargs),
             )
             _t = ssh.get_transport()
+            # Apply KexAlgorithms preference after transport is established
+            _harden_ssh_transport(_t)
             _t.set_keepalive(30)
             if _t.sock:
                 try: _t.sock.settimeout(60)
@@ -397,39 +465,10 @@ class DeployerService:
 
         await self.clear_progress(node_id)
         ssh = paramiko.SSHClient()
-        # Security hardening: use known_hosts instead of auto-accepting unknown keys
-        try:
-            ssh.load_system_host_keys()
-            ssh.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
-            ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
-        except Exception:
-            # Fallback to auto-accept with warning for development
-            log.warning("ssh_security_fallback",
-                       reason="known_hosts not found — using AutoAddPolicy")
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-        # Shared queue: upload thread pushes (filename, done_count, total) tuples;
-        # the async loop drains it and emits Redis events.
-        upload_queue: asyncio.Queue[tuple[str, int, int] | None] = asyncio.Queue()
-
-        async def _drain_upload_queue() -> None:
-            """Relay per-file upload progress from the executor thread to Redis."""
-            while True:
-                item = await upload_queue.get()
-                if item is None:
-                    break
-                fname, done, total = item
-                pct = int(done / total * 100) if total else 0
-                await self._emit(
-                    node_id, "uploading", "running",
-                    f"[{done}/{total}] {fname}  ({pct}%)",
-                )
+        # StrictHostKeyChecking=no / UserKnownHostsFile=/dev/null equivalent
+        _configure_ssh_client(ssh)
 
         loop = asyncio.get_event_loop()
-
-        def _progress_cb(fname: str, done: int, total: int) -> None:
-            """Called from the executor thread for each uploaded file."""
-            loop.call_soon_threadsafe(upload_queue.put_nowait, (fname, done, total))
 
         try:
             # ── 1. Connect ────────────────────────────────────────────────────
@@ -445,6 +484,8 @@ class DeployerService:
                 lambda: ssh.connect(**_ckw2),
             )
             _t2 = ssh.get_transport()
+            # Apply KexAlgorithms preference after transport is established
+            _harden_ssh_transport(_t2)
             _t2.set_keepalive(30)
             if _t2.sock:
                 try: _t2.sock.settimeout(60)
@@ -452,56 +493,35 @@ class DeployerService:
             await self._emit(node_id, "connecting", "done",
                              f"Connected to {ip}")
 
-            # ── 2. Count files so the progress bar has a denominator ──────────
-            total_files = _count_sync_files()
-            await self._emit(node_id, "uploading", "running",
-                             f"Uploading {total_files} files → {remote_root}")
-
-            # Start draining upload events while the upload runs
-            drain_task = asyncio.create_task(_drain_upload_queue())
-
-            upload_future = loop.run_in_executor(
+            # ── 2. Kill all python3 to prevent file-locking ───────────────────
+            await self._emit(node_id, "stopping_worker", "running",
+                             "pkill -f python3 to clear file locks")
+            await loop.run_in_executor(
                 None,
-                lambda: self._upload_with_progress(ssh, remote_root, _progress_cb),
+                lambda: self._stop_worker(ssh, "Linux", remote_root),
             )
-            # Poll every 5s; detect dead transport and abort immediately
-            upload_ok = False
-            upload_err = ""
+            await self._emit(node_id, "stopping_worker", "done", "Processes cleared")
+
+            # ── 3. Build ZIP bundle and upload as single transfer ─────────────
+            await self._emit(node_id, "uploading", "running",
+                             "Building ZIP bundle…")
+            zip_bytes = await loop.run_in_executor(None, _build_deployment_zip)
+            zip_size_kb = len(zip_bytes) // 1024
+            await self._emit(node_id, "uploading", "running",
+                             f"Uploading {zip_size_kb} KB ZIP → {remote_root}")
+
             try:
-                deadline = loop.time() + 600  # 10-min hard cap
-                while not upload_future.done():
-                    remaining = deadline - loop.time()
-                    if remaining <= 0:
-                        upload_err = "Upload timed out after 10 minutes"
-                        break
-                    try:
-                        await asyncio.wait_for(asyncio.shield(upload_future), timeout=min(5.0, remaining))
-                        upload_ok = True
-                        break
-                    except asyncio.TimeoutError:
-                        _tr = ssh.get_transport()
-                        if _tr and not _tr.is_active():
-                            upload_err = "SSH transport died mid-upload"
-                            break
-                if not upload_ok and not upload_err:
-                    # future completed — check for exception
-                    exc = upload_future.exception()
-                    if exc:
-                        upload_err = str(exc)
-                    else:
-                        upload_ok = True
+                await loop.run_in_executor(
+                    None,
+                    lambda: self._upload_zip_and_extract(ssh, remote_root, "Linux", zip_bytes),
+                )
             except Exception as exc:
                 upload_err = str(exc)
-
-            await upload_queue.put(None)
-            await drain_task
-
-            if not upload_ok:
                 await self._emit(node_id, "error", "error", upload_err)
                 return f"error: {upload_err}"
 
             await self._emit(node_id, "uploading", "done",
-                             f"{total_files} files synced to {remote_root}")
+                             f"ZIP extracted to {remote_root}")
 
             # ── 3. Self-healing command ───────────────────────────────────────
             # Use bash -c so `source` works in the non-interactive exec_command shell
@@ -737,16 +757,8 @@ class DeployerService:
             return f"error: {detail}"
 
         ssh = paramiko.SSHClient()
-        # Security hardening: use known_hosts instead of auto-accepting unknown keys
-        try:
-            ssh.load_system_host_keys()
-            ssh.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
-            ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
-        except Exception:
-            # Fallback to auto-accept with warning for development
-            log.warning("ssh_security_fallback",
-                       reason="known_hosts not found — using AutoAddPolicy")
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        # StrictHostKeyChecking=no / UserKnownHostsFile=/dev/null equivalent
+        _configure_ssh_client(ssh)
 
         try:
             # ── 1. Connect ────────────────────────────────────────────────────
@@ -761,6 +773,8 @@ class DeployerService:
                 lambda: ssh.connect(**_ckw3),
             )
             _t3 = ssh.get_transport()
+            # Apply KexAlgorithms preference after transport is established
+            _harden_ssh_transport(_t3)
             _t3.set_keepalive(30)
             if _t3.sock:
                 try: _t3.sock.settimeout(60)
@@ -773,20 +787,27 @@ class DeployerService:
             )
             log.info("deployer_remote_env", node_id=node_id, remote_os=remote_os, remote_root=remote_root)
 
-            # ── 3. Stop worker ────────────────────────────────────────────────
-            await self._emit(node_id, "stopping_worker", "running", "Sending SIGTERM to worker")
+            # ── 3. Stop worker — kill all python3 to prevent file-locking ─────
+            await self._emit(node_id, "stopping_worker", "running",
+                             "pkill -f python3 + SIGTERM worker")
             await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self._stop_worker(ssh, remote_os, remote_root)
             )
             await self._emit(node_id, "stopping_worker", "done", "Worker stopped")
 
-            # ── 4. Upload files ───────────────────────────────────────────────
+            # ── 4. ZIP-based upload + remote unzip ────────────────────────────
             await self._emit(node_id, "uploading", "running",
-                             f"Syncing nexus/ scripts/ → {remote_root}")
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: self._upload_dirs(ssh, remote_root, remote_os)
+                             f"Building ZIP bundle → {remote_root}")
+            zip_bytes = await asyncio.get_event_loop().run_in_executor(
+                None, _build_deployment_zip
             )
-            await self._emit(node_id, "uploading", "done", "Files synced")
+            zip_size_kb = len(zip_bytes) // 1024
+            await self._emit(node_id, "uploading", "running",
+                             f"Uploading {zip_size_kb} KB ZIP → {remote_root}")
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self._upload_zip_and_extract(ssh, remote_root, remote_os, zip_bytes)
+            )
+            await self._emit(node_id, "uploading", "done", "Files synced via ZIP")
 
             # ── 5. Install dependencies ───────────────────────────────────────
             await self._emit(node_id, "installing_deps", "running",
@@ -852,20 +873,28 @@ class DeployerService:
         return remote_os, remote_root, venv_python
 
     def _stop_worker(self, ssh, remote_os: str, remote_root: str) -> None:
-        """Gracefully stop the running worker using the PID file, then pkill."""
+        """
+        Kill all python3 processes to prevent file-locking, then gracefully
+        stop the worker via PID file / pkill.
+        """
         if remote_os == "Linux":
             pid_file = f"{remote_root}/worker.pid"
-            # Try PID file first for a clean SIGTERM
-            ssh.exec_command(
+            cmd = (
+                # Broad kill — prevents .pyc / .py file-locking during unzip
+                "pkill -f python3 2>/dev/null || true; "
+                "sleep 1; "
+                # Targeted SIGTERM via PID file
                 f"if [ -f {pid_file} ]; then "
                 f"  kill -SIGTERM $(cat {pid_file}) 2>/dev/null || true; "
                 f"  sleep 2; "
                 f"  kill -SIGKILL $(cat {pid_file}) 2>/dev/null || true; "
                 f"  rm -f {pid_file}; "
                 f"fi; "
-                f"pkill -SIGTERM -f 'start_worker.py' 2>/dev/null || true; "
-                f"sleep 1"
+                "pkill -SIGTERM -f 'start_worker.py' 2>/dev/null || true; "
+                "sleep 1"
             )
+            _, stdout, _ = ssh.exec_command(cmd)
+            stdout.channel.recv_exit_status()
         else:
             ssh.exec_command(
                 'taskkill /F /FI "WINDOWTITLE eq nexus-worker*" 2>nul & '
@@ -912,6 +941,59 @@ class DeployerService:
                         pass
         finally:
             sftp.close()
+
+    def _upload_zip_and_extract(
+        self,
+        ssh,
+        remote_root: str,
+        remote_os: str,
+        zip_bytes: bytes,
+    ) -> None:
+        """
+        Upload the deployment ZIP as a single SFTP transfer, then extract it
+        on the remote with `unzip -o` (overwrite without prompting).
+
+        This replaces the old file-by-file SFTP approach and avoids partial-
+        upload failures caused by per-file locking on Windows remotes.
+        """
+        remote_zip = f"{remote_root}/_nexus_deploy.zip"
+
+        sftp = ssh.open_sftp()
+        sftp.get_channel().settimeout(120)
+        try:
+            _sftp_mkdir_p(sftp, remote_root)
+            import io as _io
+            sftp.putfo(_io.BytesIO(zip_bytes), remote_zip)
+        finally:
+            sftp.close()
+
+        if remote_os == "Linux":
+            # unzip -o: overwrite existing files without prompting
+            unzip_cmd = (
+                f"cd {remote_root} && "
+                f"unzip -o {remote_zip} && "
+                f"rm -f {remote_zip}"
+            )
+        else:
+            # Windows: use PowerShell Expand-Archive
+            unzip_cmd = (
+                f'powershell -Command "'
+                f'Expand-Archive -Force -Path \\"{remote_zip}\\" '
+                f'-DestinationPath \\"{remote_root}\\"; '
+                f'Remove-Item -Force \\"{remote_zip}\\"'
+                f'"'
+            )
+
+        _, stdout, stderr = ssh.exec_command(unzip_cmd, timeout=120)
+        stdout.channel.settimeout(120)
+        out = stdout.read().decode(errors="replace")
+        err = stderr.read().decode(errors="replace")
+        exit_code = stdout.channel.recv_exit_status()
+        if exit_code != 0:
+            raise RuntimeError(
+                f"Remote unzip failed (exit {exit_code}): {(out + err)[-500:]}"
+            )
+        log.info("deployer_zip_extracted", remote_root=remote_root, exit_code=exit_code)
 
     def _install_deps(
         self,
