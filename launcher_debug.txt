@@ -4234,3 +4234,17 @@ eded the max restart limit (3). Manual intervention required.
 [launcher] spawn [git-sync]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
 [auto-worker] No worker heartbeats — auto-spawning local worker…
 [auto-worker] Worker spawned — pid=4944
+[launcher] received signal 2; kill_all()
+
+========================================================================
+[launcher] session start 2026-03-26 22:56:04
+[launcher] EXE=C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe  frozen=False
+========================================================================
+
+╔══════════════════════════════════════════════════════════════════════╗
+║   NEXUS OS — HATAN INDUSTRIES — UNIFIED TERMINAL MULTIPLEXER        ║
+║   Frontend  → http://localhost:3000                                  ║
+║   Deployer  → http://localhost:8002                                  ║
+║   API       → http://localhost:8001                                  ║
+╚══════════════════════════════════════════════════════════════════════╝
+✅ [HATAN INDUSTRIES] ISRAELI SWARM ACTIVE - 5,000 MEMBER SIMULATION RUNNING

@@ -208,42 +208,131 @@ async def set_session_inventory(body: dict, redis: RedisDep) -> dict[str, Any]:
 @router.get("/sessions/all_scanned", summary="Get all scanned sessions across nodes")
 async def get_all_scanned(redis: RedisDep) -> dict[str, Any]:
     """
-    Returns sessions_by_machine shape expected by the dashboard.
+    Bridge endpoint: aggregates sessions from all three Redis sources into a
+    unified sessions_by_machine map.
+
+    Sources (in order of priority, deduplicated by redis_key):
+    1. ``session:*``                  — session_manager process heartbeats (TTL 120s)
+    2. ``nexus:sessions:*``           — deployer worker sessions
+    3. ``nexus:session_vault:meta:*`` — vault Telethon session metadata
     """
     sessions_by_machine: dict[str, list[dict[str, Any]]] = {}
+    seen_keys: set[str] = set()
 
-    cursor = 0
-    while True:
-        cursor, keys = await redis.scan(cursor=cursor, match="nexus:sessions:all_scanned:*", count=100)
-        for key in keys:
-            raw = await redis.get(key)
-            if not raw:
-                continue
-            try:
-                node_data = json.loads(raw)
-                machine = key.replace("nexus:sessions:all_scanned:", "")
-                sessions = node_data if isinstance(node_data, list) else node_data.get("sessions", [])
-                if sessions:
-                    sessions_by_machine[machine] = sessions
-            except Exception:
-                pass
-        if cursor == 0:
-            break
+    def _add(machine: str, entry: dict[str, Any]) -> None:
+        rk = entry.get("redis_key", "")
+        if rk and rk in seen_keys:
+            return
+        if rk:
+            seen_keys.add(rk)
+        sessions_by_machine.setdefault(machine, []).append(entry)
 
-    raw_legacy = await redis.get(_ALL_SCANNED_KEY)
-    if raw_legacy:
-        try:
-            legacy = json.loads(raw_legacy)
-            if isinstance(legacy, dict) and "sessions_by_machine" in legacy:
-                for m, sessions in (legacy.get("sessions_by_machine") or {}).items():
-                    if m not in sessions_by_machine:
-                        sessions_by_machine[m] = sessions
-            elif isinstance(legacy, list):
-                mid = _machine_id()
-                if mid not in sessions_by_machine:
-                    sessions_by_machine[mid] = legacy
-        except Exception:
-            pass
+    # ── Source 1: session:* (session_manager heartbeats) ──────────────────────
+    try:
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(cursor=cursor, match="session:*", count=200)
+            for key in keys:
+                ks = key.decode() if isinstance(key, bytes) else str(key)
+                raw = await redis.get(ks)
+                if not raw:
+                    continue
+                try:
+                    d = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(d, dict):
+                    continue
+                machine = str(d.get("computer_name") or _machine_id()).strip() or _machine_id()
+                _add(machine, {
+                    "redis_key": ks,
+                    "phone_number": str(d.get("session_id") or ""),
+                    "origin_machine": machine,
+                    "status": str(d.get("status") or "active"),
+                    "last_scanned_target": "session_manager",
+                    "last_seen": d.get("last_seen"),
+                    "session_id": str(d.get("session_id") or ""),
+                    "source": "session_manager",
+                })
+            if cursor == 0:
+                break
+    except Exception:
+        pass
+
+    # ── Source 2: nexus:sessions:* (deployer worker sessions) ─────────────────
+    _skip_prefixes = (
+        "nexus:sessions:all_scanned",
+        "nexus:sessions:inventory",
+        "nexus:session_vault",
+    )
+    try:
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(cursor=cursor, match="nexus:sessions:*", count=200)
+            for key in keys:
+                ks = key.decode() if isinstance(key, bytes) else str(key)
+                if any(ks.startswith(p) for p in _skip_prefixes):
+                    continue
+                raw = await redis.get(ks)
+                if not raw:
+                    continue
+                try:
+                    d = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(d, dict):
+                    continue
+                machine = str(d.get("machine_id") or d.get("computer_name") or _machine_id()).strip()
+                phone = str(d.get("phone") or d.get("phone_number") or d.get("session_id") or "")
+                _add(machine, {
+                    "redis_key": ks,
+                    "phone_number": phone,
+                    "origin_machine": machine,
+                    "status": str(d.get("status") or "active"),
+                    "last_scanned_target": "deployer",
+                    "last_seen": d.get("last_seen") or d.get("last_heartbeat"),
+                    "session_id": str(d.get("session_id") or ""),
+                    "source": "deployer",
+                })
+            if cursor == 0:
+                break
+    except Exception:
+        pass
+
+    # ── Source 3: nexus:session_vault:meta:* (vault metadata) ─────────────────
+    try:
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(cursor=cursor, match="nexus:session_vault:meta:*", count=200)
+            for key in keys:
+                ks = key.decode() if isinstance(key, bytes) else str(key)
+                raw = await redis.get(ks)
+                if not raw:
+                    continue
+                try:
+                    d = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(d, dict):
+                    continue
+                machine = _machine_id()
+                stem = ks.replace("nexus:session_vault:meta:", "")
+                phone = str(d.get("phone") or d.get("phone_number") or "")
+                username = str(d.get("username") or d.get("first_name") or stem)
+                _add(machine, {
+                    "redis_key": ks,
+                    "phone_number": phone or username,
+                    "origin_machine": machine,
+                    "status": str(d.get("status") or d.get("health") or "unknown"),
+                    "last_scanned_target": "vault",
+                    "last_seen": d.get("last_seen") or d.get("probed_at"),
+                    "session_id": stem,
+                    "source": "vault",
+                })
+            if cursor == 0:
+                break
+    except Exception:
+        pass
 
     machines = list(sessions_by_machine.keys())
     total = sum(len(v) for v in sessions_by_machine.values())
