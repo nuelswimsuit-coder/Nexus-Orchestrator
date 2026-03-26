@@ -1094,7 +1094,7 @@ export function SystemRepairBanner({
   isHighContrast?: boolean;
 }) {
   const [phase, setPhase] = useState<RepairPhase>("none");
-  const timer = useRef<ReturnType<typeof setTimeout>>();
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     if (hasError) {

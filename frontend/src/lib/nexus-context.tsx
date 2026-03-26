@@ -42,6 +42,11 @@ interface NexusContextValue {
   setDeployingNode: (node_id: string, active: boolean) => void;
   deployPhase: DeployPhase;
   setDeployPhase: (phase: DeployPhase) => void;
+  deployLiveStep?: string;
+  setDeployLiveStep?: (step: string) => void;
+  // Command Control Suite active project
+  activeCcProject: string;
+  setActiveCcProject: (project: string) => void;
 }
 
 const NexusContext = createContext<NexusContextValue>({
@@ -56,6 +61,8 @@ const NexusContext = createContext<NexusContextValue>({
   setDeployingNode: () => {},
   deployPhase: "idle",
   setDeployPhase: () => {},
+  activeCcProject: "nuel",
+  setActiveCcProject: () => {},
 });
 
 export function NexusProvider({ children }: { children: ReactNode }) {
@@ -89,6 +96,7 @@ export function NexusProvider({ children }: { children: ReactNode }) {
 
   const [deployingNodes, setDeployingNodes] = useState<Set<string>>(new Set());
   const [deployPhase, setDeployPhase]       = useState<DeployPhase>("idle");
+  const [activeCcProject, setActiveCcProject] = useState<string>("nuel");
 
   const setDeployingNode = useCallback((node_id: string, active: boolean) => {
     setDeployingNodes((prev) => {
@@ -113,6 +121,8 @@ export function NexusProvider({ children }: { children: ReactNode }) {
         setDeployingNode,
         deployPhase,
         setDeployPhase,
+        activeCcProject,
+        setActiveCcProject,
       }}
     >
       {children}

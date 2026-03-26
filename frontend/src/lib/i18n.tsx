@@ -260,6 +260,51 @@ const translations = {
   repair_state_error:    { en: "ERROR",      he: "שגיאה" },
   repair_state_repairing:{ en: "REPAIRING",  he: "מתקן" },
   repair_state_resolved: { en: "RESOLVED",   he: "תוקן" },
+
+  // ── Autonomy control ──────────────────────────────────────────────────────
+  "autonomy.title":        { en: "Autonomy Mode",      he: "מצב אוטונומיה" },
+  "autonomy.mode_manual":  { en: "Manual",             he: "ידני" },
+  "autonomy.mode_assisted":{ en: "Assisted",           he: "מסייע" },
+  "autonomy.mode_pilot":   { en: "Auto-Pilot",         he: "טייס אוטומטי" },
+  "autonomy.desc_manual":  { en: "Full manual control",he: "שליטה ידנית מלאה" },
+  "autonomy.desc_assisted":{ en: "AI suggestions",     he: "הצעות AI" },
+  "autonomy.desc_pilot":   { en: "Fully autonomous",   he: "אוטונומי לחלוטין" },
+
+  // ── Paper trading ─────────────────────────────────────────────────────────
+  "paper_trading.amount":       { en: "Amount",           he: "כמות" },
+  "paper_trading.btc_price":    { en: "BTC Price",        he: "מחיר BTC" },
+  "paper_trading.entry_price":  { en: "Entry Price",      he: "מחיר כניסה" },
+  "paper_trading.no_trades":    { en: "No trades yet",    he: "אין עסקאות עדיין" },
+  "paper_trading.open":         { en: "Open",             he: "פתוח" },
+  "paper_trading.total_pnl":    { en: "Total P&L",        he: "רווח/הפסד כולל" },
+  "paper_trading.trade_log_sub":{ en: "Virtual trade log",he: "יומן עסקאות וירטואלי" },
+  "paper_trading.trade_log_title":{ en: "Trade Log",      he: "יומן עסקאות" },
+
+  // ── Status labels ─────────────────────────────────────────────────────────
+  "status.error":    { en: "Error",    he: "שגיאה" },
+  "status.loading":  { en: "Loading",  he: "טוען" },
+  status_breakeven:  { en: "Breakeven",he: "איזון" },
+  status_loss:       { en: "Loss",     he: "הפסד" },
+  status_profitable: { en: "Profit",   he: "רווח" },
+
+  // ── Session / fleet metrics ───────────────────────────────────────────────
+  active_sessions:   { en: "Active Sessions", he: "סשנים פעילים" },
+  total_sessions:    { en: "Total Sessions",  he: "סה\"כ סשנים" },
+  cost_per_session:  { en: "Cost/Session",    he: "עלות/סשן" },
+  fuel_level:        { en: "Fuel Level",      he: "רמת דלק" },
+  session_fuel:      { en: "Session Fuel",    he: "דלק סשן" },
+  profit_per_min:    { en: "Profit/Min",      he: "רווח/דקה" },
+  healthy:           { en: "Healthy",         he: "תקין" },
+  low:               { en: "Low",             he: "נמוך" },
+  otp_unavailable:   { en: "OTP unavailable", he: "OTP לא זמין" },
+
+  // ── Dashboard / overview ──────────────────────────────────────────────────
+  overview_nuel_sub:   { en: "Neural overview",    he: "סקירה נוירלית" },
+  overview_ops_sub:    { en: "Operations summary", he: "סיכום פעולות" },
+  proj_monthly:        { en: "Monthly projection", he: "תחזית חודשית" },
+  project_scope_hint:  { en: "Project scope",      he: "היקף פרויקט" },
+  sidebar_command_bar: { en: "Command Bar",         he: "שורת פקודה" },
+  regenerate:          { en: "Regenerate",          he: "צור מחדש" },
 } as const;
 
 export type TranslationKey = keyof typeof translations;

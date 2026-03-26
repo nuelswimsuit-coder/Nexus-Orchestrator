@@ -1156,8 +1156,9 @@ export function rotateProxy(): Promise<RotateProxyResponse> {
 // ── AI Terminal ───────────────────────────────────────────────────────────────
 
 export interface AiTerminalReply {
-  reply: string;
-  source: string;
+  reply:           string;
+  source:          string;
+  thinking_steps?: string[] | null;
 }
 
 export function postAiTerminalChat(prompt: string): Promise<AiTerminalReply> {

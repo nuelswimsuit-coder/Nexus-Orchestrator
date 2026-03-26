@@ -23,7 +23,7 @@ export default function AITerminal({ embedded }: { embedded?: boolean }) {
     setThinking(null);
     try {
       const r = await postAiTerminalChat(msg);
-      setThinking(r.thinking_steps);
+      setThinking(r.thinking_steps ?? null);
       setLines((L) => [...L, { role: "ai", text: r.reply }]);
     } catch {
       setLines((L) => [
