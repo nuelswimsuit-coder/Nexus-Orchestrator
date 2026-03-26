@@ -350,3 +350,145 @@ async def set_all_scanned(body: dict, redis: RedisDep) -> dict[str, Any]:
     await redis.set(f"{_ALL_SCANNED_KEY}:{machine}", json.dumps(body, ensure_ascii=False))
     await redis.set(_ALL_SCANNED_KEY, json.dumps(body, ensure_ascii=False))
     return {"ok": True, "machine_id": machine}
+
+
+# ── Live AI Swarm — real-time feed endpoints ──────────────────────────────────
+
+_ISRAELI_LAST_MSG_KEY = "nexus:swarm:israeli:last_message"
+_ISRAELI_VERIFIED_KEY = "nexus:swarm:israeli:verified_count"
+_ISRAELI_WRITTEN_KEY = "nexus:swarm:israeli:written_count"
+_ISRAELI_EVENTS_KEY = "nexus:swarm:israeli:events"
+_ISRAELI_STATUS_KEY = "nexus:swarm:israeli:status"
+
+
+class SwarmStartBody(BaseModel):
+    target_group: str = Field(default="", description="Telegram group invite link or @username")
+
+
+@router.get("/live-feed", summary="Live feed snapshot for the Live AI Swarm tab")
+async def get_live_feed(redis: RedisDep) -> dict[str, Any]:
+    """
+    Reads live state written by IsraeliSwarmEngine from Redis and returns
+    the SwarmFeedData shape expected by the frontend LiveSwarmView component.
+    """
+    last_msg_raw = await redis.get(_ISRAELI_LAST_MSG_KEY)
+    verified_raw = await redis.get(_ISRAELI_VERIFIED_KEY)
+    written_raw = await redis.get(_ISRAELI_WRITTEN_KEY)
+    status_raw = await redis.get(_ISRAELI_STATUS_KEY)
+    events_raw: list[str] = await redis.lrange(_ISRAELI_EVENTS_KEY, -20, -1)
+
+    last_message = ""
+    last_message_ts: float = 0.0
+    last_sender_phone = ""
+    if last_msg_raw:
+        try:
+            lm = json.loads(last_msg_raw)
+            last_message = lm.get("message", "")
+            last_sender_phone = lm.get("phone", "")
+            ts_raw = lm.get("ts", "")
+            if ts_raw:
+                from datetime import datetime, timezone as _tz
+                try:
+                    last_message_ts = datetime.fromisoformat(ts_raw).replace(
+                        tzinfo=_tz.utc
+                    ).timestamp()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    verified_count = int(verified_raw or 0)
+    written_count = int(written_raw or 0)
+    is_running = (status_raw or "").strip().lower() == "running"
+
+    # Build deduplicated bot list from recent events
+    bots_by_phone: dict[str, dict[str, Any]] = {}
+    for ev_raw in events_raw:
+        try:
+            ev = json.loads(ev_raw)
+            phone = ev.get("phone", "")
+            if not phone:
+                continue
+            if phone not in bots_by_phone:
+                bots_by_phone[phone] = {
+                    "phone": phone,
+                    "machine_id": ev.get("engine", "israeli_swarm"),
+                    "is_active": True,
+                    "messages_sent": 0,
+                    "last_message": "",
+                    "is_king": False,
+                }
+            bots_by_phone[phone]["messages_sent"] += 1
+            bots_by_phone[phone]["last_message"] = ev.get("message", "")
+        except Exception:
+            pass
+
+    bots = list(bots_by_phone.values())
+    active_talkers = len([b for b in bots if b["is_active"]])
+
+    # total_sessions: count .session files in vault/sessions if accessible
+    total_sessions = 0
+    try:
+        import pathlib as _pathlib
+        import os as _os
+        vault_sessions = _pathlib.Path(
+            _os.getenv("VAULT_SESSIONS_DIR", "") or
+            _pathlib.Path(__file__).resolve().parent.parent.parent.parent / "vault" / "sessions"
+        )
+        if vault_sessions.is_dir():
+            total_sessions = sum(1 for _ in vault_sessions.glob("*.session"))
+    except Exception:
+        pass
+
+    # recent_messages: last 10 events as a message feed
+    recent_messages: list[dict[str, Any]] = []
+    for ev_raw in events_raw[-10:]:
+        try:
+            ev = json.loads(ev_raw)
+            if ev.get("message"):
+                recent_messages.append({
+                    "phone": ev.get("phone", ""),
+                    "message": ev.get("message", ""),
+                    "topic": ev.get("topic", ""),
+                    "ts": ev.get("ts", ""),
+                })
+        except Exception:
+            pass
+
+    return {
+        "total_in_group": len(bots),
+        "active_talkers": active_talkers,
+        "last_message": last_message,
+        "last_message_ts": last_message_ts,
+        "last_sender_phone": last_sender_phone,
+        "is_running": is_running,
+        "bots": bots,
+        "verified_count": verified_count,
+        "written_count": written_count,
+        "total_sessions": total_sessions,
+        "recent_messages": recent_messages,
+    }
+
+
+@router.post("/start", summary="Signal the Live AI Swarm to start")
+async def start_swarm(body: SwarmStartBody, redis: RedisDep) -> dict[str, Any]:
+    """
+    Marks the swarm as running in Redis. The actual IsraeliSwarmEngine process
+    is managed by the launcher via SWARM_GROUP_LINK env var; this endpoint
+    updates the status flag so the UI reflects the correct state.
+    """
+    await redis.set(_ISRAELI_STATUS_KEY, "running")
+    if body.target_group:
+        await redis.set("nexus:swarm:israeli:target_group", body.target_group)
+    log.info("swarm_start_requested", target_group=body.target_group or "(env)")
+    return {"ok": True, "status": "running"}
+
+
+@router.post("/stop", summary="Signal the Live AI Swarm to stop")
+async def stop_swarm(redis: RedisDep) -> dict[str, Any]:
+    """
+    Marks the swarm as stopped in Redis so the UI reflects the correct state.
+    """
+    await redis.set(_ISRAELI_STATUS_KEY, "stopped")
+    log.info("swarm_stop_requested")
+    return {"ok": True, "status": "stopped"}

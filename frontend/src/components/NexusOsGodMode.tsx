@@ -82,6 +82,9 @@ interface SwarmSession {
   origin_machine: string;
   status: string;
   last_scanned_target: string;
+  last_seen?: number | null;
+  session_id?: string;
+  source?: "session_manager" | "deployer" | "vault" | string;
 }
 
 interface AllScannedResponse {
@@ -504,8 +507,8 @@ interface HistoryEntry {
   type?: string;
 }
 
-function _relativeTime(epoch: number): string {
-  if (!epoch) return "";
+function _relativeTime(epoch: number | null | undefined): string {
+  if (!epoch) return "—";
   const diffMs = Date.now() - epoch;
   const diffSec = Math.floor(diffMs / 1000);
   if (diffSec < 60) return `לפני ${diffSec} שנ'`;
@@ -2155,7 +2158,14 @@ function PolymarketTradingView({
   const [positionBatchCmds, setPositionBatchCmds] = useState<Record<string, string>>({});
 
   // ── SWR data feeds ───────────────────────────────────────────────────────
-  const { data: bot } = useSWR<PolyBotPnL>(`${API_BASE}/api/prediction/polymarket-bot`, swrFetcher, { refreshInterval: 5_000 });
+  const { data: bot } = useSWR<PolyBotPnL>(`${API_BASE}/api/prediction/polymarket-bot`, swrFetcher, {
+    refreshInterval: 5_000,
+    onSuccess: (d) => {
+      // #region agent log
+      fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',hypothesisId:'H-D/H-E',location:'NexusOsGodMode.tsx:bot_swr',message:'bot_data_received',data:{available:d?.available,session_active:d?.session_active,session_stage:d?.session_stage,session_node_id:d?.session_node_id,last_action:d?.last_action,market_question:d?.market_question,yes_price:d?.yes_price,open_position:d?.open_position},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    },
+  });
   const { data: perf } = useSWR<PaperPerf>(`${API_BASE}/api/prediction/performance`, swrFetcher, { refreshInterval: 12_000 });
   const { data: poly5m } = useSWR<Poly5mData>(`${API_BASE}/api/prediction/poly5m-scalper`, swrFetcher, { refreshInterval: 10_000 });
   const { data: cx } = useSWR<CrossExchangeData>(`${API_BASE}/api/prediction/cross-exchange`, swrFetcher, { refreshInterval: 8_000 });
@@ -2168,6 +2178,9 @@ function PolymarketTradingView({
       ? `${API_BASE}/api/polymarket/orderbook?token_id=${encodeURIComponent(id)}`
       : `${API_BASE}/api/polymarket/orderbook`;
     setObLoading(true);
+    // #region agent log
+    fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',hypothesisId:'H-B/H-D',location:'NexusOsGodMode.tsx:fetchOrderbook',message:'orderbook_fetch_attempt',data:{tokenId_state:tokenId,tid_arg:tid,resolved_id:id,url,bot_session_active:(window as unknown as Record<string,unknown>).__nexus_bot_session_active},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     try {
       const res = await fetch(url);
       if (!res.ok) {
@@ -2179,6 +2192,9 @@ function PolymarketTradingView({
       setObError(null);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // #region agent log
+      fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',hypothesisId:'H-B/H-C',location:'NexusOsGodMode.tsx:fetchOrderbook_error',message:'orderbook_fetch_error',data:{tokenId_state:tokenId,resolved_id:id,error_msg:msg},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       setObError(msg.includes("404") || msg.includes("Failed to fetch") ? "TOKEN_ID REQUIRED — NO ACTIVE BOT TOKEN FOUND IN REDIS" : msg);
       setOrderbook(null);
     } finally {
@@ -4158,6 +4174,20 @@ function SwarmMonitorView() {
   );
 }
 
+
+function _sourceBadge(source: string | undefined) {
+  switch (source) {
+    case "session_manager":
+      return <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-cyan-500/15 text-cyan-400 whitespace-nowrap">heartbeat</span>;
+    case "deployer":
+      return <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-purple-500/15 text-purple-400 whitespace-nowrap">deployer</span>;
+    case "vault":
+      return <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-amber-500/15 text-amber-400 whitespace-nowrap">vault</span>;
+    default:
+      return <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-slate-800 text-slate-500 whitespace-nowrap">{source || "—"}</span>;
+  }
+}
+
 function SessionSwarmView() {
   const [data, setData] = useState<AllScannedResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -4166,19 +4196,10 @@ function SessionSwarmView() {
   const load = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/swarm/sessions/all_scanned`);
-      // #region agent log
-      fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dfb50f'},body:JSON.stringify({sessionId:'dfb50f',location:'NexusOsGodMode.tsx:fetch-response',message:'API response status',data:{ok:res.ok,status:res.status},timestamp:Date.now(),hypothesisId:'H-B'})}).catch(()=>{});
-      // #endregion
       if (!res.ok) throw new Error(String(res.status));
       const j = (await res.json()) as AllScannedResponse;
-      // #region agent log
-      fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dfb50f'},body:JSON.stringify({sessionId:'dfb50f',location:'NexusOsGodMode.tsx:after-json',message:'Parsed JSON shape',data:{typeofJ:typeof j,isNull:j===null,keys:j && typeof j==='object' ? Object.keys(j) : null, sessions_by_machine_type: j ? typeof (j as AllScannedResponse).sessions_by_machine : 'N/A', sessions_by_machine_val: j ? String((j as AllScannedResponse).sessions_by_machine).slice(0,100) : 'N/A'},timestamp:Date.now(),hypothesisId:'H-A,H-B,H-C'})}).catch(()=>{});
-      // #endregion
       setData(j);
     } catch (err) {
-      // #region agent log
-      fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dfb50f'},body:JSON.stringify({sessionId:'dfb50f',location:'NexusOsGodMode.tsx:catch',message:'Fetch error',data:{err:String(err)},timestamp:Date.now(),hypothesisId:'H-B'})}).catch(()=>{});
-      // #endregion
       console.error("SessionSwarm fetch error:", err);
     } finally {
       setLoading(false);
@@ -4193,25 +4214,25 @@ function SessionSwarmView() {
 
   const q = search.trim().toLowerCase();
 
-  // #region agent log
-  fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dfb50f'},body:JSON.stringify({sessionId:'dfb50f',location:'NexusOsGodMode.tsx:before-entries',message:'data state before Object.entries',data:{dataIsNull:data===null,dataType:typeof data,hasSBM:data ? 'sessions_by_machine' in data : false, sbmType: data ? typeof (data as AllScannedResponse).sessions_by_machine : 'N/A', sbmIsNull: data ? (data as AllScannedResponse).sessions_by_machine === null : false},timestamp:Date.now(),hypothesisId:'H-A,H-D'})}).catch(()=>{});
-  // #endregion
-
   const filteredMachines: [string, SwarmSession[]][] = data
     ? Object.entries(data.sessions_by_machine ?? {})
         .map(([machine, sessions]) => {
           const filtered = q
             ? sessions.filter(
                 (s) =>
-                  s.phone_number.toLowerCase().includes(q) ||
-                  s.origin_machine.toLowerCase().includes(q) ||
-                  s.status.toLowerCase().includes(q),
+                  (s.phone_number ?? "").toLowerCase().includes(q) ||
+                  (s.origin_machine ?? "").toLowerCase().includes(q) ||
+                  (s.status ?? "").toLowerCase().includes(q) ||
+                  (s.session_id ?? "").toLowerCase().includes(q) ||
+                  (s.source ?? "").toLowerCase().includes(q),
               )
             : sessions;
           return [machine, filtered] as [string, SwarmSession[]];
         })
         .filter(([, sessions]) => sessions.length > 0)
     : [];
+
+  const NODE_NAME = typeof window !== "undefined" ? window.location.hostname : "";
 
   return (
     <div className="bg-slate-900/40 border border-slate-800 rounded-[2.5rem] p-10 animate-in fade-in">
@@ -4226,8 +4247,14 @@ function SessionSwarmView() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <div className="text-xs text-slate-500 font-mono bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-xl">
-            {data?.total ?? 0} sessions
+          <div className="flex items-center gap-2 text-xs font-mono bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-xl">
+            <span className="text-cyan-400 font-bold">{data?.total ?? 0}</span>
+            <span className="text-slate-500">sessions</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-cyan-500/15 text-cyan-400">heartbeat</span>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-purple-500/15 text-purple-400">deployer</span>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-amber-500/15 text-amber-400">vault</span>
           </div>
           <button
             type="button"
@@ -4243,7 +4270,7 @@ function SessionSwarmView() {
         <Search size={16} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
         <input
           type="text"
-          placeholder="חפש לפי מספר טלפון, מחשב, סטטוס..."
+          placeholder="חפש לפי מספר טלפון, session ID, מחשב, סטטוס, מקור..."
           className="w-full bg-slate-950 border border-slate-800 rounded-2xl py-3 pr-11 pl-4 text-sm text-slate-200 placeholder:text-slate-600 focus:border-cyan-500/50 focus:outline-none transition"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -4259,14 +4286,20 @@ function SessionSwarmView() {
       )}
 
       {!loading && filteredMachines.length === 0 && (
-        <div className="text-center py-16 text-slate-500 text-sm">
-          {q ? "לא נמצאו תוצאות לחיפוש זה." : "0 SESSIONS ACTIVE"}
+        <div className="text-center py-16 text-slate-600 text-sm space-y-2">
+          <div className="text-2xl">📭</div>
+          <div>{q ? "לא נמצאו תוצאות לחיפוש זה." : "אין סשנים פעילים ב-Redis"}</div>
+          {!q && (
+            <div className="text-xs text-slate-700 mt-1">
+              ממתין ל-heartbeats מ-session_manager, deployer, או vault
+            </div>
+          )}
         </div>
       )}
 
       <div className="space-y-8">
         {filteredMachines.map(([machine, sessions]) => {
-          const isMaster = machine === "Jacob-PC";
+          const isMaster = machine === NODE_NAME || machine === "Yarin-PC";
           return (
             <div key={machine}>
               <div className={`flex items-center gap-3 mb-3 ${isMaster ? "text-cyan-300" : "text-slate-400"}`}>
@@ -4280,10 +4313,11 @@ function SessionSwarmView() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-slate-950/60 text-slate-500 text-[11px] uppercase tracking-widest">
-                      <th className="px-5 py-3 text-right font-bold">טלפון</th>
-                      <th className="px-5 py-3 text-right font-bold">מחשב מקור</th>
+                      <th className="px-5 py-3 text-right font-bold">טלפון / זהות</th>
+                      <th className="px-5 py-3 text-right font-bold">Session ID</th>
                       <th className="px-5 py-3 text-right font-bold">סטטוס</th>
-                      <th className="px-5 py-3 text-right font-bold">יעד אחרון</th>
+                      <th className="px-5 py-3 text-right font-bold">מקור</th>
+                      <th className="px-5 py-3 text-right font-bold">נראה לאחרונה</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -4299,22 +4333,27 @@ function SessionSwarmView() {
                         <td className={`px-5 py-3 font-mono font-bold ${isMaster ? "text-cyan-300" : "text-slate-200"}`}>
                           {s.phone_number || "—"}
                         </td>
-                        <td className={`px-5 py-3 font-bold ${isMaster ? "text-cyan-300" : "text-slate-300"}`}>
-                          {isMaster ? <span className="font-black">👑 {machine}</span> : machine}
+                        <td className="px-5 py-3 font-mono text-xs text-slate-500 max-w-[180px] truncate" title={s.session_id}>
+                          {s.session_id || "—"}
                         </td>
                         <td className="px-5 py-3">
                           <span className={`text-[11px] font-bold px-2 py-0.5 rounded-lg ${
-                            s.status === "active" || s.status === "online"
+                            s.status === "active" || s.status === "online" || s.status === "green"
                               ? "bg-emerald-500/15 text-emerald-400"
-                              : s.status === "banned" || s.status === "error"
+                              : s.status === "banned" || s.status === "error" || s.status === "red"
                                 ? "bg-rose-500/15 text-rose-400"
-                                : "bg-slate-800 text-slate-400"
+                                : s.status === "idle" || s.status === "yellow"
+                                  ? "bg-yellow-500/15 text-yellow-400"
+                                  : "bg-slate-800 text-slate-400"
                           }`}>
                             {s.status || "—"}
                           </span>
                         </td>
-                        <td className="px-5 py-3 text-slate-500 font-mono text-xs truncate max-w-[200px]">
-                          {s.last_scanned_target || "—"}
+                        <td className="px-5 py-3">
+                          {_sourceBadge(s.source)}
+                        </td>
+                        <td className="px-5 py-3 text-slate-500 font-mono text-xs">
+                          {_relativeTime(s.last_seen)}
                         </td>
                       </tr>
                     ))}
@@ -5463,6 +5502,13 @@ interface SwarmBot {
   is_king: boolean;
 }
 
+interface SwarmRecentMessage {
+  phone: string;
+  message: string;
+  topic: string;
+  ts: string;
+}
+
 interface SwarmFeedData {
   total_in_group: number;
   active_talkers: number;
@@ -5473,6 +5519,52 @@ interface SwarmFeedData {
   bots: SwarmBot[];
   verified_count?: number;
   written_count?: number;
+  total_sessions?: number;
+  recent_messages?: SwarmRecentMessage[];
+}
+
+function SwarmBotCard({ bot }: { bot: SwarmBot }) {
+  return (
+    <div
+      className={`rounded-2xl p-4 flex flex-col gap-2 border transition ${
+        bot.is_king
+          ? "bg-amber-950/30 border-amber-500/40 shadow-[0_0_16px_rgba(245,158,11,0.15)]"
+          : bot.is_active
+          ? "bg-purple-950/30 border-purple-500/30"
+          : "bg-slate-900/40 border-slate-800"
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        <div
+          className={`w-2 h-2 rounded-full flex-shrink-0 ${
+            bot.is_active ? "bg-purple-400 animate-pulse" : "bg-slate-700"
+          }`}
+        />
+        <span className="text-xs font-black font-mono text-slate-200 truncate flex-1">
+          {bot.phone}
+        </span>
+        {bot.is_king && (
+          <span className="px-1.5 py-0.5 bg-amber-500/20 border border-amber-500/40 text-amber-400 text-[9px] font-black rounded-full uppercase tracking-widest shrink-0">
+            👑 KING
+          </span>
+        )}
+        {bot.is_active && !bot.is_king && (
+          <span className="px-1.5 py-0.5 bg-purple-500/20 border border-purple-500/40 text-purple-400 text-[9px] font-black rounded-full uppercase tracking-widest shrink-0">
+            ACTIVE
+          </span>
+        )}
+      </div>
+      {bot.last_message && (
+        <div className="text-[11px] text-slate-500 line-clamp-2 leading-relaxed">
+          {bot.last_message}
+        </div>
+      )}
+      <div className="flex items-center justify-between mt-auto">
+        <span className="text-[10px] text-slate-600 font-mono truncate">{bot.machine_id}</span>
+        <span className="text-[10px] text-slate-500 shrink-0">{bot.messages_sent} הודעות</span>
+      </div>
+    </div>
+  );
 }
 
 function LiveSwarmView() {
@@ -5481,6 +5573,7 @@ function LiveSwarmView() {
   const [starting, setStarting] = useState(false);
   const [targetGroup, setTargetGroup] = useState("");
   const [statusMsg, setStatusMsg] = useState("");
+  const [swarmTab, setSwarmTab] = useState<"bots" | "feed">("bots");
 
   const fetchFeed = useCallback(async () => {
     try {
@@ -5514,7 +5607,7 @@ function LiveSwarmView() {
         body: JSON.stringify({ target_group: targetGroup }),
       });
       const data = await res.json();
-      if (data.status === "ok") {
+      if (data.ok) {
         setSwarmRunning(true);
         setStatusMsg("✅ הנחיל הופעל בהצלחה!");
       } else {
@@ -5541,6 +5634,8 @@ function LiveSwarmView() {
     ? new Date(feed.last_message_ts * 1000).toLocaleTimeString("he-IL")
     : "—";
 
+  const recentMessages = feed?.recent_messages ?? [];
+
   return (
     <div className="space-y-6" dir="rtl">
       {/* Header */}
@@ -5563,27 +5658,31 @@ function LiveSwarmView() {
       </div>
 
       {/* Stats row */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
-          <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-2">סשנים בקבוצה</div>
-          <div className="text-3xl font-black text-purple-400">{feed?.total_in_group ?? 0}</div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">סשנים בדיסק</div>
+          <div className="text-2xl font-black text-purple-400">{feed?.total_sessions ?? 0}</div>
         </div>
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
-          <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-2">בוטים פעילים</div>
-          <div className="text-3xl font-black text-cyan-400">{feed?.active_talkers ?? 0}</div>
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">בקבוצה</div>
+          <div className="text-2xl font-black text-indigo-400">{feed?.total_in_group ?? 0}</div>
         </div>
-        <div className="bg-slate-900/60 border border-emerald-500/30 rounded-2xl p-5">
-          <div className="text-[10px] text-emerald-500/70 font-bold uppercase tracking-widest mb-2">✅ Verified</div>
-          <div className="text-3xl font-black text-emerald-400">{feed?.verified_count ?? 0}</div>
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">בוטים פעילים</div>
+          <div className="text-2xl font-black text-cyan-400">{feed?.active_talkers ?? 0}</div>
         </div>
-        <div className="bg-slate-900/60 border border-amber-500/30 rounded-2xl p-5">
-          <div className="text-[10px] text-amber-500/70 font-bold uppercase tracking-widest mb-2">✍️ Written</div>
-          <div className="text-3xl font-black text-amber-400">{feed?.written_count ?? 0}</div>
+        <div className="bg-slate-900/60 border border-emerald-500/30 rounded-2xl p-4">
+          <div className="text-[9px] text-emerald-500/70 font-bold uppercase tracking-widest mb-1.5">✅ Verified</div>
+          <div className="text-2xl font-black text-emerald-400">{feed?.verified_count ?? 0}</div>
         </div>
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
-          <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-2">הודעה אחרונה</div>
-          <div className="text-sm font-black text-slate-300 truncate">{feed?.last_message || "—"}</div>
-          <div className="text-[10px] text-slate-600 mt-1">{lastMsgTime}</div>
+        <div className="bg-slate-900/60 border border-amber-500/30 rounded-2xl p-4">
+          <div className="text-[9px] text-amber-500/70 font-bold uppercase tracking-widest mb-1.5">✍️ Written</div>
+          <div className="text-2xl font-black text-amber-400">{feed?.written_count ?? 0}</div>
+        </div>
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">הודעה אחרונה</div>
+          <div className="text-xs font-black text-slate-300 truncate">{feed?.last_message || "—"}</div>
+          <div className="text-[9px] text-slate-600 mt-1">{lastMsgTime}</div>
         </div>
       </div>
 
@@ -5623,45 +5722,91 @@ function LiveSwarmView() {
         )}
       </div>
 
-      {/* Bot list */}
-      {feed && feed.bots.length > 0 && (
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
-            <span className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
-              רשימת בוטים ({feed.bots.length})
-            </span>
+      {/* Tabs: Bots / Live Feed */}
+      {feed && (feed.bots.length > 0 || recentMessages.length > 0) && (
+        <div className="space-y-4">
+          <div className="flex gap-1 bg-slate-900/60 border border-slate-800 rounded-xl p-1 w-fit">
+            <button
+              type="button"
+              onClick={() => setSwarmTab("bots")}
+              className={`px-4 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-widest transition ${
+                swarmTab === "bots"
+                  ? "bg-purple-600/30 text-purple-300 border border-purple-500/40"
+                  : "text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              בוטים ({feed.bots.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSwarmTab("feed")}
+              className={`px-4 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-widest transition ${
+                swarmTab === "feed"
+                  ? "bg-cyan-600/30 text-cyan-300 border border-cyan-500/40"
+                  : "text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              פיד הודעות ({recentMessages.length})
+            </button>
           </div>
-          <div className="divide-y divide-slate-800/60 max-h-96 overflow-y-auto nexus-os-scrollbar">
-            {feed.bots.map((bot) => (
-              <div
-                key={bot.phone}
-                className={`px-6 py-3 flex items-center gap-4 ${bot.is_active ? "bg-purple-500/5" : ""}`}
-              >
-                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${bot.is_active ? "bg-purple-400 animate-pulse" : "bg-slate-700"}`} />
-                <div className="flex-grow min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-black text-slate-200 font-mono">{bot.phone}</span>
-                    {bot.is_king && (
-                      <span className="px-2 py-0.5 bg-amber-500/20 border border-amber-500/40 text-amber-400 text-[10px] font-black rounded-full uppercase tracking-widest">
-                        👑 KING
-                      </span>
-                    )}
-                    {bot.is_active && (
-                      <span className="px-2 py-0.5 bg-purple-500/20 border border-purple-500/40 text-purple-400 text-[10px] font-black rounded-full uppercase tracking-widest">
-                        ACTIVE
-                      </span>
-                    )}
-                  </div>
-                  {bot.last_message && (
-                    <div className="text-[11px] text-slate-500 truncate mt-0.5">{bot.last_message}</div>
-                  )}
+
+          {swarmTab === "bots" && feed.bots.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              {feed.bots.map((bot) => (
+                <SwarmBotCard key={bot.phone} bot={bot} />
+              ))}
+            </div>
+          )}
+
+          {swarmTab === "feed" && (
+            <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden">
+              {recentMessages.length === 0 ? (
+                <div className="px-6 py-10 text-center text-slate-600 text-sm font-bold">
+                  אין הודעות עדיין — הנחיל טרם שלח
                 </div>
-                <div className="text-right flex-shrink-0">
-                  <div className="text-[10px] text-slate-600 font-mono">{bot.machine_id}</div>
-                  <div className="text-[11px] text-slate-500">{bot.messages_sent} הודעות</div>
+              ) : (
+                <div className="divide-y divide-slate-800/60 max-h-[480px] overflow-y-auto nexus-os-scrollbar">
+                  {[...recentMessages].reverse().map((msg, i) => {
+                    const msgTime = msg.ts
+                      ? (() => {
+                          try { return new Date(msg.ts).toLocaleTimeString("he-IL"); }
+                          catch { return msg.ts; }
+                        })()
+                      : "";
+                    return (
+                      <div key={i} className="px-5 py-3 flex gap-3 hover:bg-slate-800/30 transition">
+                        <div className="w-1.5 h-1.5 rounded-full bg-purple-400 mt-1.5 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                            <span className="text-[10px] font-black font-mono text-purple-400">{msg.phone}</span>
+                            {msg.topic && (
+                              <span className="text-[9px] px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded-full text-slate-500 font-bold uppercase tracking-widest">
+                                {msg.topic}
+                              </span>
+                            )}
+                            {msgTime && (
+                              <span className="text-[9px] text-slate-600 font-mono mr-auto">{msgTime}</span>
+                            )}
+                          </div>
+                          <div className="text-sm text-slate-300 leading-relaxed">{msg.message}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
-            ))}
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {feed && feed.bots.length === 0 && recentMessages.length === 0 && (
+        <div className="bg-slate-900/40 border border-slate-800 rounded-2xl px-6 py-12 text-center space-y-2">
+          <div className="text-4xl">🤖</div>
+          <div className="text-slate-400 font-black text-sm">הנחיל לא פעיל</div>
+          <div className="text-slate-600 text-[12px]">
+            הפעל את הנחיל עם קישור לקבוצה כדי להתחיל
           </div>
         </div>
       )}

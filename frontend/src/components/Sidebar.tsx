@@ -44,19 +44,25 @@ const NAV_GROUPS: NavGroup[] = [
   {
     groupLabel: "AUTOMATION",
     items: [
-      { href: "/incubator",    icon: "🧬", labelKey: "incubator",    descKey: "nav_desc_incubator" },
-      { href: "/automation",   icon: "🤖", labelKey: "automation",   descKey: "nav_desc_automation" },
-      { href: "/ai-evolution", icon: "🧠", labelKey: "ai_evolution", descKey: "nav_desc_ai_evolution" },
-      { href: "/swarm-control",icon: "🐝", labelKey: "swarm_control",descKey: "nav_desc_swarm_control" },
+      { href: "/incubator",         icon: "🧬", labelKey: "incubator",         descKey: "nav_desc_incubator" },
+      { href: "/automation",        icon: "🤖", labelKey: "automation",        descKey: "nav_desc_automation" },
+      { href: "/ai-evolution",      icon: "🧠", labelKey: "ai_evolution",      descKey: "nav_desc_ai_evolution" },
+      { href: "/swarm-control",     icon: "🐝", labelKey: "swarm_control",     descKey: "nav_desc_swarm_control" },
+      { href: "/bot-farm",          icon: "🤖", labelKey: "bot_farm",          descKey: "nav_desc_bot_farm" },
+      { href: "/bot-factory",       icon: "🏭", labelKey: "bot_factory",       descKey: "nav_desc_bot_factory" },
+      { href: "/evolution",         icon: "🧬", labelKey: "evolution",         descKey: "nav_desc_evolution" },
+      { href: "/strategy-lab",      icon: "🔬", labelKey: "strategy_lab",      descKey: "nav_desc_strategy_lab" },
     ],
   },
   {
     groupLabel: "DATA",
     items: [
-      { href: "/sessions",  icon: "📱", labelKey: "sessions",  descKey: "nav_desc_sessions" },
-      { href: "/vault",     icon: "🔐", labelKey: "vault",     descKey: "nav_desc_vault" },
-      { href: "/modules",   icon: "🔧", labelKey: "modules",   descKey: "nav_desc_modules" },
-      { href: "/logs-raw",  icon: "📋", labelKey: "logs_raw",  descKey: "nav_desc_logs_raw" },
+      { href: "/sessions",          icon: "📱", labelKey: "sessions",          descKey: "nav_desc_sessions" },
+      { href: "/vault",             icon: "🔐", labelKey: "vault",             descKey: "nav_desc_vault" },
+      { href: "/modules",           icon: "🔧", labelKey: "modules",           descKey: "nav_desc_modules" },
+      { href: "/logs-raw",          icon: "📋", labelKey: "logs_raw",          descKey: "nav_desc_logs_raw" },
+      { href: "/scrape-browser",    icon: "🕷️", labelKey: "scrape_browser",    descKey: "nav_desc_scrape_browser" },
+      { href: "/group-infiltration",icon: "🎯", labelKey: "group_infiltration",descKey: "nav_desc_group_infiltration" },
     ],
   },
   {

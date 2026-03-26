@@ -150,9 +150,16 @@ async def polymarket_live_orderbook(
     token_id: str | None = Query(default=None, description="CLOB outcome token ID; defaults to active bot token"),
 ) -> dict[str, Any]:
     """Fetch live orderbook from the real Polymarket CLOB API using the Relayer Key."""
+    # region agent log
+    import time as _time
+    _dbg_token_from_query = token_id
+    # endregion
     if not token_id:
         try:
             raw = await redis.get(POLY_BOT_PNL_KEY)
+            # region agent log
+            _dbg_pnl_raw = raw
+            # endregion
             if raw:
                 p = json.loads(raw)
                 token_id = str(
@@ -161,8 +168,22 @@ async def polymarket_live_orderbook(
                     or (p.get("open_position") or {}).get("token_id")
                     or ""
                 )
+                # region agent log
+                import json as _json_dbg, builtins as _bi
+                _dbg_pnl_parsed = p
+                # endregion
         except Exception:
             pass
+
+    # region agent log
+    try:
+        import json as _jd, builtins as _b
+        _log_entry = _jd.dumps({"sessionId":"c21539","hypothesisId":"H-B/H-C/H-D","location":"polymarket.py:orderbook","message":"orderbook_token_resolution","data":{"token_id_from_query":_dbg_token_from_query,"resolved_token_id":token_id,"redis_pnl_key":POLY_BOT_PNL_KEY,"redis_had_data":bool(locals().get("_dbg_pnl_raw")),"pnl_token_id":locals().get("_dbg_pnl_parsed",{}).get("token_id") if locals().get("_dbg_pnl_parsed") else None,"pnl_yes_token_id":locals().get("_dbg_pnl_parsed",{}).get("yes_token_id") if locals().get("_dbg_pnl_parsed") else None,"pnl_market_question":locals().get("_dbg_pnl_parsed",{}).get("market_question") if locals().get("_dbg_pnl_parsed") else None},"timestamp":int(_time.time()*1000)})
+        with open("debug-c21539.log","a") as _lf:
+            _lf.write(_log_entry+"\n")
+    except Exception:
+        pass
+    # endregion
 
     if not token_id:
         raise HTTPException(status_code=422, detail="token_id required — no active bot token found in Redis")
@@ -187,6 +208,15 @@ async def polymarket_live_orderbook(
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="CLOB orderbook request timed out") from None
     except httpx.HTTPStatusError as exc:
+        # region agent log
+        try:
+            import json as _jd2, time as _t2
+            _log2 = _jd2.dumps({"sessionId":"c21539","hypothesisId":"H-B/H-C","location":"polymarket.py:clob_error","message":"clob_http_error","data":{"token_id":token_id,"status_code":exc.response.status_code,"response_text":exc.response.text[:300]},"timestamp":int(_t2.time()*1000)})
+            with open("debug-c21539.log","a") as _lf2:
+                _lf2.write(_log2+"\n")
+        except Exception:
+            pass
+        # endregion
         raise HTTPException(status_code=exc.response.status_code, detail=f"CLOB API error: {exc.response.text[:200]}") from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"CLOB fetch failed: {exc}") from exc

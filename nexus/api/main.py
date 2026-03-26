@@ -42,6 +42,7 @@ from nexus.api.routers import (
     deploy,
     evolution,
     flight_mode,
+    group_infiltration,
     hitl,
     incubator,
     modules,
@@ -1425,6 +1426,7 @@ def create_app() -> FastAPI:
     app.include_router(scan.router, prefix="/api")
     app.include_router(proxy.router, prefix="/api")
     app.include_router(telefix.router, prefix="/api")
+    app.include_router(group_infiltration.router, prefix="/api")
     app.include_router(telefix_dashboard.router, prefix="/api")
     app.include_router(ahu.router, prefix="/api")
 
