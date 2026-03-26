@@ -883,28 +883,36 @@ export interface BudgetWidgetResponse {
 }
 
 export interface ProjectInfo {
-  id:            string;
-  name:          string;
-  icon:          string;
-  description:   string;
-  path:          string;
-  exists:        boolean;
-  language:      string;
-  framework:     string;
-  status:        "running" | "stopped" | "unknown";
-  pid:           number | null;
-  env_keys:      EnvKey[];
-  entry_point:   string;
-  last_modified: string;
-  start_cmd:     string;
-  budget_stats:  Partial<BudgetStats>;
-  scanned_at:    string;
+  id:                string;
+  name:              string;
+  icon:              string;
+  description:       string;
+  path:              string;
+  exists:            boolean;
+  language:          string;
+  framework:         string;
+  status:            "running" | "stopped" | "unknown";
+  pid:               number | null;
+  env_keys:          EnvKey[];
+  entry_point:       string;
+  last_modified:     string;
+  start_cmd:         string;
+  budget_stats:      Partial<BudgetStats>;
+  scanned_at:        string;
+  size_mb?:          number;
+  running_processes: string[];
+  config_keys:       string[];
+  live_stats:        Record<string, unknown>;
+  stack:             string[];
 }
 
 export interface ProjectHubResponse {
-  projects:  ProjectInfo[];
-  total:     number;
-  last_scan: string;
+  projects:       ProjectInfo[];
+  total:          number;
+  total_count?:   number;
+  running_count?: number;
+  total_size_mb?: number;
+  last_scan:      string;
 }
 
 /** @deprecated Use ProjectHubResponse (project hub) or IncubatorProjectsResponse (incubator) */
@@ -1089,7 +1097,7 @@ export interface SessionCommanderAccount {
   phone:            string | null;
   proxy_ip:         string | null;
   status:           string | null;
-  health:           "green" | "yellow" | "red" | string | null;
+  health:           "green" | "yellow" | "red" | string | null | undefined;
   lease_worker_id:  string | null;
   lease_task_id:    string | null;
   lease_ttl_seconds: number | null;

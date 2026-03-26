@@ -13,8 +13,8 @@ function ProjectCard({ project }: { project: ProjectInfo }) {
   const { stealth } = useStealth();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  const isRunning = project.status === "Running";
-  const statusColor = isRunning ? "#22c55e" : project.status === "Stopped" ? "#94a3b8" : "#ef4444";
+  const isRunning = project.status === "running";
+  const statusColor = isRunning ? "#22c55e" : project.status === "stopped" ? "#94a3b8" : "#ef4444";
 
   const handleAction = async (action: string) => {
     if (actionLoading) return;

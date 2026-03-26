@@ -157,6 +157,23 @@ async def startup(ctx: dict[str, Any]) -> None:
     # worker immediately on startup rather than waiting for the first interval.
     await _publish_heartbeat(ctx)
 
+    # Periodic heartbeat loop — refreshes the Redis key every 30s so the
+    # master always sees this worker as online (TTL is 120s).
+    async def _heartbeat_loop() -> None:
+        while True:
+            try:
+                await asyncio.sleep(30)
+                await _publish_heartbeat(ctx)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+
+    ctx["_heartbeat_task"] = asyncio.create_task(
+        _heartbeat_loop(),
+        name="worker_heartbeat_loop",
+    )
+
     # Subscribe to the system control channel so we receive TERMINATE/RESUME
     # signals from the panic endpoint immediately (without waiting for the
     # next execute_task call to discover the Redis flag).
@@ -171,12 +188,13 @@ async def startup(ctx: dict[str, Any]) -> None:
 async def shutdown(ctx: dict[str, Any]) -> None:
     """Called once by ARQ when the worker process shuts down cleanly."""
     await detach_velocity_feed_from_worker_ctx(ctx)
-    if task := ctx.get("_panic_task"):
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+    for task_key in ("_panic_task", "_heartbeat_task"):
+        if task := ctx.get(task_key):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     log.info("worker_shutdown", worker_id=ctx.get("worker_id", WORKER_ID))
 
 

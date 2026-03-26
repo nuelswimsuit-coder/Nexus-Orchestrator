@@ -50,7 +50,7 @@ function AccountRow({ row, stealth }: { row: SessionCommanderAccount; stealth: b
     <tr style={{ borderBottom: `1px solid ${border}` }}>
       <td style={{ padding: "0.65rem 0.5rem", fontFamily: "var(--font-mono)", fontSize: "0.78rem", color: text }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-          <HealthOrb health={row.health} stealth={stealth} />
+          <HealthOrb health={row.health ?? undefined} stealth={stealth} />
           <span style={{ fontWeight: 600 }}>{row.session_stem}</span>
         </div>
       </td>
