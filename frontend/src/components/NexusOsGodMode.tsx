@@ -2019,6 +2019,8 @@ interface OrderbookData {
   asks: { price: string; size: string }[];
   price_series: { price: number; size: number; side: "bid" | "ask" }[];
   source: string;
+  expired?: boolean;
+  market_question?: string;
 }
 
 interface PolyBotPnL {
@@ -2158,14 +2160,7 @@ function PolymarketTradingView({
   const [positionBatchCmds, setPositionBatchCmds] = useState<Record<string, string>>({});
 
   // ── SWR data feeds ───────────────────────────────────────────────────────
-  const { data: bot } = useSWR<PolyBotPnL>(`${API_BASE}/api/prediction/polymarket-bot`, swrFetcher, {
-    refreshInterval: 5_000,
-    onSuccess: (d) => {
-      // #region agent log
-      fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',hypothesisId:'H-D/H-E',location:'NexusOsGodMode.tsx:bot_swr',message:'bot_data_received',data:{available:d?.available,session_active:d?.session_active,session_stage:d?.session_stage,session_node_id:d?.session_node_id,last_action:d?.last_action,market_question:d?.market_question,yes_price:d?.yes_price,open_position:d?.open_position},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-    },
-  });
+  const { data: bot } = useSWR<PolyBotPnL>(`${API_BASE}/api/prediction/polymarket-bot`, swrFetcher, { refreshInterval: 5_000 });
   const { data: perf } = useSWR<PaperPerf>(`${API_BASE}/api/prediction/performance`, swrFetcher, { refreshInterval: 12_000 });
   const { data: poly5m } = useSWR<Poly5mData>(`${API_BASE}/api/prediction/poly5m-scalper`, swrFetcher, { refreshInterval: 10_000 });
   const { data: cx } = useSWR<CrossExchangeData>(`${API_BASE}/api/prediction/cross-exchange`, swrFetcher, { refreshInterval: 8_000 });
@@ -2178,9 +2173,6 @@ function PolymarketTradingView({
       ? `${API_BASE}/api/polymarket/orderbook?token_id=${encodeURIComponent(id)}`
       : `${API_BASE}/api/polymarket/orderbook`;
     setObLoading(true);
-    // #region agent log
-    fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',hypothesisId:'H-B/H-D',location:'NexusOsGodMode.tsx:fetchOrderbook',message:'orderbook_fetch_attempt',data:{tokenId_state:tokenId,tid_arg:tid,resolved_id:id,url,bot_session_active:(window as unknown as Record<string,unknown>).__nexus_bot_session_active},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     try {
       const res = await fetch(url);
       if (!res.ok) {
@@ -2189,12 +2181,9 @@ function PolymarketTradingView({
       }
       const ob = (await res.json()) as OrderbookData;
       setOrderbook(ob);
-      setObError(null);
+      setObError(ob.expired ? null : null);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // #region agent log
-      fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',hypothesisId:'H-B/H-C',location:'NexusOsGodMode.tsx:fetchOrderbook_error',message:'orderbook_fetch_error',data:{tokenId_state:tokenId,resolved_id:id,error_msg:msg},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       setObError(msg.includes("404") || msg.includes("Failed to fetch") ? "TOKEN_ID REQUIRED — NO ACTIVE BOT TOKEN FOUND IN REDIS" : msg);
       setOrderbook(null);
     } finally {
@@ -2792,6 +2781,12 @@ function PolymarketTradingView({
               ))}
             </div>
 
+            {orderbook?.expired && (
+              <div className="flex items-center gap-2 p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-400 text-[10px] font-black uppercase tracking-widest mb-3">
+                <AlertTriangle size={12} />
+                MARKET EXPIRED — {orderbook.market_question || orderbook.token_id?.slice(0, 16) + "…"} — no active orderbook
+              </div>
+            )}
             {obError && (
               <div className="flex items-center gap-2 p-2.5 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-400 text-[10px] font-black uppercase tracking-widest mb-3">
                 <AlertTriangle size={12} />

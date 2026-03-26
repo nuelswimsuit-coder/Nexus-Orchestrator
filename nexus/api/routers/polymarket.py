@@ -150,16 +150,10 @@ async def polymarket_live_orderbook(
     token_id: str | None = Query(default=None, description="CLOB outcome token ID; defaults to active bot token"),
 ) -> dict[str, Any]:
     """Fetch live orderbook from the real Polymarket CLOB API using the Relayer Key."""
-    # region agent log
-    import time as _time
-    _dbg_token_from_query = token_id
-    # endregion
+    market_question: str = ""
     if not token_id:
         try:
             raw = await redis.get(POLY_BOT_PNL_KEY)
-            # region agent log
-            _dbg_pnl_raw = raw
-            # endregion
             if raw:
                 p = json.loads(raw)
                 token_id = str(
@@ -168,22 +162,13 @@ async def polymarket_live_orderbook(
                     or (p.get("open_position") or {}).get("token_id")
                     or ""
                 )
-                # region agent log
-                import json as _json_dbg, builtins as _bi
-                _dbg_pnl_parsed = p
-                # endregion
+                market_question = str(
+                    p.get("market_question")
+                    or (p.get("open_position") or {}).get("market_question")
+                    or ""
+                )
         except Exception:
             pass
-
-    # region agent log
-    try:
-        import json as _jd, builtins as _b
-        _log_entry = _jd.dumps({"sessionId":"c21539","hypothesisId":"H-B/H-C/H-D","location":"polymarket.py:orderbook","message":"orderbook_token_resolution","data":{"token_id_from_query":_dbg_token_from_query,"resolved_token_id":token_id,"redis_pnl_key":POLY_BOT_PNL_KEY,"redis_had_data":bool(locals().get("_dbg_pnl_raw")),"pnl_token_id":locals().get("_dbg_pnl_parsed",{}).get("token_id") if locals().get("_dbg_pnl_parsed") else None,"pnl_yes_token_id":locals().get("_dbg_pnl_parsed",{}).get("yes_token_id") if locals().get("_dbg_pnl_parsed") else None,"pnl_market_question":locals().get("_dbg_pnl_parsed",{}).get("market_question") if locals().get("_dbg_pnl_parsed") else None},"timestamp":int(_time.time()*1000)})
-        with open("debug-c21539.log","a") as _lf:
-            _lf.write(_log_entry+"\n")
-    except Exception:
-        pass
-    # endregion
 
     if not token_id:
         raise HTTPException(status_code=422, detail="token_id required — no active bot token found in Redis")
@@ -208,16 +193,28 @@ async def polymarket_live_orderbook(
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="CLOB orderbook request timed out") from None
     except httpx.HTTPStatusError as exc:
-        # region agent log
-        try:
-            import json as _jd2, time as _t2
-            _log2 = _jd2.dumps({"sessionId":"c21539","hypothesisId":"H-B/H-C","location":"polymarket.py:clob_error","message":"clob_http_error","data":{"token_id":token_id,"status_code":exc.response.status_code,"response_text":exc.response.text[:300]},"timestamp":int(_t2.time()*1000)})
-            with open("debug-c21539.log","a") as _lf2:
-                _lf2.write(_log2+"\n")
-        except Exception:
-            pass
-        # endregion
-        raise HTTPException(status_code=exc.response.status_code, detail=f"CLOB API error: {exc.response.text[:200]}") from exc
+        err_body = exc.response.text
+        # Market expired / resolved — CLOB returns 404 with "No orderbook exists"
+        if exc.response.status_code == 404 or "No orderbook exists" in err_body:
+            log.warning(
+                "polymarket.orderbook_market_expired",
+                token_id=token_id,
+                market_question=market_question,
+            )
+            return {
+                "token_id": token_id,
+                "market_question": market_question,
+                "expired": True,
+                "best_bid": None,
+                "best_ask": None,
+                "spread": None,
+                "mid_price": None,
+                "bids": [],
+                "asks": [],
+                "price_series": [],
+                "source": "CLOB_EXPIRED",
+            }
+        raise HTTPException(status_code=exc.response.status_code, detail=f"CLOB API error: {err_body[:200]}") from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"CLOB fetch failed: {exc}") from exc
 
@@ -313,3 +310,36 @@ async def polymarket_manual_order(body: ManualOrderBody, redis: RedisDep) -> dic
         "side": body.side,
         "spent_usd": result.spent_usd,
     }
+
+
+@router.delete("/clear-position")
+async def polymarket_clear_position(redis: RedisDep) -> dict[str, Any]:
+    """Clear the stale open position from Redis (use when market has expired/resolved)."""
+    from nexus.trading.poly_bot_state import POLY_BOT_OPEN_POS_KEY
+
+    deleted_pos = None
+    try:
+        raw = await redis.get(POLY_BOT_OPEN_POS_KEY)
+        if raw:
+            deleted_pos = json.loads(raw)
+        await redis.delete(POLY_BOT_OPEN_POS_KEY)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Redis error: {exc}") from exc
+
+    # Also clear the token_id from the PnL snapshot so orderbook stops fetching it
+    try:
+        raw_pnl = await redis.get(POLY_BOT_PNL_KEY)
+        if raw_pnl:
+            p = json.loads(raw_pnl)
+            p["open_position"] = None
+            p["token_id"] = None
+            p["yes_token_id"] = None
+            p["last_action"] = "position_cleared"
+            p["detail"] = "Stale position cleared via API"
+            from nexus.trading.poly_bot_state import PNL_TTL_S
+            await redis.set(POLY_BOT_PNL_KEY, json.dumps(p), ex=PNL_TTL_S)
+    except Exception:
+        pass
+
+    log.info("polymarket.position_cleared", deleted_position=deleted_pos)
+    return {"ok": True, "cleared_position": deleted_pos}
