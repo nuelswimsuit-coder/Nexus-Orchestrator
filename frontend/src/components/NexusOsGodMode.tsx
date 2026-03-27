@@ -2374,6 +2374,27 @@ function PolymarketTradingView({
   const handleRecOrder = async (recIdx: number, tokenAsset: string, side: "BUY" | "SELL", betAmount: number) => {
     setRecOrderStatus((prev) => ({ ...prev, [recIdx]: { msg: "שולח פקודה...", ok: true, loading: true } }));
     try {
+      // #region agent log
+      fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c91743" },
+        body: JSON.stringify({
+          sessionId: "c91743",
+          hypothesisId: "H1",
+          location: "NexusOsGodMode.tsx:handleRecOrder",
+          message: "rec_order_tokenAsset_shape",
+          data: {
+            recIdx,
+            side,
+            assetLen: tokenAsset.trim().length,
+            assetIsAllDigits: /^\d+$/.test(tokenAsset.trim()),
+            assetHasSpace: tokenAsset.includes(" "),
+            assetPrefix: tokenAsset.trim().slice(0, 40),
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
       const res = await fetch(`${API_BASE}/api/polymarket/manual-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

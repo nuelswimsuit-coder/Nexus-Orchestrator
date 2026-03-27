@@ -28,8 +28,11 @@ POLY_BUILDER_PASSPHRASE      Builder API passphrase
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -532,6 +535,26 @@ class PolymarketClient:
         from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
 
         log.info(f"Preparing order for Builder: {self.builder_id}")
+        # #region agent log
+        try:
+            _p = {
+                "sessionId": "c91743",
+                "hypothesisId": "H3",
+                "location": "polymarket_client.py:_place_limit_order_sync",
+                "message": "clob_order_before_create",
+                "data": {
+                    "side": str(side),
+                    "token_id_len": len(str(token_id)),
+                    "token_id_is_all_digits": str(token_id).isdigit(),
+                    "token_prefix": str(token_id)[:32],
+                },
+                "timestamp": int(time.time() * 1000),
+            }
+            with (Path(__file__).resolve().parents[2] / "debug-c91743.log").open("a", encoding="utf-8") as _df:
+                _df.write(json.dumps(_p) + "\n")
+        except Exception:
+            pass
+        # #endregion
         signed = self._clob.create_order(
             OrderArgs(token_id=token_id, price=price, size=size, side=side),
             options=PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk),

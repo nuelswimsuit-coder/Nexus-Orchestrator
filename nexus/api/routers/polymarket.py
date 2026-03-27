@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
+from pathlib import Path
 from typing import Any, Literal
 
 import httpx
@@ -437,6 +439,28 @@ class ManualOrderBody(BaseModel):
 @router.post("/manual-order")
 async def polymarket_manual_order(body: ManualOrderBody, redis: RedisDep) -> dict[str, Any]:
     """Map UI BUY/SELL to YES buy or outcome sell; price defaults from bot snapshot or 0.5."""
+    # #region agent log
+    try:
+        _tid = body.token_id.strip()
+        _p = {
+            "sessionId": "c91743",
+            "hypothesisId": "H1",
+            "location": "polymarket.py:polymarket_manual_order",
+            "message": "manual_order_token_shape",
+            "data": {
+                "side": body.side,
+                "token_id_len": len(_tid),
+                "token_id_is_all_digits": _tid.isdigit(),
+                "token_has_space": " " in _tid,
+                "token_prefix": _tid[:32],
+            },
+            "timestamp": int(time.time() * 1000),
+        }
+        with (Path(__file__).resolve().parents[3] / "debug-c91743.log").open("a", encoding="utf-8") as _df:
+            _df.write(json.dumps(_p) + "\n")
+    except Exception:
+        pass
+    # #endregion
     price = body.price
     market_question = ""
     if price is None:
