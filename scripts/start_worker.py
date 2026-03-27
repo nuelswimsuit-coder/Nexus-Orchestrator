@@ -29,7 +29,12 @@ import os
 import sys
 from pathlib import Path
 
-# Linux production: optional uvloop (Windows uses the default asyncio policy).
+# Windows: force SelectorEventLoop — ProactorEventLoop is unstable with
+# long-lived Redis connections and causes WinError 121 / WinError 64.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# Linux production: optional uvloop.
 if sys.platform != "win32" and os.environ.get("ENVIRONMENT", "PRODUCTION").upper() == "PRODUCTION":
     try:
         import uvloop  # type: ignore[import-not-found]
@@ -172,15 +177,53 @@ def main() -> None:
     except (asyncio.TimeoutError, Exception):
         pass
 
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError("event loop is closed")
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    # WinError 121 (semaphore timeout) / WinError 64 (network name deleted) recovery.
+    # On Windows, ProactorEventLoop (now replaced by SelectorEventLoop above) and
+    # long-lived Redis sockets can still trigger these OS errors transiently.
+    # Catch them, wait 5 s, rebuild the event loop, and restart the ARQ worker.
+    _WIN_TRANSIENT_ERRORS = {121, 64}
+    _MAX_RESTART_ATTEMPTS = 10
 
-    run_worker(WorkerSettings)
+    for _attempt in range(1, _MAX_RESTART_ATTEMPTS + 1):
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                raise RuntimeError("event loop is closed")
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        try:
+            run_worker(WorkerSettings)
+            break  # clean exit — do not restart
+        except OSError as exc:
+            winerror = getattr(exc, "winerror", None)
+            if winerror in _WIN_TRANSIENT_ERRORS:
+                log.warning(
+                    "nexus_worker_win_transient_error",
+                    winerror=winerror,
+                    attempt=_attempt,
+                    max_attempts=_MAX_RESTART_ATTEMPTS,
+                    action="reinitialising Redis pool in 5 s",
+                )
+                import time as _time  # noqa: PLC0415
+                _time.sleep(5)
+                # Force a fresh event loop for the next attempt.
+                try:
+                    loop = asyncio.get_event_loop()
+                    if not loop.is_closed():
+                        loop.close()
+                except Exception:
+                    pass
+                asyncio.set_event_loop(asyncio.new_event_loop())
+                if _attempt >= _MAX_RESTART_ATTEMPTS:
+                    log.error(
+                        "nexus_worker_restart_limit_reached",
+                        max_attempts=_MAX_RESTART_ATTEMPTS,
+                    )
+                    raise
+            else:
+                raise
 
 
 if __name__ == "__main__":

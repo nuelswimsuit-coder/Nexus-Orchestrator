@@ -146,6 +146,7 @@ def get_start_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🛑 עצירת חירום (PANIC)",   callback_data="panic_stop"),
         ],
         [
+            InlineKeyboardButton(text="🎯 Polymarket / פולימרקט", callback_data="poly_menu"),
             InlineKeyboardButton(text="🚀 Launch Moltbot Scrape", callback_data="launch_moltbot"),
         ],
     ])
@@ -804,6 +805,629 @@ async def handle_launch_moltbot(callback: CallbackQuery) -> None:
     )
 
 
+# ── Polymarket Control Panel ──────────────────────────────────────────────────
+
+def get_polymarket_menu() -> InlineKeyboardMarkup:
+    """Polymarket full control inline keyboard."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📊 תיק השקעות / Portfolio", callback_data="poly_portfolio"),
+            InlineKeyboardButton(text="📈 פוזיציות / Positions",   callback_data="poly_positions"),
+        ],
+        [
+            InlineKeyboardButton(text="📉 ספר פקודות / Orderbook", callback_data="poly_orderbook"),
+            InlineKeyboardButton(text="🤖 המלצות AI / AI Recs",    callback_data="poly_ai_recs"),
+        ],
+        [
+            InlineKeyboardButton(text="🟢 קנה YES / BUY YES",      callback_data="poly_buy_prompt"),
+            InlineKeyboardButton(text="🔴 מכור / SELL",             callback_data="poly_sell_prompt"),
+        ],
+        [
+            InlineKeyboardButton(text="📋 יומן עסקאות / Trade Log", callback_data="poly_trade_log"),
+            InlineKeyboardButton(text="⚡ סקאלפר 5m / Scalper",    callback_data="poly_scalper"),
+        ],
+        [
+            InlineKeyboardButton(text="🏠 תפריט ראשי / Main Menu", callback_data="main_menu"),
+        ],
+    ])
+
+
+def _fmt_poly_portfolio(dash: dict) -> str:
+    """Format Polymarket dashboard data into a Hebrew+English Telegram message."""
+    portfolio_val  = dash.get("portfolio_value") or 0.0
+    portfolio_cash = dash.get("portfolio_cash") or 0.0
+    portfolio_pos  = dash.get("portfolio_positions") or 0.0
+    clob_bal       = dash.get("clob_balance") or 0.0
+    collateral     = dash.get("collateral_usdc") or "0"
+    signer         = dash.get("signer_address") or dash.get("portfolio_address") or "—"
+    short_addr     = f"{signer[:6]}…{signer[-4:]}" if len(signer) > 10 else signer
+
+    pnl_series = dash.get("pnl_series") or []
+    total_pnl  = sum(p.get("pnl", 0) for p in pnl_series[-1:]) if pnl_series else 0.0
+    pnl_icon   = "📈" if total_pnl >= 0 else "📉"
+    pnl_sign   = "+" if total_pnl >= 0 else ""
+
+    lines = [
+        "📊 *Polymarket Portfolio / תיק פולימרקט*",
+        "",
+        f"  👛 ארנק / Wallet: `{_esc(short_addr)}`",
+        f"  💼 שווי תיק / Total: `${portfolio_val:,.2f}`",
+        f"  💵 מזומן / Cash: `${portfolio_cash:,.2f}`",
+        f"  📦 פוזיציות / Positions: `${portfolio_pos:,.2f}`",
+        f"  🏦 CLOB Balance: `${clob_bal:,.2f}`",
+        f"  {pnl_icon} PnL: `{pnl_sign}${total_pnl:,.2f}`",
+        "",
+        f"🔄 _עודכן / Updated: {_esc(_now_utc())}_",
+    ]
+    return "\n".join(lines)
+
+
+def _fmt_poly_positions(dash: dict) -> str:
+    """Format Polymarket positions list into a Telegram message."""
+    positions = dash.get("portfolio_positions_list") or []
+    lines = ["📈 *פוזיציות פתוחות / Open Positions*", ""]
+
+    if not positions:
+        lines.append("_אין פוזיציות פתוחות / No open positions_")
+    else:
+        for i, p in enumerate(positions[:8], 1):
+            title    = str(p.get("title") or "?")[:45]
+            outcome  = str(p.get("outcome") or "YES")
+            size     = float(p.get("size") or 0)
+            avg_p    = float(p.get("avg_price") or 0)
+            cur_p    = float(p.get("cur_price") or 0)
+            cur_val  = float(p.get("current_value") or 0)
+            cash_pnl = float(p.get("cash_pnl") or 0)
+            pct_pnl  = float(p.get("percent_pnl") or 0)
+            end_date = str(p.get("end_date") or "")[:10]
+
+            pnl_icon = "🟢" if cash_pnl >= 0 else "🔴"
+            pnl_sign = "+" if cash_pnl >= 0 else ""
+            outcome_icon = "✅" if outcome == "YES" else "❌"
+
+            lines += [
+                f"*{i}\\. {_esc(title[:40])}*",
+                f"  {outcome_icon} {_esc(outcome)} · {size:.1f} מניות / shares",
+                f"  💰 ממוצע→עכשיו / Avg→Now: `{avg_p*100:.1f}¢ → {cur_p*100:.1f}¢`",
+                f"  💼 שווי / Value: `${cur_val:.2f}`",
+                f"  {pnl_icon} PnL: `{pnl_sign}${cash_pnl:.2f}` \\(`{pnl_sign}{pct_pnl:.1f}%`\\)",
+            ]
+            if end_date:
+                lines.append(f"  📅 פקיעה / Exp: `{_esc(end_date)}`")
+            lines.append("")
+
+    lines.append(f"🔄 _עודכן / Updated: {_esc(_now_utc())}_")
+    return "\n".join(lines)
+
+
+def _fmt_poly_orderbook(ob: dict) -> str:
+    """Format CLOB orderbook data into a Telegram message."""
+    if ob.get("no_position"):
+        return (
+            "📉 *ספר פקודות / Orderbook*\n\n"
+            "⚪ _אין פוזיציה פעילה — הבוט ממתין לאות_\n"
+            "_No active position — bot is idle_"
+        )
+    if ob.get("expired"):
+        mq = _esc(str(ob.get("market_question") or "?")[:60])
+        return (
+            f"📉 *ספר פקודות / Orderbook*\n\n"
+            f"🟡 _שוק פג תוקף / Market Expired_\n`{mq}`"
+        )
+
+    best_bid = ob.get("best_bid")
+    best_ask = ob.get("best_ask")
+    mid      = ob.get("mid_price")
+    spread   = ob.get("spread")
+    bids     = ob.get("bids") or []
+    asks     = ob.get("asks") or []
+
+    def _fmt_price(v: object) -> str:
+        return f"`{float(v):.4f}`" if v is not None else "`—`"
+
+    lines = [
+        "📉 *CLOB Live Orderbook / ספר פקודות חי*",
+        "",
+        f"  🟢 BID / קנייה: {_fmt_price(best_bid)}",
+        f"  🔴 ASK / מכירה: {_fmt_price(best_ask)}",
+        f"  🔵 MID / אמצע:  {_fmt_price(mid)}",
+        f"  ↔️ SPREAD / פער: {_fmt_price(spread)}",
+        "",
+    ]
+
+    if bids:
+        lines.append("*Top Bids / קניות:*")
+        for b in bids[:5]:
+            lines.append(f"  `{float(b['price']):.4f}` × `{float(b['size']):.1f}`")
+        lines.append("")
+
+    if asks:
+        lines.append("*Top Asks / מכירות:*")
+        for a in asks[:5]:
+            lines.append(f"  `{float(a['price']):.4f}` × `{float(a['size']):.1f}`")
+        lines.append("")
+
+    lines.append(f"🔄 _עודכן / Updated: {_esc(_now_utc())}_")
+    return "\n".join(lines)
+
+
+def _fmt_poly_ai_recs(dash: dict, cx_data: dict | None) -> str:
+    """Format AI recommendations from cross-exchange + positions into Telegram."""
+    positions = dash.get("portfolio_positions_list") or []
+    cx_signal = (cx_data or {}).get("signal_label") or (cx_data or {}).get("signal") or "—"
+    cx_conf   = (cx_data or {}).get("high_confidence", False)
+    arb_gap   = (cx_data or {}).get("arbitrage_gap") or 0.0
+
+    lines = [
+        "🤖 *המלצות AI / AI Recommendations*",
+        "",
+        "📡 *Cross-Exchange Signal / אות בין-בורסות:*",
+        f"  {'⚡' if cx_conf else '📊'} {_esc(cx_signal)}",
+        f"  ARB Gap / פער ארביטראז׳: `{arb_gap*100:.3f}%`",
+    ]
+    if cx_conf:
+        lines.append("  🔥 *HIGH CONFIDENCE / ביטחון גבוה* — שקול כניסה!")
+    lines.append("")
+
+    if not positions:
+        lines.append("_אין פוזיציות לניתוח / No positions to analyze_")
+    else:
+        lines.append("*ניתוח פוזיציות / Position Analysis:*")
+        for p in positions[:6]:
+            title   = str(p.get("title") or "?")[:40]
+            cur_p   = float(p.get("cur_price") or 0)
+            avg_p   = float(p.get("avg_price") or 0)
+            pct_pnl = float(p.get("percent_pnl") or 0)
+            cur_val = float(p.get("current_value") or 0)
+
+            implied = cur_p
+            real_prob = min(0.99, max(0.01, implied + (0.08 if pct_pnl > 0 else -0.06)))
+            edge = (real_prob - implied) * 100
+
+            if edge > 5:
+                action = f"🟢 קנה מתחת ל-{implied*100-2:.0f}¢ / BUY below {implied*100-2:.0f}¢"
+                confidence = min(95, 60 + edge * 2)
+            elif edge < -5:
+                action = f"🔴 מכור מעל {implied*100+2:.0f}¢ / SELL above {implied*100+2:.0f}¢"
+                confidence = min(95, 60 + abs(edge) * 2)
+            else:
+                action = "🟡 המתן / HOLD — monitor"
+                confidence = 50.0
+
+            lines += [
+                f"• *{_esc(title[:35])}*",
+                f"  {action}",
+                f"  Edge: `{edge:+.1f}%` · Conf: `{confidence:.0f}%` · Val: `${cur_val:.2f}`",
+                "",
+            ]
+
+    lines.append(f"🔄 _עודכן / Updated: {_esc(_now_utc())}_")
+    return "\n".join(lines)
+
+
+def _fmt_poly_scalper(scalper: dict) -> str:
+    """Format 5m scalper status."""
+    wins    = scalper.get("wins", 0)
+    losses  = scalper.get("losses", 0)
+    halted  = scalper.get("trading_halted", False)
+    paper   = scalper.get("paper_trading", True)
+    decision = scalper.get("decision") or "—"
+    vel     = scalper.get("velocity_pct_60s")
+    btc     = scalper.get("btc_price")
+    yes_p   = scalper.get("yes_price")
+
+    mode_label = "📄 PAPER / נייר" if paper else "💰 LIVE / חי"
+    status_label = "⛔ HALTED / עצור" if halted else "✅ פעיל / Active"
+
+    lines = [
+        "⚡ *5m Scalper / סקאלפר 5 דקות*",
+        "",
+        f"  {mode_label}",
+        f"  {status_label}",
+        f"  🏆 תוצאות / Results: `{wins}W / {losses}L`",
+        f"  🎯 החלטה / Decision: `{_esc(decision)}`",
+    ]
+    if btc is not None:
+        lines.append(f"  ₿ BTC: `${btc:,.0f}`")
+    if yes_p is not None:
+        lines.append(f"  🎲 YES Price: `{yes_p*100:.1f}¢`")
+    if vel is not None:
+        vel_icon = "🚀" if vel >= 0 else "📉"
+        lines.append(f"  {vel_icon} VEL 60s: `{vel:+.3f}%`")
+
+    lines += ["", f"🔄 _עודכן / Updated: {_esc(_now_utc())}_"]
+    return "\n".join(lines)
+
+
+def _fmt_poly_trade_log(log_data: dict) -> str:
+    """Format trade log into Telegram message."""
+    entries = log_data.get("entries") or []
+    total   = log_data.get("total", 0)
+    paper   = log_data.get("paper_trading", True)
+    ks_bal  = log_data.get("kill_switch_balance_usd", 0)
+
+    mode_label = "📄 PAPER / נייר" if paper else "💰 LIVE / חי"
+
+    lines = [
+        "📋 *יומן עסקאות / Trade Log*",
+        "",
+        f"  {mode_label} · סה״כ / Total: `{total}`",
+        f"  🔒 Kill Switch: `${ks_bal:.2f}`",
+        "",
+    ]
+
+    if not entries:
+        lines.append("_אין היסטוריית מסחר עדיין / No trade history yet_")
+    else:
+        lines.append("*עסקאות אחרונות / Recent Trades:*")
+        for e in entries[:8]:
+            ts   = e.get("timestamp", "")
+            time_str = ts[11:19] if len(ts) >= 19 else "—"
+            mkt  = str(e.get("market_question") or e.get("log_text") or "—")[:35]
+            side = str(e.get("side") or "—")
+            price = float(e.get("price") or 0)
+            spent = float(e.get("spent_usd") or 0)
+            status = str(e.get("status") or "—")
+            is_paper = e.get("paper", False)
+
+            side_icon = "🟢" if side == "BUY" else "🔴"
+            status_label = "📄 PAPER" if is_paper else _esc(status.upper())
+
+            lines += [
+                f"{side_icon} `{_esc(time_str)}` · *{_esc(mkt[:30])}*",
+                f"  {_esc(side)} @ `{price:.4f}` · `${spent:.2f}` · {status_label}",
+                "",
+            ]
+
+    lines.append(f"🔄 _עודכן / Updated: {_esc(_now_utc())}_")
+    return "\n".join(lines)
+
+
+async def handle_poly_menu(callback: CallbackQuery) -> None:
+    """Show the Polymarket control panel."""
+    await callback.answer("טוען Polymarket...")
+    await callback.message.edit_text(
+        "🎯 *Polymarket Control Center / מרכז שליטה פולימרקט*\n\n"
+        "בחר פעולה / Choose an action:",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=get_polymarket_menu(),
+    )
+
+
+async def handle_poly_portfolio(callback: CallbackQuery) -> None:
+    """Show Polymarket portfolio summary."""
+    await callback.answer("טוען תיק השקעות...")
+    dash = await _api_get("/api/polymarket/dashboard.json")
+    if not dash:
+        await callback.message.edit_text(
+            "⚠️ *שגיאת חיבור / Connection Error*\n\nלא ניתן לטעון נתוני Polymarket\\.",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=get_polymarket_menu(),
+        )
+        return
+    await callback.message.edit_text(
+        _fmt_poly_portfolio(dash),
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=get_polymarket_menu(),
+    )
+
+
+async def handle_poly_positions(callback: CallbackQuery) -> None:
+    """Show open Polymarket positions."""
+    await callback.answer("טוען פוזיציות...")
+    dash = await _api_get("/api/polymarket/dashboard.json")
+    if not dash:
+        await callback.message.edit_text(
+            "⚠️ *שגיאת חיבור / Connection Error*",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=get_polymarket_menu(),
+        )
+        return
+    await callback.message.edit_text(
+        _fmt_poly_positions(dash),
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=get_polymarket_menu(),
+    )
+
+
+async def handle_poly_orderbook(callback: CallbackQuery) -> None:
+    """Show CLOB live orderbook."""
+    await callback.answer("טוען ספר פקודות...")
+    ob = await _api_get("/api/polymarket/orderbook")
+    if ob is None:
+        await callback.message.edit_text(
+            "⚠️ *שגיאת חיבור / Connection Error*",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=get_polymarket_menu(),
+        )
+        return
+    await callback.message.edit_text(
+        _fmt_poly_orderbook(ob),
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=get_polymarket_menu(),
+    )
+
+
+async def handle_poly_ai_recs(callback: CallbackQuery) -> None:
+    """Show AI recommendations for Polymarket positions."""
+    await callback.answer("מחשב המלצות AI...")
+    dash, cx = await asyncio.gather(
+        _api_get("/api/polymarket/dashboard.json"),
+        _api_get("/api/prediction/cross-exchange"),
+    )
+    if not dash:
+        await callback.message.edit_text(
+            "⚠️ *שגיאת חיבור / Connection Error*",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=get_polymarket_menu(),
+        )
+        return
+    await callback.message.edit_text(
+        _fmt_poly_ai_recs(dash, cx),
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=get_polymarket_menu(),
+    )
+
+
+async def handle_poly_scalper(callback: CallbackQuery) -> None:
+    """Show 5m scalper status."""
+    await callback.answer("טוען סקאלפר...")
+    data = await _api_get("/api/prediction/poly5m-scalper")
+    if not data:
+        await callback.message.edit_text(
+            "⚠️ *שגיאת חיבור / Connection Error*",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=get_polymarket_menu(),
+        )
+        return
+    await callback.message.edit_text(
+        _fmt_poly_scalper(data),
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=get_polymarket_menu(),
+    )
+
+
+async def handle_poly_trade_log(callback: CallbackQuery) -> None:
+    """Show recent trade log."""
+    await callback.answer("טוען יומן עסקאות...")
+    data = await _api_get("/api/prediction/trade-log")
+    if not data:
+        await callback.message.edit_text(
+            "⚠️ *שגיאת חיבור / Connection Error*",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=get_polymarket_menu(),
+        )
+        return
+    await callback.message.edit_text(
+        _fmt_poly_trade_log(data),
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=get_polymarket_menu(),
+    )
+
+
+async def handle_poly_buy_prompt(callback: CallbackQuery) -> None:
+    """Prompt user to send /poly_buy <token_id> <amount> command."""
+    await callback.answer()
+    await callback.message.edit_text(
+        "🟢 *קנה YES / BUY YES*\n\n"
+        "שלח פקודה / Send command:\n"
+        "`/poly\\_buy <token\\_id> <amount\\_usdc>`\n\n"
+        "לדוגמה / Example:\n"
+        "`/poly\\_buy 0xabc123 50`\n\n"
+        "_הסכום ב\\-USDC / Amount in USDC_",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=get_polymarket_menu(),
+    )
+
+
+async def handle_poly_sell_prompt(callback: CallbackQuery) -> None:
+    """Prompt user to send /poly_sell <token_id> <amount> command."""
+    await callback.answer()
+    await callback.message.edit_text(
+        "🔴 *מכור / SELL*\n\n"
+        "שלח פקודה / Send command:\n"
+        "`/poly\\_sell <token\\_id> <amount\\_usdc>`\n\n"
+        "לדוגמה / Example:\n"
+        "`/poly\\_sell 0xabc123 50`\n\n"
+        "_הסכום ב\\-USDC / Amount in USDC_",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=get_polymarket_menu(),
+    )
+
+
+async def cmd_polymarket(message: Message) -> None:
+    """Show the Polymarket control panel via /polymarket command."""
+    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    if admin_id and str(message.chat.id) != str(admin_id):
+        await message.answer("⛔ גישה נדחתה\\.")
+        return
+    await message.answer(
+        "🎯 *Polymarket Control Center / מרכז שליטה פולימרקט*\n\n"
+        "בחר פעולה / Choose an action:",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=get_polymarket_menu(),
+    )
+
+
+async def cmd_poly_buy(message: Message) -> None:
+    """Execute a BUY YES order: /poly_buy <token_id> <amount>"""
+    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    if admin_id and str(message.chat.id) != str(admin_id):
+        await message.answer("⛔ גישה נדחתה\\.")
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 3:
+        await message.answer(
+            "⚠️ שימוש / Usage: `/poly\\_buy <token\\_id> <amount\\_usdc>`",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        return
+
+    token_id = parts[1]
+    try:
+        amount = float(parts[2])
+    except ValueError:
+        await message.answer("❌ סכום לא תקין / Invalid amount\\.")
+        return
+
+    await message.answer(f"⏳ מבצע קנייה / Executing BUY… `{_esc(token_id[:20])}` × `${amount:.2f}`", parse_mode=ParseMode.MARKDOWN_V2)
+
+    data = await _api_post("/api/polymarket/manual-order", {
+        "token_id": token_id,
+        "side": "BUY",
+        "amount_usdc": amount,
+    })
+    if data:
+        status = _esc(str(data.get("status") or data.get("message") or "OK"))
+        await message.answer(f"✅ *פקודת קנייה בוצעה / BUY executed*\n\n`{status}`", parse_mode=ParseMode.MARKDOWN_V2)
+    else:
+        await message.answer("❌ *שגיאה בביצוע / Execution failed*\n\nבדוק את חיבור ה\\-API\\.", parse_mode=ParseMode.MARKDOWN_V2)
+
+
+async def cmd_poly_sell(message: Message) -> None:
+    """Execute a SELL order: /poly_sell <token_id> <amount>"""
+    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    if admin_id and str(message.chat.id) != str(admin_id):
+        await message.answer("⛔ גישה נדחתה\\.")
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 3:
+        await message.answer(
+            "⚠️ שימוש / Usage: `/poly\\_sell <token\\_id> <amount\\_usdc>`",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        return
+
+    token_id = parts[1]
+    try:
+        amount = float(parts[2])
+    except ValueError:
+        await message.answer("❌ סכום לא תקין / Invalid amount\\.")
+        return
+
+    await message.answer(f"⏳ מבצע מכירה / Executing SELL… `{_esc(token_id[:20])}` × `${amount:.2f}`", parse_mode=ParseMode.MARKDOWN_V2)
+
+    data = await _api_post("/api/polymarket/manual-order", {
+        "token_id": token_id,
+        "side": "SELL",
+        "amount_usdc": amount,
+    })
+    if data:
+        status = _esc(str(data.get("status") or data.get("message") or "OK"))
+        await message.answer(f"✅ *פקודת מכירה בוצעה / SELL executed*\n\n`{status}`", parse_mode=ParseMode.MARKDOWN_V2)
+    else:
+        await message.answer("❌ *שגיאה בביצוע / Execution failed*\n\nבדוק את חיבור ה\\-API\\.", parse_mode=ParseMode.MARKDOWN_V2)
+
+
+async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
+    """
+    Proactive AI alert: fetch Polymarket data and send a high-confidence
+    trade recommendation if one exists.  Called periodically by the alert loop.
+    """
+    try:
+        dash, cx = await asyncio.gather(
+            _api_get("/api/polymarket/dashboard.json"),
+            _api_get("/api/prediction/cross-exchange"),
+        )
+        if not dash:
+            return
+
+        positions = dash.get("portfolio_positions_list") or []
+        cx_conf   = bool((cx or {}).get("high_confidence"))
+        cx_signal = str((cx or {}).get("signal_label") or (cx or {}).get("signal") or "")
+        arb_gap   = float((cx or {}).get("arbitrage_gap") or 0.0)
+        portfolio_val = float(dash.get("portfolio_value") or 0.0)
+
+        alerts: list[str] = []
+
+        # Cross-exchange high-confidence alert
+        if cx_conf and cx_signal:
+            pct_of_portfolio = 10.0  # recommend 10% of portfolio for high-conf cross-exchange
+            rec_amount = round(portfolio_val * pct_of_portfolio / 100, 2) if portfolio_val > 0 else 0.0
+            alerts.append(
+                f"⚡ *HIGH CONFIDENCE SIGNAL / אות בביטחון גבוה*\n"
+                f"  📡 Signal: `{_esc(cx_signal)}`\n"
+                f"  ARB Gap: `{arb_gap*100:.3f}%`\n"
+                f"  💡 המלצה / Rec: הכנס `${rec_amount:.2f}` \\({pct_of_portfolio:.0f}% מהתיק\\)\n"
+                f"  _Use /poly\\_buy to execute_"
+            )
+
+        # Per-position edge alerts
+        for p in positions[:5]:
+            cur_p   = float(p.get("cur_price") or 0)
+            avg_p   = float(p.get("avg_price") or 0)
+            pct_pnl = float(p.get("percent_pnl") or 0)
+            cur_val = float(p.get("current_value") or 0)
+            title   = str(p.get("title") or "?")[:40]
+
+            implied   = cur_p
+            real_prob = min(0.99, max(0.01, implied + (0.08 if pct_pnl > 0 else -0.06)))
+            edge      = (real_prob - implied) * 100
+            confidence = min(95, 60 + abs(edge) * 2)
+
+            # Only alert on high-confidence edges (>= 75%)
+            if confidence >= 75 and abs(edge) > 5:
+                pct_of_portfolio = min(15.0, abs(edge) * 1.5)
+                rec_amount = round(portfolio_val * pct_of_portfolio / 100, 2) if portfolio_val > 0 else 0.0
+
+                if edge > 5:
+                    action_he = f"קנה מתחת ל-{implied*100-2:.0f}¢"
+                    action_en = f"BUY below {implied*100-2:.0f}¢"
+                    icon = "🟢"
+                else:
+                    action_he = f"מכור מעל {implied*100+2:.0f}¢"
+                    action_en = f"SELL above {implied*100+2:.0f}¢"
+                    icon = "🔴"
+
+                alerts.append(
+                    f"{icon} *AI ALERT — {_esc(title[:35])}*\n"
+                    f"  📊 {_esc(action_he)} / {_esc(action_en)}\n"
+                    f"  Edge: `{edge:+.1f}%` · Conf: `{confidence:.0f}%`\n"
+                    f"  💼 שווי נוכחי / Current Value: `${cur_val:.2f}`\n"
+                    f"  💡 המלצת גודל / Rec Size: `${rec_amount:.2f}` \\({pct_of_portfolio:.0f}% מהתיק\\)"
+                )
+
+        if not alerts:
+            return
+
+        alert_text = (
+            "🚨 *Polymarket AI Alert / התראת AI פולימרקט*\n\n"
+            + "\n\n".join(alerts)
+            + f"\n\n🔄 _{_esc(_now_utc())}_"
+        )
+
+        alert_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📊 פוזיציות / Positions", callback_data="poly_positions"),
+                InlineKeyboardButton(text="🤖 המלצות AI / AI Recs",  callback_data="poly_ai_recs"),
+            ],
+            [
+                InlineKeyboardButton(text="🎯 Polymarket Panel",      callback_data="poly_menu"),
+            ],
+        ])
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=alert_text,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=alert_keyboard,
+        )
+        log.info("poly_ai_alert_sent", alerts_count=len(alerts))
+
+    except Exception as exc:
+        log.warning("poly_ai_alert_error", error=str(exc))
+
+
+async def _poly_alert_loop(bot: "Bot", chat_id: str, interval_s: int = 300) -> None:
+    """Background loop that sends Polymarket AI alerts every `interval_s` seconds."""
+    log.info("poly_alert_loop_started", interval_s=interval_s)
+    while True:
+        await asyncio.sleep(interval_s)
+        await send_poly_ai_alert(bot, chat_id)
+
+
 # ── V2 Menu Handlers ──────────────────────────────────────────────────────────
 
 async def handle_menu_stats(callback: CallbackQuery) -> None:
@@ -904,6 +1528,9 @@ async def cmd_help(message: Message) -> None:
         "🤖 *Nexus Bot Commands*\n\n"
         "/start — Show the main menu\n"
         "/dashboard — Open the dashboard link\n"
+        "/polymarket — 🎯 Polymarket control panel / לוח שליטה פולימרקט\n"
+        "/poly\\_buy \\<token\\_id\\> \\<amount\\> — 🟢 BUY YES order / קנה\n"
+        "/poly\\_sell \\<token\\_id\\> \\<amount\\> — 🔴 SELL order / מכור\n"
         "/killswitch — 🚨 KILL all autonomous projects instantly\n"
         "/terminate\\_nexus\\_now — 🔒 *Full* emergency kill\\-switch \\(user ID + API/Redis\\)\n"
         "/godmode\\_on — Enable GOD MODE \\(auto\\-deploy\\)\n"
@@ -1469,6 +2096,9 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     dp.message.register(cmd_godmode_on, Command("godmode_on"))
     dp.message.register(cmd_godmode_off, Command("godmode_off"))
     dp.message.register(cmd_incubator, Command("incubator"))
+    dp.message.register(cmd_polymarket, Command("polymarket"))
+    dp.message.register(cmd_poly_buy,  Command("poly_buy"))
+    dp.message.register(cmd_poly_sell, Command("poly_sell"))
 
     # /start control-panel callbacks (4-button 2×2 grid)
     dp.callback_query.register(handle_status,             F.data == "status")
@@ -1484,6 +2114,17 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     dp.callback_query.register(handle_menu_cluster, F.data == "menu_cluster")
     dp.callback_query.register(handle_menu_wallet, F.data == "menu_wallet")
     dp.callback_query.register(handle_main_menu,   F.data == "main_menu")
+
+    # Polymarket control panel callbacks
+    dp.callback_query.register(handle_poly_menu,       F.data == "poly_menu")
+    dp.callback_query.register(handle_poly_portfolio,  F.data == "poly_portfolio")
+    dp.callback_query.register(handle_poly_positions,  F.data == "poly_positions")
+    dp.callback_query.register(handle_poly_orderbook,  F.data == "poly_orderbook")
+    dp.callback_query.register(handle_poly_ai_recs,    F.data == "poly_ai_recs")
+    dp.callback_query.register(handle_poly_scalper,    F.data == "poly_scalper")
+    dp.callback_query.register(handle_poly_trade_log,  F.data == "poly_trade_log")
+    dp.callback_query.register(handle_poly_buy_prompt, F.data == "poly_buy_prompt")
+    dp.callback_query.register(handle_poly_sell_prompt, F.data == "poly_sell_prompt")
 
     # HITL and control handlers
     dp.callback_query.register(
@@ -1562,6 +2203,9 @@ async def run() -> None:
     dp.message.register(cmd_godmode_on, Command("godmode_on"))
     dp.message.register(cmd_godmode_off, Command("godmode_off"))
     dp.message.register(cmd_incubator, Command("incubator"))
+    dp.message.register(cmd_polymarket, Command("polymarket"))
+    dp.message.register(cmd_poly_buy,   Command("poly_buy"))
+    dp.message.register(cmd_poly_sell,  Command("poly_sell"))
 
     # Legacy text menu support (kept for backwards compatibility)
     dp.message.register(
@@ -1583,6 +2227,17 @@ async def run() -> None:
     dp.callback_query.register(handle_menu_cluster, F.data == "menu_cluster")
     dp.callback_query.register(handle_menu_wallet, F.data == "menu_wallet")
     dp.callback_query.register(handle_main_menu,   F.data == "main_menu")
+
+    # Polymarket control panel callbacks
+    dp.callback_query.register(handle_poly_menu,        F.data == "poly_menu")
+    dp.callback_query.register(handle_poly_portfolio,   F.data == "poly_portfolio")
+    dp.callback_query.register(handle_poly_positions,   F.data == "poly_positions")
+    dp.callback_query.register(handle_poly_orderbook,   F.data == "poly_orderbook")
+    dp.callback_query.register(handle_poly_ai_recs,     F.data == "poly_ai_recs")
+    dp.callback_query.register(handle_poly_scalper,     F.data == "poly_scalper")
+    dp.callback_query.register(handle_poly_trade_log,   F.data == "poly_trade_log")
+    dp.callback_query.register(handle_poly_buy_prompt,  F.data == "poly_buy_prompt")
+    dp.callback_query.register(handle_poly_sell_prompt, F.data == "poly_sell_prompt")
 
     # HITL inline keyboard callbacks
     dp.callback_query.register(
@@ -1633,6 +2288,16 @@ async def run() -> None:
     except (OSError, AttributeError, ValueError):
         pass  # SIGTERM not available on Windows
 
+    # ── Start Polymarket AI alert loop (every 5 minutes) ──────────────────────
+    admin_chat_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "").strip()
+    poly_alert_task: asyncio.Task | None = None
+    if admin_chat_id:
+        poly_alert_task = asyncio.create_task(
+            _poly_alert_loop(bot, admin_chat_id, interval_s=300),
+            name="poly-alert-loop",
+        )
+        log.info("poly_alert_loop_started", chat_id=admin_chat_id, interval_s=300)
+
     # ── Start polling as a task so we can cancel it on signal ─────────────────
     polling_task = asyncio.create_task(dp.start_polling(bot), name="bot-polling")
     stop_watcher = asyncio.create_task(stop_event.wait(),    name="bot-stop-watcher")
@@ -1643,6 +2308,12 @@ async def run() -> None:
         )
     finally:
         stop_watcher.cancel()
+        if poly_alert_task and not poly_alert_task.done():
+            poly_alert_task.cancel()
+            try:
+                await poly_alert_task
+            except asyncio.CancelledError:
+                pass
         if not polling_task.done():
             polling_task.cancel()
             try:

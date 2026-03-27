@@ -2387,8 +2387,8 @@ function PolymarketTradingView({
           <div className="space-y-1">
             <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
               <LiveDot active={!!bot?.session_active} />
-              <span>Portfolio</span>
-              {bot?.session_active && <span className="text-emerald-400 animate-pulse">· SESSION ACTIVE</span>}
+              <span>Portfolio <span className="text-slate-600 font-normal normal-case">/ תיק השקעות</span></span>
+              {bot?.session_active && <span className="text-emerald-400 animate-pulse">· SESSION ACTIVE / סשן פעיל</span>}
             </div>
             <div className="text-4xl font-black font-mono text-white">
               {fmtUsd(portfolioValue)}
@@ -2407,19 +2407,19 @@ function PolymarketTradingView({
 
           {/* Center: cash + stats */}
           <div className="flex flex-wrap gap-8">
-            <StatBadge label="Portfolio" value={fmtUsd(portfolioValue)} icon={TrendingUp} color="cyan" />
-            <StatBadge label="Cash (USDC)" value={fmtUsd(portfolioCash > 0 ? portfolioCash : collateralRaw)} icon={DollarSign} color="emerald" />
-            <StatBadge label="Positions" value={fmtUsd(portfolioPositions)} icon={BarChart2} color="violet" />
-            <StatBadge label="Win Rate" value={`${(perf?.win_rate ?? 0).toFixed(1)}%`} sub={`${perf?.total_trades ?? 0} trades`} icon={Percent} color="amber" />
+            <StatBadge label="Portfolio / תיק" value={fmtUsd(portfolioValue)} icon={TrendingUp} color="cyan" />
+            <StatBadge label="Cash (USDC) / מזומן" value={fmtUsd(data?.portfolio_positions_list ? portfolioCash : (collateralRaw > 0 ? collateralRaw : portfolioCash))} icon={DollarSign} color="emerald" />
+            <StatBadge label="Positions / פוזיציות" value={fmtUsd(portfolioPositions)} icon={BarChart2} color="violet" />
+            <StatBadge label="Win Rate / אחוז ניצחון" value={`${(perf?.win_rate ?? 0).toFixed(1)}%`} sub={`${perf?.total_trades ?? 0} trades / עסקאות`} icon={Percent} color="amber" />
           </div>
 
           {/* Right: action buttons */}
           <div className="flex gap-3">
             <button type="button" className="px-5 py-2 bg-cyan-500 hover:bg-cyan-400 text-black font-black text-xs rounded-xl transition shadow-lg shadow-cyan-500/20 uppercase tracking-widest">
-              Deposit
+              Deposit / הפקדה
             </button>
             <button type="button" className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-black text-xs rounded-xl transition border border-slate-700 uppercase tracking-widest">
-              Withdraw
+              Withdraw / משיכה
             </button>
           </div>
         </div>
@@ -2427,7 +2427,7 @@ function PolymarketTradingView({
         {/* PnL sparkline */}
         <div className="mt-6">
           <div className="flex items-center gap-2 mb-3">
-            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Profit / Loss</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Profit / Loss <span className="text-slate-600 normal-case font-normal">/ רווח והפסד</span></span>
             <div className="flex gap-1 ml-auto">
               {(["1D", "1W", "1M", "ALL"] as const).map((r) => (
                 <button key={r} type="button" onClick={() => setPnlRange(r)}
@@ -2463,16 +2463,16 @@ function PolymarketTradingView({
         {/* ── PHASE 2: Augmented Analytics Injection ── */}
         <div className="mt-5 pt-5 border-t border-slate-800/60">
           <div className="flex items-center gap-2 mb-3">
-            <span className="text-[9px] font-black uppercase tracking-[0.3em] text-cyan-400/60">◈ NEXUS CORE AUGMENTED ANALYTICS</span>
-            <span className="text-[9px] font-black text-fuchsia-400 animate-pulse">LIVE</span>
+            <span className="text-[9px] font-black uppercase tracking-[0.3em] text-cyan-400/60">◈ NEXUS CORE AUGMENTED ANALYTICS <span className="text-cyan-400/30 normal-case font-normal">/ ניתוח מתקדם</span></span>
+            <span className="text-[9px] font-black text-fuchsia-400 animate-pulse">LIVE / חי</span>
             {!bot?.available && (
-              <span className="text-[8px] font-black text-amber-400/70 font-mono ml-auto">BOT OFFLINE — WAITING FOR WORKER</span>
+              <span className="text-[8px] font-black text-amber-400/70 font-mono ml-auto">BOT OFFLINE — WAITING FOR WORKER / בוט לא מחובר</span>
             )}
           </div>
           <div className="grid grid-cols-3 gap-3">
             {/* Risk Adjusted Alpha = realized PnL × (winRate/100 + 0.5) */}
             <div className="rounded-xl p-3" style={{ background: "rgba(34,211,238,0.06)", border: "1px solid rgba(34,211,238,0.2)", boxShadow: "0 0 12px rgba(34,211,238,0.06)" }}>
-              <div className="text-[9px] font-black uppercase tracking-widest text-cyan-400/60 mb-1">⬡ Risk Adjusted Alpha</div>
+              <div className="text-[9px] font-black uppercase tracking-widest text-cyan-400/60 mb-1">⬡ Risk Adjusted Alpha <span className="text-cyan-400/30 normal-case font-normal">/ אלפא מתואם סיכון</span></div>
               <div className={`text-lg font-black font-mono ${riskAdjAlpha >= 0 ? "text-cyan-300" : "text-rose-400"}`} style={{ textShadow: "0 0 10px rgba(34,211,238,0.4)" }}>
                 {riskAdjAlpha >= 0 ? "+" : ""}{fmtUsd(riskAdjAlpha)}
               </div>
@@ -2482,7 +2482,7 @@ function PolymarketTradingView({
             </div>
             {/* Est. Returns by Nexus Core = unrealized + arb gap projection */}
             <div className="rounded-xl p-3" style={{ background: "rgba(168,85,247,0.06)", border: "1px solid rgba(168,85,247,0.2)", boxShadow: "0 0 12px rgba(168,85,247,0.06)" }}>
-              <div className="text-[9px] font-black uppercase tracking-widest text-purple-400/60 mb-1">⬡ Est. Returns by Nexus Core</div>
+              <div className="text-[9px] font-black uppercase tracking-widest text-purple-400/60 mb-1">⬡ Est. Returns by Nexus Core <span className="text-purple-400/30 normal-case font-normal">/ תשואה משוערת</span></div>
               <div className={`text-lg font-black font-mono ${estReturnsNexus >= 0 ? "text-purple-300" : "text-rose-400"}`} style={{ textShadow: "0 0 10px rgba(168,85,247,0.4)" }}>
                 {estReturnsNexus >= 0 ? "+" : ""}{fmtUsd(estReturnsNexus)}
               </div>
@@ -2492,12 +2492,12 @@ function PolymarketTradingView({
             </div>
             {/* Est. Returns = total PnL from bot */}
             <div className="rounded-xl p-3" style={{ background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.2)", boxShadow: "0 0 12px rgba(52,211,153,0.06)" }}>
-              <div className="text-[9px] font-black uppercase tracking-widest text-emerald-400/60 mb-1">⬡ Est. Returns</div>
+              <div className="text-[9px] font-black uppercase tracking-widest text-emerald-400/60 mb-1">⬡ Est. Returns <span className="text-emerald-400/30 normal-case font-normal">/ תשואה כוללת</span></div>
               <div className={`text-lg font-black font-mono ${estReturns >= 0 ? "text-emerald-300" : "text-rose-400"}`} style={{ textShadow: "0 0 10px rgba(52,211,153,0.4)" }}>
                 {estReturns >= 0 ? "+" : ""}{fmtUsd(estReturns)}
               </div>
               <div className="text-[9px] text-slate-600 font-mono mt-0.5">
-                Total PnL · {bot?.last_action || (bot?.available ? "active" : "no session")}
+                Total PnL / סה״כ · {bot?.last_action || (bot?.available ? "active / פעיל" : "no session / אין סשן")}
               </div>
             </div>
           </div>
@@ -2506,8 +2506,8 @@ function PolymarketTradingView({
         {/* ── PHASE 2: 3D Wireframe Mesh PnL Graph — driven by real pnl_series ── */}
         <div className="mt-4">
           <div className="flex items-center gap-2 mb-2">
-            <span className="text-[9px] font-black uppercase tracking-widest text-fuchsia-400/50">◈ P/L 3D WIREFRAME MESH</span>
-            <span className="text-[8px] text-slate-600 font-mono">{pnlSeries.length} pts</span>
+            <span className="text-[9px] font-black uppercase tracking-widest text-fuchsia-400/50">◈ P/L 3D WIREFRAME MESH <span className="text-fuchsia-400/25 normal-case font-normal">/ גרף רווח/הפסד</span></span>
+            <span className="text-[8px] text-slate-600 font-mono">{pnlSeries.length} pts / נקודות</span>
           </div>
           {pnlSeries.length > 1 ? (
             <div className="h-[90px]">
@@ -2545,7 +2545,7 @@ function PolymarketTradingView({
                 {[0,1,2,3,4,5,6,7,8,9,10,11,12].map(i => <line key={`mv${i}`} x1={i*50} y1="0" x2={i*50} y2="90" stroke="rgba(236,72,153,0.05)" strokeWidth="1"/>)}
                 <line x1="0" y1="45" x2="600" y2="45" stroke="rgba(236,72,153,0.2)" strokeWidth="1" strokeDasharray="4,4"/>
               </svg>
-              <div className="absolute inset-0 flex items-center justify-center text-[9px] font-black text-slate-700 uppercase tracking-widest font-mono">AWAITING PnL DATA FROM WORKER</div>
+              <div className="absolute inset-0 flex items-center justify-center text-[9px] font-black text-slate-700 uppercase tracking-widest font-mono">AWAITING PnL DATA FROM WORKER / ממתין לנתוני רווח/הפסד</div>
             </div>
           )}
         </div>
@@ -2557,9 +2557,9 @@ function PolymarketTradingView({
         <HackerCard className="p-5" glow={totalPnl >= 0 ? "emerald" : "rose"}>
           <div className="flex items-center gap-2 mb-3">
             <Cpu size={14} className="text-cyan-400" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Bot Total PnL</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Bot Total PnL <span className="text-slate-600 normal-case font-normal">/ רווח בוט</span></span>
             {bot?.within_target_band && (
-              <span className="ml-auto text-[8px] font-black text-emerald-400 animate-pulse">◈ IN BAND</span>
+              <span className="ml-auto text-[8px] font-black text-emerald-400 animate-pulse">◈ IN BAND / בטווח</span>
             )}
           </div>
           <div className={`text-2xl font-black font-mono ${totalPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
@@ -2586,13 +2586,13 @@ function PolymarketTradingView({
         <HackerCard className="p-5" glow="violet">
           <div className="flex items-center gap-2 mb-3">
             <Target size={14} className="text-violet-400" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Win Rate</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Win Rate <span className="text-slate-600 normal-case font-normal">/ אחוז ניצחון</span></span>
           </div>
           <div className="text-2xl font-black font-mono text-violet-400">
             {(perf?.win_rate ?? 0).toFixed(1)}%
           </div>
           <div className="text-[10px] text-slate-600 font-mono mt-1">
-            {perf?.wins ?? 0}W / {perf?.losses ?? 0}L · {perf?.total_trades ?? 0} total
+            {perf?.wins ?? 0}W / {perf?.losses ?? 0}L · {perf?.total_trades ?? 0} total / עסקאות
           </div>
           <div className="mt-2 h-1.5 bg-slate-800 rounded-full overflow-hidden">
             <div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${perf?.win_rate ?? 0}%` }} />
@@ -2603,16 +2603,16 @@ function PolymarketTradingView({
         <HackerCard className="p-5" glow="cyan">
           <div className="flex items-center gap-2 mb-3">
             <Zap size={14} className="text-cyan-400" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">5m Scalper</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">5m Scalper <span className="text-slate-600 normal-case font-normal">/ סקאלפר</span></span>
             {poly5m?.paper_trading && (
-              <span className="ml-auto text-[8px] font-black text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded uppercase">PAPER</span>
+              <span className="ml-auto text-[8px] font-black text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded uppercase">PAPER / נייר</span>
             )}
           </div>
           <div className="text-2xl font-black font-mono text-cyan-400">
             {poly5m?.wins ?? 0}W / {poly5m?.losses ?? 0}L
           </div>
           <div className="text-[10px] text-slate-600 font-mono mt-1">
-            {poly5m?.trading_halted ? "⛔ HALTED" : (poly5m?.decision ?? "—")}
+            {poly5m?.trading_halted ? "⛔ HALTED / עצור" : (poly5m?.decision ?? "—")}
           </div>
           {poly5m?.btc_price != null && (
             <div className="text-[10px] text-slate-500 font-mono mt-1">
@@ -2631,7 +2631,7 @@ function PolymarketTradingView({
         <HackerCard className="p-5" glow={cx?.signal === "BULLISH" || cx?.signal === "BUY" ? "emerald" : "rose"}>
           <div className="flex items-center gap-2 mb-3">
             <Radio size={14} className="text-slate-400" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Cross-Exchange</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Cross-Exchange <span className="text-slate-600 normal-case font-normal">/ בין בורסות</span></span>
           </div>
           <div className={`text-xl font-black font-mono ${signalColor}`}>
             {cx?.signal_label ?? cx?.signal ?? "—"}
@@ -2639,8 +2639,8 @@ function PolymarketTradingView({
           <div className="text-[10px] text-slate-600 font-mono mt-1">
             ARB GAP: {cx?.arbitrage_gap != null ? (cx.arbitrage_gap * 100).toFixed(3) + "%" : "—"}
           </div>
-          {cx?.high_confidence && (
-            <div className="mt-2 text-[10px] font-black text-amber-400 uppercase tracking-widest animate-pulse">⚡ HIGH CONFIDENCE</div>
+            {cx?.high_confidence && (
+            <div className="mt-2 text-[10px] font-black text-amber-400 uppercase tracking-widest animate-pulse">⚡ HIGH CONFIDENCE / ביטחון גבוה</div>
           )}
         </HackerCard>
       </div>
@@ -2654,13 +2654,13 @@ function PolymarketTradingView({
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800/60">
               <div className="flex items-center gap-2">
                 <BarChart2 size={16} className="text-cyan-400" />
-                <span className="text-sm font-black uppercase tracking-widest text-white">Positions</span>
+                <span className="text-sm font-black uppercase tracking-widest text-white">Positions <span className="text-slate-500 normal-case font-normal text-xs">/ פוזיציות</span></span>
                 <span className="text-[10px] font-black text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full">{positions.length}</span>
               </div>
               <div className="flex gap-2 text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                <button type="button" className="px-3 py-1 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">Positions</button>
-                <button type="button" className="px-3 py-1 rounded-lg hover:bg-slate-800 transition">Open orders</button>
-                <button type="button" className="px-3 py-1 rounded-lg hover:bg-slate-800 transition">History</button>
+                <button type="button" className="px-3 py-1 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">Positions / פוזיציות</button>
+                <button type="button" className="px-3 py-1 rounded-lg hover:bg-slate-800 transition">Open orders / פקודות פתוחות</button>
+                <button type="button" className="px-3 py-1 rounded-lg hover:bg-slate-800 transition">History / היסטוריה</button>
               </div>
             </div>
 
@@ -2668,22 +2668,22 @@ function PolymarketTradingView({
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-slate-800/60">
-                    <th className="px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">Market</th>
-                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">AVG → NOW</th>
-                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">Traded</th>
-                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">To Win</th>
-                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">Value</th>
-                    <th className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-widest text-cyan-500/60">REAL PROB (AUDITED)</th>
-                    <th className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-widest text-purple-500/60">EST. RESOLUTION</th>
-                    <th className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-widest text-fuchsia-500/60">NEXUS REC</th>
-                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">Action</th>
+                    <th className="px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">Market / שוק</th>
+                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">AVG → NOW / ממוצע → עכשיו</th>
+                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">Traded / נסחר</th>
+                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">To Win / לזכייה</th>
+                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">Value / שווי</th>
+                    <th className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-widest text-cyan-500/60">REAL PROB (AUDITED) / הסתברות אמיתית</th>
+                    <th className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-widest text-purple-500/60">EST. RESOLUTION / פקיעה משוערת</th>
+                    <th className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-widest text-fuchsia-500/60">NEXUS REC / המלצת נקסוס</th>
+                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">Action / פעולה</th>
                   </tr>
                 </thead>
                 <tbody>
                   {positions.length === 0 && (
                     <tr>
                       <td colSpan={9} className="px-4 py-10 text-center text-slate-600 text-xs font-mono">
-                        No open positions — trade history will populate this table
+                        No open positions — trade history will populate this table / אין פוזיציות פתוחות — היסטוריית מסחר תמלא טבלה זו
                       </td>
                     </tr>
                   )}
@@ -2719,8 +2719,8 @@ function PolymarketTradingView({
                               )}
                             </div>
                             <div className="text-[10px] text-slate-500 font-mono">
-                              {pos.netShares.toFixed(1)} shares
-                              {(pos as {endDate?: string}).endDate && <span className="ml-1 text-slate-600">· exp {new Date((pos as {endDate?: string}).endDate!).toLocaleDateString("en-US", {month:"short",day:"numeric"})}</span>}
+                              {pos.netShares.toFixed(1)} shares / מניות
+                              {(pos as {endDate?: string}).endDate && <span className="ml-1 text-slate-600">· exp / פקיעה {new Date((pos as {endDate?: string}).endDate!).toLocaleDateString("en-US", {month:"short",day:"numeric"})}</span>}
                             </div>
                           </div>
                         </div>
@@ -2826,7 +2826,7 @@ function PolymarketTradingView({
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <TrendingUp size={14} className="text-cyan-400" />
-                <span className="text-xs font-black uppercase tracking-widest text-white">CLOB Live Orderbook</span>
+                <span className="text-xs font-black uppercase tracking-widest text-white">CLOB Live Orderbook <span className="text-slate-500 normal-case font-normal text-[10px]">/ ספר פקודות חי</span></span>
                 {orderbook?.source && (
                   <span className="text-[9px] font-black text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded uppercase tracking-widest animate-pulse">
                     {orderbook.source}
@@ -2839,10 +2839,10 @@ function PolymarketTradingView({
             {/* Bid/Ask stats */}
             <div className="grid grid-cols-4 gap-2 mb-4">
               {[
-                { label: "BID", value: orderbook?.best_bid?.toFixed(4) ?? "—", color: "text-emerald-400" },
-                { label: "ASK", value: orderbook?.best_ask?.toFixed(4) ?? "—", color: "text-rose-400" },
-                { label: "MID", value: orderbook?.mid_price?.toFixed(4) ?? "—", color: "text-cyan-400" },
-                { label: "SPREAD", value: orderbook?.spread?.toFixed(4) ?? "—", color: "text-slate-400" },
+                { label: "BID / קנייה", value: orderbook?.best_bid?.toFixed(4) ?? "—", color: "text-emerald-400" },
+                { label: "ASK / מכירה", value: orderbook?.best_ask?.toFixed(4) ?? "—", color: "text-rose-400" },
+                { label: "MID / אמצע", value: orderbook?.mid_price?.toFixed(4) ?? "—", color: "text-cyan-400" },
+                { label: "SPREAD / פער", value: orderbook?.spread?.toFixed(4) ?? "—", color: "text-slate-400" },
               ].map((s) => (
                 <div key={s.label} className="bg-slate-900/60 rounded-lg p-2 text-center">
                   <div className="text-[9px] font-black uppercase tracking-widest text-slate-600">{s.label}</div>
@@ -2854,13 +2854,13 @@ function PolymarketTradingView({
             {orderbook?.expired && (
               <div className="flex items-center gap-2 p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-400 text-[10px] font-black uppercase tracking-widest mb-3">
                 <AlertTriangle size={12} />
-                MARKET EXPIRED — {orderbook.market_question || (orderbook.token_id?.slice(0, 16) ?? "") + "…"} — no active orderbook
+                MARKET EXPIRED / שוק פג תוקף — {orderbook.market_question || (orderbook.token_id?.slice(0, 16) ?? "") + "…"} — no active orderbook / אין ספר פקודות פעיל
               </div>
             )}
             {orderbook?.no_position && (
               <div className="flex items-center gap-2 p-2.5 bg-slate-700/40 border border-slate-600/30 rounded-xl text-slate-400 text-[10px] font-black uppercase tracking-widest mb-3">
                 <Activity size={12} />
-                NO ACTIVE POSITION — Bot is idle, waiting for next signal
+                NO ACTIVE POSITION / אין פוזיציה פעילה — Bot is idle, waiting for next signal / הבוט ממתין לאות הבא
               </div>
             )}
             {obError && (
@@ -2898,7 +2898,7 @@ function PolymarketTradingView({
             <div className="grid grid-cols-2 gap-3 text-[10px] font-mono max-h-[180px] overflow-y-auto">
               <div>
                 <div className="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-1.5 flex justify-between">
-                  <span>BIDS</span><span className="text-slate-600">SIZE</span>
+                  <span>BIDS / קניות</span><span className="text-slate-600">SIZE / גודל</span>
                 </div>
                 {(orderbook?.bids ?? []).slice(0, 10).map((b, i) => (
                   <div key={i} className="flex justify-between py-0.5 border-b border-slate-800/30 hover:bg-emerald-500/5 transition">
@@ -2910,7 +2910,7 @@ function PolymarketTradingView({
               </div>
               <div>
                 <div className="text-[9px] font-black text-rose-400 uppercase tracking-widest mb-1.5 flex justify-between">
-                  <span>ASKS</span><span className="text-slate-600">SIZE</span>
+                  <span>ASKS / מכירות</span><span className="text-slate-600">SIZE / גודל</span>
                 </div>
                 {(orderbook?.asks ?? []).slice(0, 10).map((a, i) => (
                   <div key={i} className="flex justify-between py-0.5 border-b border-slate-800/30 hover:bg-rose-500/5 transition">
@@ -2929,15 +2929,15 @@ function PolymarketTradingView({
       <HackerCard className="p-6" glow="violet">
         <div className="flex items-center gap-2 mb-5">
           <Crosshair size={16} className="text-violet-400" />
-          <span className="text-sm font-black uppercase tracking-widest text-white">AI Recommendations</span>
+          <span className="text-sm font-black uppercase tracking-widest text-white">AI Recommendations <span className="text-slate-500 normal-case font-normal text-xs">/ המלצות AI</span></span>
           <span className={`ml-auto text-[10px] font-black px-2 py-0.5 rounded border uppercase tracking-widest ${signalBg} ${signalColor}`}>
-            {cx?.signal_label ?? "NEUTRAL"} · {cx?.high_confidence ? "HIGH CONF" : "LOW CONF"}
+            {cx?.signal_label ?? "NEUTRAL"} · {cx?.high_confidence ? "HIGH CONF / ביטחון גבוה" : "LOW CONF / ביטחון נמוך"}
           </span>
         </div>
 
         {aiRecs.length === 0 ? (
           <div className="text-slate-600 text-xs font-mono text-center py-6">
-            No open positions to analyze — place trades to see AI recommendations
+            No open positions to analyze — place trades to see AI recommendations / אין פוזיציות לניתוח — בצע עסקאות לקבלת המלצות AI
           </div>
         ) : (
           <div className="space-y-3">
@@ -2948,15 +2948,15 @@ function PolymarketTradingView({
                   <div className="flex-1 min-w-0">
                     <div className="text-xs font-bold text-white truncate">{rec.asset}</div>
                     <div className="text-[10px] text-slate-500 font-mono">
-                      Edge: <span className={rec.pnlPct >= 0 ? "text-emerald-400" : "text-rose-400"}>{fmtPct(rec.pnlPct)}</span>
-                      {" · "}Mid: {(rec.nowPrice * 100).toFixed(1)}¢
-                      {" · "}Avg: {(rec.avgPrice * 100).toFixed(1)}¢
+                      Edge / יתרון: <span className={rec.pnlPct >= 0 ? "text-emerald-400" : "text-rose-400"}>{fmtPct(rec.pnlPct)}</span>
+                      {" · "}Mid / אמצע: {(rec.nowPrice * 100).toFixed(1)}¢
+                      {" · "}Avg / ממוצע: {(rec.avgPrice * 100).toFixed(1)}¢
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
                     {/* Confidence bar */}
                     <div className="hidden sm:block w-20">
-                      <div className="text-[9px] text-slate-600 font-mono mb-1 text-right">{rec.confidence.toFixed(0)}% conf</div>
+                      <div className="text-[9px] text-slate-600 font-mono mb-1 text-right">{rec.confidence.toFixed(0)}% conf / ביטחון</div>
                       <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
                         <div className="h-full bg-violet-500 rounded-full" style={{ width: `${rec.confidence}%` }} />
                       </div>
@@ -2985,18 +2985,18 @@ function PolymarketTradingView({
           <HackerCard className="p-6 flex flex-col gap-5 h-full" glow="cyan">
             <div className="flex items-center gap-2">
               <Crosshair size={14} className="text-cyan-400" />
-              <span className="text-xs font-black uppercase tracking-widest text-white">Execute Order</span>
+              <span className="text-xs font-black uppercase tracking-widest text-white">Execute Order <span className="text-slate-500 normal-case font-normal text-[10px]">/ ביצוע פקודה</span></span>
               {tradeLog?.paper_trading && (
-                <span className="ml-auto text-[9px] font-black text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded uppercase tracking-widest">PAPER</span>
+                <span className="ml-auto text-[9px] font-black text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded uppercase tracking-widest">PAPER / נייר</span>
               )}
             </div>
 
             <div className="space-y-3">
               <div>
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-1.5">Token ID (CLOB outcome token)</label>
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-1.5">Token ID (CLOB outcome token) / מזהה טוקן</label>
                 <input
                   type="text"
-                  placeholder="0x... or select position above"
+                  placeholder="0x... or select position above / בחר פוזיציה למעלה"
                   className="w-full bg-slate-900/60 border border-slate-700 hover:border-cyan-500/40 focus:border-cyan-500 p-3 rounded-xl outline-none text-xs font-mono text-slate-300 transition"
                   value={tokenId}
                   onChange={(e) => setTokenId(e.target.value)}
@@ -3004,7 +3004,7 @@ function PolymarketTradingView({
               </div>
 
               <div className="bg-slate-900/60 p-4 rounded-xl border border-slate-700">
-                <div className="text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Amount (USDC)</div>
+                <div className="text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Amount (USDC) / סכום</div>
                 <input
                   type="number"
                   className="bg-transparent text-2xl font-black w-full outline-none text-white font-mono"
@@ -3032,17 +3032,17 @@ function PolymarketTradingView({
             <div className="grid grid-cols-2 gap-3 mt-auto">
               <button type="button" onClick={() => void handleOrder("BUY")}
                 className="py-3.5 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-black rounded-xl font-black text-sm shadow-lg shadow-emerald-500/20 transition uppercase tracking-widest">
-                BUY YES
+                BUY YES / קנה
               </button>
               <button type="button" onClick={() => void handleOrder("SELL")}
                 className="py-3.5 bg-rose-500 hover:bg-rose-400 active:scale-95 text-white rounded-xl font-black text-sm shadow-lg shadow-rose-500/20 transition uppercase tracking-widest">
-                SELL
+                SELL / מכור
               </button>
             </div>
 
             {orderbook?.mid_price != null && (
               <div className="text-[10px] text-slate-600 font-mono text-center">
-                Est. fill @ {orderbook.mid_price.toFixed(4)} · {fmtUsd(parseFloat(amount) * orderbook.mid_price)} to win
+                Est. fill @ {orderbook.mid_price.toFixed(4)} · {fmtUsd(parseFloat(amount) * orderbook.mid_price)} to win / לזכייה
               </div>
             )}
 
@@ -3086,11 +3086,11 @@ function PolymarketTradingView({
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800/60">
               <div className="flex items-center gap-2">
                 <FileText size={14} className="text-cyan-400" />
-                <span className="text-xs font-black uppercase tracking-widest text-white">Trade Log</span>
+                <span className="text-xs font-black uppercase tracking-widest text-white">Trade Log <span className="text-slate-500 normal-case font-normal text-[10px]">/ יומן עסקאות</span></span>
                 <span className="text-[10px] font-black text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full">{tradeLog?.total ?? data?.trading_history?.length ?? 0}</span>
               </div>
               <div className="flex items-center gap-2 text-[10px] font-mono text-slate-500">
-                <span>Kill switch:</span>
+                <span>Kill switch / מתג כיבוי:</span>
                 <span className="text-amber-400 font-black">{fmtUsd(tradeLog?.kill_switch_balance_usd ?? 90)}</span>
               </div>
             </div>
@@ -3098,12 +3098,12 @@ function PolymarketTradingView({
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-[#0a0f1a]">
                   <tr className="border-b border-slate-800/60">
-                    <th className="px-4 py-2.5 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Time</th>
-                    <th className="px-4 py-2.5 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Market</th>
-                    <th className="px-4 py-2.5 text-center text-[10px] font-black uppercase tracking-widest text-slate-600">Side</th>
-                    <th className="px-4 py-2.5 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Price</th>
-                    <th className="px-4 py-2.5 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Spent</th>
-                    <th className="px-4 py-2.5 text-center text-[10px] font-black uppercase tracking-widest text-slate-600">Status</th>
+                    <th className="px-4 py-2.5 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Time / זמן</th>
+                    <th className="px-4 py-2.5 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Market / שוק</th>
+                    <th className="px-4 py-2.5 text-center text-[10px] font-black uppercase tracking-widest text-slate-600">Side / כיוון</th>
+                    <th className="px-4 py-2.5 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Price / מחיר</th>
+                    <th className="px-4 py-2.5 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Spent / הוצאה</th>
+                    <th className="px-4 py-2.5 text-center text-[10px] font-black uppercase tracking-widest text-slate-600">Status / סטטוס</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3148,7 +3148,7 @@ function PolymarketTradingView({
                   {!(tradeLog?.entries?.length) && !(data?.trading_history?.length) && (
                     <tr>
                       <td colSpan={6} className="px-4 py-10 text-center text-slate-600 text-xs font-mono">
-                        No trade history yet
+                        No trade history yet / אין היסטוריית מסחר עדיין
                       </td>
                     </tr>
                   )}
@@ -3163,14 +3163,14 @@ function PolymarketTradingView({
       <HackerCard className="p-6" glow="cyan">
         <div className="flex items-center gap-3 mb-5">
           <Terminal size={16} className="text-cyan-400" />
-          <span className="text-sm font-black uppercase tracking-widest text-white">Batched-Order Input HUD</span>
+          <span className="text-sm font-black uppercase tracking-widest text-white">Batched-Order Input HUD <span className="text-slate-500 normal-case font-normal text-xs">/ פקודות אצווה</span></span>
           <span className="text-[9px] font-black text-cyan-400/40 font-mono ml-1">nexus://batch.engine/v2</span>
           <span className="ml-auto text-[9px] font-black text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 rounded uppercase tracking-widest animate-pulse">NEXUS CORE</span>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
           <div>
-            <label className="text-[9px] font-black uppercase tracking-widest text-cyan-400/60 block mb-1.5">Batch Type</label>
+            <label className="text-[9px] font-black uppercase tracking-widest text-cyan-400/60 block mb-1.5">Batch Type / סוג אצווה</label>
             <select value={batchType} onChange={(e) => setBatchType(e.target.value)}
               className="w-full text-[11px] font-black outline-none cursor-pointer"
               style={{ background: "rgba(34,211,238,0.06)", border: "1px solid rgba(34,211,238,0.25)", borderRadius: "8px", padding: "7px 10px", color: "#67e8f9", fontFamily: "monospace" }}>
@@ -3182,7 +3182,7 @@ function PolymarketTradingView({
             </select>
           </div>
           <div>
-            <label className="text-[9px] font-black uppercase tracking-widest text-cyan-400/60 block mb-1.5">Batch Order Sel</label>
+            <label className="text-[9px] font-black uppercase tracking-widest text-cyan-400/60 block mb-1.5">Batch Order Sel / בחירת פקודות</label>
             <select value={batchOrderSel} onChange={(e) => setBatchOrderSel(e.target.value)}
               className="w-full text-[11px] font-black outline-none cursor-pointer"
               style={{ background: "rgba(34,211,238,0.06)", border: "1px solid rgba(34,211,238,0.25)", borderRadius: "8px", padding: "7px 10px", color: "#67e8f9", fontFamily: "monospace" }}>
@@ -3194,13 +3194,13 @@ function PolymarketTradingView({
             </select>
           </div>
           <div>
-            <label className="text-[9px] font-black uppercase tracking-widest text-cyan-400/60 block mb-1.5">Price (¢)</label>
+            <label className="text-[9px] font-black uppercase tracking-widest text-cyan-400/60 block mb-1.5">Price (¢) / מחיר</label>
             <input type="text" value={batchPrice} onChange={(e) => setBatchPrice(e.target.value)}
               className="w-full text-[11px] font-black outline-none"
               style={{ background: "rgba(34,211,238,0.06)", border: "1px solid rgba(34,211,238,0.25)", borderRadius: "8px", padding: "7px 10px", color: "#67e8f9", fontFamily: "monospace" }} />
           </div>
           <div>
-            <label className="text-[9px] font-black uppercase tracking-widest text-cyan-400/60 block mb-1.5">Size (USDC)</label>
+            <label className="text-[9px] font-black uppercase tracking-widest text-cyan-400/60 block mb-1.5">Size (USDC) / גודל</label>
             <input type="text" value={batchSize} onChange={(e) => setBatchSize(e.target.value)}
               className="w-full text-[11px] font-black outline-none"
               style={{ background: "rgba(34,211,238,0.06)", border: "1px solid rgba(34,211,238,0.25)", borderRadius: "8px", padding: "7px 10px", color: "#67e8f9", fontFamily: "monospace" }} />
@@ -3227,7 +3227,7 @@ function PolymarketTradingView({
               textShadow: "0 0 8px rgba(34,211,238,0.5)",
               fontFamily: "monospace",
             }}>
-            ⬡ DISPATCH BATCH
+            ⬡ DISPATCH BATCH / שלח אצווה
           </button>
           <button type="button" onClick={() => { setBatchType("LIMIT"); setBatchOrderSel("ALL"); setBatchPrice("0.21"); setBatchSize("100"); setBatchStatus(null); }}
             className="px-4 py-2.5 text-[10px] font-black uppercase tracking-widest"
@@ -3247,11 +3247,11 @@ function PolymarketTradingView({
       <HackerCard className="p-6" glow="emerald">
         <div className="flex items-center gap-3 mb-5">
           <Cpu size={16} className="text-emerald-400" />
-          <span className="text-sm font-black uppercase tracking-widest text-white">Worker Node Resource Allocation</span>
-          <span className="text-[9px] font-black text-emerald-400/40 font-mono ml-1">REAL-TIME · /api/cluster/health</span>
+          <span className="text-sm font-black uppercase tracking-widest text-white">Worker Node Resource Allocation <span className="text-slate-500 normal-case font-normal text-xs">/ הקצאת משאבי צמתים</span></span>
+          <span className="text-[9px] font-black text-emerald-400/40 font-mono ml-1">REAL-TIME / בזמן אמת · /api/cluster/health</span>
           {nodes.length > 0 && (
             <span className="ml-auto text-[9px] font-black text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded uppercase tracking-widest animate-pulse">
-              {nodes.filter(n => n.online).length}/{nodes.length} ONLINE
+              {nodes.filter(n => n.online).length}/{nodes.length} ONLINE / מחוברים
             </span>
           )}
         </div>
@@ -3259,7 +3259,7 @@ function PolymarketTradingView({
         {nodes.length === 0 ? (
           <div className="flex items-center gap-3 p-4 rounded-xl text-[10px] font-black uppercase tracking-widest" style={{ background: "rgba(52,211,153,0.04)", border: "1px solid rgba(52,211,153,0.12)" }}>
             <Radio size={12} className="text-emerald-400 animate-pulse" />
-            <span className="text-slate-500 font-mono">SCANNING CLUSTER NODES...</span>
+            <span className="text-slate-500 font-mono">SCANNING CLUSTER NODES... / סורק צמתי קלאסטר...</span>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -3282,7 +3282,7 @@ function PolymarketTradingView({
                     </div>
                     <div className="flex items-center gap-1.5">
                       <div className="w-1.5 h-1.5 rounded-full" style={{ background: node.online ? "#34d399" : "#f87171", boxShadow: node.online ? "0 0 5px rgba(52,211,153,0.8)" : "0 0 5px rgba(244,63,94,0.6)" }} />
-                      <span className={`text-[8px] font-black uppercase ${node.online ? "text-emerald-400" : "text-rose-400"}`}>{node.online ? "ONLINE" : "OFFLINE"}</span>
+                      <span className={`text-[8px] font-black uppercase ${node.online ? "text-emerald-400" : "text-rose-400"}`}>{node.online ? "ONLINE / מחובר" : "OFFLINE / מנותק"}</span>
                     </div>
                   </div>
                   <div className="mb-2">
@@ -3305,7 +3305,7 @@ function PolymarketTradingView({
                   </div>
                   {node.cpu_temp && (
                     <div className="text-[8px] font-black uppercase tracking-widest mt-1" style={{ color: node.cpu_temp > 75 ? "#f87171" : "#475569" }}>
-                      TEMP: {node.cpu_temp.toFixed(0)}°C
+                      TEMP / טמפ׳: {node.cpu_temp.toFixed(0)}°C
                     </div>
                   )}
                   {node.role && <div className="text-[8px] text-slate-600 uppercase tracking-widest mt-0.5">{node.role}</div>}
