@@ -18,6 +18,7 @@ import structlog
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from nexus.api.polymarket_manual_errors import enrich_manual_order_error
 from nexus.services.api.dependencies import RedisDep
 from nexus.services.api.routers import prediction as prediction_routes
 from nexus.agents.trading.poly_bot_state import POLY_BOT_PNL_KEY
@@ -267,9 +268,10 @@ async def polymarket_manual_order(body: ManualOrderBody, redis: RedisDep) -> dic
         raise HTTPException(status_code=504, detail="Order request timed out") from None
 
     if not result.success:
+        raw_err = result.error or "Order rejected"
         raise HTTPException(
             status_code=400,
-            detail=result.error or "Order rejected",
+            detail=enrich_manual_order_error(raw_err, body.side),
         )
 
     return {

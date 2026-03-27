@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 _OPERATIONS_CHAT_LINK = os.environ.get(
-    "OPERATIONS_CHAT_LINK", "https://t.me/Ahu_Management_Private"
+    "OPERATIONS_CHAT_LINK", "https://t.me/TohnaAHUSHARMUTABOT"
 )
 
 import structlog

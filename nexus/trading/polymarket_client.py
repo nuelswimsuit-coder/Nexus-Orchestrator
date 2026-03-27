@@ -88,6 +88,44 @@ def _derived_eoa_from_key(pk: str) -> str:
         return ""
 
 
+def resolve_clob_funder_address(private_key: str, env_signer_address: str) -> str:
+    """CLOB ``OrderBuilder`` uses ``funder`` as ``maker``; for EOAs it must match the signing key.
+
+    If ``POLYMARKET_SIGNER_ADDRESS`` was copied from ``POLYMARKET_PORTFOLIO_ADDRESS`` or mistyped,
+    orders would reference the wrong maker while the signature comes from ``private_key``.
+    Default: use the address derived from ``POLYMARKET_RELAYER_KEY``.
+
+    Set ``POLYMARKET_ALLOW_FUNDER_ENV_MISMATCH=1`` to keep the env address (Polymarket proxy / advanced).
+    """
+    derived = _derived_eoa_from_key(private_key)
+    allow_mismatch = (os.getenv("POLYMARKET_ALLOW_FUNDER_ENV_MISMATCH") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    env = (env_signer_address or "").strip()
+    if allow_mismatch:
+        return env or derived
+    if not derived:
+        return env
+    if not env:
+        return derived
+    if env.lower() == derived.lower():
+        return env
+    log.warning(
+        "polymarket.funder_env_mismatch_using_derived",
+        env_signer_short=f"{env[:6]}…{env[-4:]}",
+        derived_short=f"{derived[:6]}…{derived[-4:]}",
+        hint="POLYMARKET_SIGNER_ADDRESS != key-derived address; using derived address for CLOB funder.",
+    )
+    return derived
+
+
+def get_polymarket_clob_funder_address() -> str:
+    """Effective CLOB maker address (after resolving env vs key)."""
+    return resolve_clob_funder_address(get_polymarket_private_key(), get_polymarket_funder_address())
+
+
 # Kill-switch threshold — trading halts if USDC balance falls below this
 KILL_SWITCH_BALANCE_USD: float = 90.0
 
@@ -202,7 +240,10 @@ class PolymarketClient:
     def __init__(self) -> None:
         self.builder_id: str = os.getenv("POLYMARKET_BUILDER_ID", "Nexus")
         self._private_key: str = get_polymarket_private_key()
-        self._funder: str = get_polymarket_funder_address()
+        self._funder: str = resolve_clob_funder_address(
+            self._private_key,
+            get_polymarket_funder_address(),
+        )
         self._clob: Any | None = None
         self._try_init_sdk()
 

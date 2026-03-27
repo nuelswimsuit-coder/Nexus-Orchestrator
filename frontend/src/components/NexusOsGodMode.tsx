@@ -36,6 +36,7 @@ import {
   Radio,
   ChevronRight,
   Crosshair,
+  PlayCircle,
 } from "lucide-react";
 import {
   XAxis,
@@ -88,6 +89,8 @@ export interface GodModeDashboard {
     price: string;
   }[];
   signer_address?: string;
+  /** Effective CLOB maker address (key-derived if env signer was wrong) */
+  clob_funder_address?: string;
   total_deposited?: number;
   total_withdrawn?: number;
   break_even_delta?: number;
@@ -985,6 +988,16 @@ function CreateGroupModal({ onClose, onCreated }: CreateGroupModalProps) {
 
 // ── Group Factory View ───────────────────────────────────────────────────────
 
+type GroupFactorySettingsForm = {
+  warmup_days: number;
+  cooldown_hours: number;
+  groups_per_day: number;
+  automation_armed?: boolean;
+  armed_at?: string;
+};
+
+type ActivityEntry = { ts?: string; level?: string; message?: string };
+
 function GroupFactoryView() {
   const [warmupGroups, setWarmupGroups] = useState<TelefixGroup[]>([]);
   const [dbGroups, setDbGroups] = useState<TelefixDbGroup[]>([]);
@@ -993,13 +1006,15 @@ function GroupFactoryView() {
   const [forceSearchLoading, setForceSearchLoading] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
-  const [scheduleSettings, setScheduleSettings] = useState<{ warmup_days: number; cooldown_hours: number; groups_per_day: number } | null>(null);
-  const [settingsForm, setSettingsForm] = useState<{ warmup_days: number; cooldown_hours: number; groups_per_day: number } | null>(null);
+  const [scheduleSettings, setScheduleSettings] = useState<GroupFactorySettingsForm | null>(null);
+  const [settingsForm, setSettingsForm] = useState<GroupFactorySettingsForm | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
+  const [startFactoryLoading, setStartFactoryLoading] = useState(false);
 
   const showToast = (msg: string, ok = true) => {
     setToast({ msg, ok });
-    setTimeout(() => setToast(null), 3000);
+    setTimeout(() => setToast(null), 5000);
   };
 
   const loadWarmup = useCallback(async () => {
@@ -1011,35 +1026,49 @@ function GroupFactoryView() {
     } catch { /* ignore */ }
   }, []);
 
+  const loadDbGroups = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/telefix/groups`);
+      if (!res.ok) return;
+      const j = (await res.json()) as { groups: TelefixDbGroup[] };
+      setDbGroups(j.groups ?? []);
+    } catch { /* ignore */ }
+  }, []);
+
+  const loadSchedule = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/telefix/group-factory/schedule`);
+      if (!res.ok) return;
+      const j = (await res.json()) as { settings: GroupFactorySettingsForm };
+      if (j.settings) {
+        setScheduleSettings(j.settings);
+        setSettingsForm(j.settings);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  const loadActivity = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/telefix/group-factory/activity`);
+      if (!res.ok) return;
+      const j = (await res.json()) as { entries?: ActivityEntry[] };
+      setActivityEntries(Array.isArray(j.entries) ? j.entries : []);
+    } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => {
-    let cancelled = false;
-
-    const loadDbGroups = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/telefix/groups`);
-        if (!res.ok) return;
-        const j = (await res.json()) as { groups: TelefixDbGroup[] };
-        if (!cancelled) setDbGroups(j.groups ?? []);
-      } catch { /* ignore */ }
-    };
-
-    const loadSchedule = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/telefix/group-factory/schedule`);
-        if (!res.ok) return;
-        const j = (await res.json()) as { settings: { warmup_days: number; cooldown_hours: number; groups_per_day: number } };
-        if (!cancelled && j.settings) {
-          setScheduleSettings(j.settings);
-          setSettingsForm(j.settings);
-        }
-      } catch { /* ignore */ }
-    };
-
     void loadWarmup();
     void loadDbGroups();
     void loadSchedule();
-    return () => { cancelled = true; };
-  }, [loadWarmup]);
+    void loadActivity();
+  }, [loadWarmup, loadDbGroups, loadSchedule, loadActivity]);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      void loadActivity();
+    }, 5000);
+    return () => clearInterval(t);
+  }, [loadActivity]);
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1057,6 +1086,7 @@ function GroupFactoryView() {
       setSettingsForm(j.settings);
       setShowSettings(false);
       showToast("הגדרות נשמרו ✅");
+      await loadActivity();
     } catch {
       showToast("שמירה נכשלה", false);
     } finally {
@@ -1064,15 +1094,60 @@ function GroupFactoryView() {
     }
   };
 
-  const handleForceSearch = async (groupId: string) => {
-    setForceSearchLoading(groupId);
+  const handleStartFactory = async () => {
+    setStartFactoryLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/telefix/group-infiltration/${groupId}/force-search`, { method: "POST" });
-      if (!res.ok) throw new Error(`שגיאה ${res.status}`);
+      const res = await fetch(`${API_BASE}/api/telefix/group-factory/start`, { method: "POST" });
+      const j = (await res.json().catch(() => ({}))) as { detail?: string; ok?: boolean };
+      if (!res.ok) {
+        const errDetail =
+          typeof j.detail === "string"
+            ? j.detail
+            : `שגיאה ${res.status}`;
+        throw new Error(errDetail);
+      }
+      showToast(j.detail ?? "מפעל הקבוצות הופעל ✅");
+      await loadSchedule();
+      await loadActivity();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "הפעלה נכשלה", false);
+    } finally {
+      setStartFactoryLoading(false);
+    }
+  };
+
+  const handleForceSearch = async (group: {
+    id: string;
+    name: string;
+    invite: string | null;
+  }) => {
+    setForceSearchLoading(group.id);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/telefix/group-infiltration/${encodeURIComponent(group.id)}/force-search`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name_he: group.name || undefined,
+            telegram_link: group.invite || undefined,
+          }),
+        },
+      );
+      if (!res.ok) {
+        let detail = `שגיאה ${res.status}`;
+        try {
+          const errBody = (await res.json()) as { detail?: string | string[] };
+          if (typeof errBody.detail === "string") detail = errBody.detail;
+          else if (Array.isArray(errBody.detail)) detail = errBody.detail.map((x) => x.msg ?? x).join("; ");
+        } catch { /* ignore */ }
+        throw new Error(detail);
+      }
       showToast("הקבוצה הועלתה לחיפוש ✅");
       await loadWarmup();
-    } catch {
-      showToast("נכשל — נסה שוב", false);
+      await loadActivity();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "נכשל — נסה שוב", false);
     } finally {
       setForceSearchLoading(null);
     }
@@ -1155,8 +1230,24 @@ function GroupFactoryView() {
             <p className="text-slate-500 text-sm mt-1">
               ניהול חימום שבועיים ואוטומציית אינדוקס (vault/group_infiltration.json)
             </p>
+            {scheduleSettings?.automation_armed && (
+              <p className="text-emerald-500/90 text-xs font-bold mt-2 flex items-center gap-2">
+                <Activity size={14} className="shrink-0" />
+                מפעל מחובר (automation_armed) — לולאת מאסטר ברקע כשהיא פעילה
+              </p>
+            )}
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              type="button"
+              onClick={() => void handleStartFactory()}
+              disabled={startFactoryLoading}
+              className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white px-4 py-3 rounded-2xl font-bold transition flex items-center gap-2"
+              title="מסמן שהמפעל פעיל ורושם בלוג"
+            >
+              <PlayCircle size={18} />
+              {startFactoryLoading ? "..." : "התחל מפעל"}
+            </button>
             <button
               type="button"
               onClick={() => void loadWarmup()}
@@ -1337,7 +1428,7 @@ function GroupFactoryView() {
                 {!group.search && (
                   <button
                     type="button"
-                    onClick={() => void handleForceSearch(group.id)}
+                    onClick={() => void handleForceSearch(group)}
                     disabled={forceSearchLoading === group.id}
                     className="text-xs bg-cyan-600/20 hover:bg-cyan-600/40 text-cyan-400 border border-cyan-500/30 px-3 py-1.5 rounded-xl font-bold transition disabled:opacity-50"
                     title="כפה העלאה לחיפוש"
@@ -1594,32 +1685,134 @@ function AhuDashboardTab({
   );
 }
 
-function AhuSessionsTab({ sessions }: { sessions: AhuSessions | null }) {
-  const [activeCategory, setActiveCategory] = useState("adders");
-  const categories = ["managers", "adders", "frozen", "bots", "spammers"];
-  const categoryLabels: Record<string, string> = {
-    managers: "Managers",
-    adders: "Adders",
-    frozen: "Frozen",
-    bots: "Bots",
-    spammers: "Spammers",
-  };
+function sortAhuFolderKeys(keys: string[]): string[] {
+  const klali = "כללי";
+  const rest = keys.filter((k) => k !== klali).sort((a, b) => a.localeCompare(b, "he"));
+  return keys.includes(klali) ? [klali, ...rest] : keys.slice().sort((a, b) => a.localeCompare(b, "he"));
+}
+
+const AHU_FOLDER_LABELS: Record<string, string> = {
+  managers: "Managers",
+  adders: "Adders",
+  frozen: "Frozen",
+  bots: "Bots",
+  spammers: "Spammers",
+  כללי: "כללי",
+};
+
+function ahuFolderLabel(key: string): string {
+  return AHU_FOLDER_LABELS[key] ?? key;
+}
+
+function AhuSessionsTab({
+  sessions,
+  onRefresh,
+}: {
+  sessions: AhuSessions | null;
+  onRefresh: () => void | Promise<void>;
+}) {
+  const [activeCategory, setActiveCategory] = useState<string>("");
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [moveBusy, setMoveBusy] = useState<string | null>(null);
+  const [moveTargetByStem, setMoveTargetByStem] = useState<Record<string, string>>({});
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+
+  const folderKeys = useMemo(() => {
+    if (!sessions) return [];
+    return sortAhuFolderKeys(Object.keys(sessions));
+  }, [sessions]);
+
+  useEffect(() => {
+    if (folderKeys.length === 0) return;
+    if (activeCategory === "" || !folderKeys.includes(activeCategory)) {
+      setActiveCategory(folderKeys[0]);
+    }
+  }, [folderKeys, activeCategory]);
 
   if (!sessions) {
     return <div className="text-slate-500 text-sm">טוען סשנים...</div>;
   }
 
-  const current = sessions[activeCategory];
+  const current = activeCategory ? sessions[activeCategory] : undefined;
+  const otherFolders = folderKeys.filter((k) => k !== activeCategory);
+
+  const handleSync = async () => {
+    setSyncBusy(true);
+    setSyncMsg(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/ahu/sessions/sync-scanned`, { method: "POST" });
+      const j = (await res.json()) as { ok?: boolean; copied?: number; skipped?: number; detail?: string };
+      if (j.detail && !j.ok) {
+        setSyncMsg(j.detail);
+      } else {
+        setSyncMsg(`הועתקו ${j.copied ?? 0}, דולגו ${j.skipped ?? 0}`);
+      }
+      await onRefresh();
+    } catch {
+      setSyncMsg("שגיאת רשת בסנכרון");
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
+  const handleMove = async (stem: string) => {
+    const toFolder =
+      moveTargetByStem[stem] ?? otherFolders[0];
+    if (!toFolder || !activeCategory) return;
+    setMoveBusy(stem);
+    setSyncMsg(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/ahu/sessions/move`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stem,
+          from_folder: activeCategory,
+          to_folder: toFolder,
+        }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { detail?: string };
+        setSyncMsg(err.detail ?? `שגיאה ${res.status}`);
+        return;
+      }
+      await onRefresh();
+    } catch {
+      setSyncMsg("שגיאת רשת בהעברה");
+    } finally {
+      setMoveBusy(null);
+    }
+  };
 
   return (
     <div className="space-y-4">
-      {/* Category tabs */}
+      <div className="flex flex-wrap items-center gap-3 justify-between">
+        <p className="text-[11px] text-slate-500 max-w-xl">
+          סנכרון מפלט הסורק (validated_active) לתיקיית «כללי». ניתן להעביר סשנים בין תיקיות למטה.
+        </p>
+        <button
+          type="button"
+          disabled={syncBusy}
+          onClick={() => void handleSync()}
+          className="shrink-0 px-4 py-2 rounded-xl text-xs font-bold bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white transition"
+        >
+          {syncBusy ? "מסנכרן…" : "סנכרון מסריקה → כללי"}
+        </button>
+      </div>
+      {syncMsg && (
+        <div className="text-xs text-slate-400 bg-slate-950/60 border border-slate-800 rounded-xl px-3 py-2 font-mono">
+          {syncMsg}
+        </div>
+      )}
+
+      {/* Folder tabs */}
       <div className="flex gap-2 flex-wrap">
-        {categories.map((cat) => {
+        {folderKeys.map((cat) => {
           const count = sessions[cat]?.count ?? 0;
           return (
             <button
               key={cat}
+              type="button"
               onClick={() => setActiveCategory(cat)}
               className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
                 activeCategory === cat
@@ -1627,8 +1820,10 @@ function AhuSessionsTab({ sessions }: { sessions: AhuSessions | null }) {
                   : "bg-slate-800 text-slate-400 hover:bg-slate-700"
               }`}
             >
-              {categoryLabels[cat]}
-              <span className={`px-1.5 py-0.5 rounded-md text-[10px] ${activeCategory === cat ? "bg-cyan-700" : "bg-slate-700"}`}>
+              {ahuFolderLabel(cat)}
+              <span
+                className={`px-1.5 py-0.5 rounded-md text-[10px] ${activeCategory === cat ? "bg-cyan-700" : "bg-slate-700"}`}
+              >
                 {count}
               </span>
             </button>
@@ -1636,26 +1831,64 @@ function AhuSessionsTab({ sessions }: { sessions: AhuSessions | null }) {
         })}
       </div>
 
-      {/* Session list */}
-      {current && current.sessions.length > 0 ? (
+      {folderKeys.length === 0 ? (
+        <div className="text-slate-500 text-sm bg-slate-950/40 rounded-2xl border border-slate-800 p-6 text-center">
+          אין תיקיות סשנים (בדוק נתיב TELEFIX / sessions)
+        </div>
+      ) : current && current.sessions.length > 0 ? (
         <div className="bg-slate-950/40 rounded-2xl border border-slate-800 overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+          <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-              {categoryLabels[activeCategory]} — {current.count} סשנים
+              {ahuFolderLabel(activeCategory)} — {current.count} סשנים
             </span>
           </div>
-          <div className="max-h-72 overflow-y-auto divide-y divide-slate-800/50">
-            {current.sessions.map((sess) => (
-              <div key={sess} className="px-4 py-2.5 flex items-center gap-3 hover:bg-slate-800/30 transition">
-                <div className="w-2 h-2 rounded-full bg-cyan-500/60" />
-                <span className="text-xs font-mono text-slate-300">{sess}</span>
-              </div>
-            ))}
+          <div className="max-h-80 overflow-y-auto divide-y divide-slate-800/50">
+            {current.sessions.map((sess) => {
+              const defaultTarget = otherFolders.find((k) => k !== activeCategory) ?? otherFolders[0] ?? "";
+              const sel = moveTargetByStem[sess] ?? defaultTarget;
+              return (
+                <div
+                  key={sess}
+                  className="px-4 py-2.5 flex flex-wrap items-center gap-3 hover:bg-slate-800/30 transition"
+                >
+                  <div className="w-2 h-2 rounded-full shrink-0 bg-cyan-500/60" />
+                  <span className="text-xs font-mono text-slate-300 flex-1 min-w-[8rem]">{sess}</span>
+                  {otherFolders.length > 0 ? (
+                    <div className="flex items-center gap-2 shrink-0">
+                      <select
+                        value={sel}
+                        onChange={(e) =>
+                          setMoveTargetByStem((m) => ({
+                            ...m,
+                            [sess]: e.target.value,
+                          }))
+                        }
+                        className="bg-slate-900 border border-slate-700 rounded-lg text-[11px] text-slate-200 px-2 py-1.5 max-w-[10rem]"
+                      >
+                        {otherFolders.map((f) => (
+                          <option key={f} value={f}>
+                            → {ahuFolderLabel(f)}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        disabled={moveBusy === sess}
+                        onClick={() => void handleMove(sess)}
+                        className="text-[11px] font-bold px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white disabled:opacity-50"
+                      >
+                        {moveBusy === sess ? "…" : "העבר"}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         </div>
       ) : (
         <div className="text-slate-500 text-sm bg-slate-950/40 rounded-2xl border border-slate-800 p-6 text-center">
-          אין סשנים בקטגוריה זו
+          אין סשנים בתיקייה זו
         </div>
       )}
     </div>
@@ -1905,7 +2138,7 @@ function AhuQuickLinkTab({ invite }: { invite: string }) {
 // ── Main AhuManagementView ────────────────────────────────────────────────────
 
 function AhuManagementView() {
-  const TG_FALLBACK = "https://t.me/Ahu_Management_Private";
+  const TG_FALLBACK = "https://t.me/TohnaAHUSHARMUTABOT";
 
   const [activeTab, setActiveTab] = useState<"dashboard" | "sessions" | "scraper" | "logs" | "link">("dashboard");
   const [status, setStatus] = useState<AhuStatus | null>(null);
@@ -2032,7 +2265,7 @@ function AhuManagementView() {
             onRefresh={fetchAll}
           />
         )}
-        {activeTab === "sessions" && <AhuSessionsTab sessions={sessions} />}
+        {activeTab === "sessions" && <AhuSessionsTab sessions={sessions} onRefresh={fetchAll} />}
         {activeTab === "scraper" && <AhuScraperTab targets={targets} />}
         {activeTab === "logs" && <AhuLogsTab />}
         {activeTab === "link" && <AhuQuickLinkTab invite={tgInvite} />}
@@ -2285,9 +2518,9 @@ function PolymarketTradingView({
   /** POLYMARKET_PORTFOLIO_ADDRESS (dashboard) vs POLYMARKET_SIGNER_ADDRESS (CLOB orders) */
   const polyWalletMismatch = useMemo(() => {
     const p = (data?.portfolio_address ?? "").trim().toLowerCase();
-    const s = (data?.signer_address ?? "").trim().toLowerCase();
+    const s = (data?.clob_funder_address ?? data?.signer_address ?? "").trim().toLowerCase();
     return Boolean(p && s && p !== s);
-  }, [data?.portfolio_address, data?.signer_address]);
+  }, [data?.portfolio_address, data?.clob_funder_address, data?.signer_address]);
 
   const positions = useMemo(() => {
     // Prefer real Polymarket positions from the portfolio API
@@ -2476,23 +2709,42 @@ function PolymarketTradingView({
   return (
     <div className="space-y-6" style={{ background: "transparent" }}>
 
-      {polyWalletMismatch && data?.portfolio_address && data?.signer_address && (
-        <div className="rounded-xl border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm">
-          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-amber-400 mb-2">
+      {polyWalletMismatch && data?.portfolio_address && (data?.clob_funder_address || data?.signer_address) && (() => {
+        const tradeAddr = data.clob_funder_address ?? data.signer_address ?? "";
+        const clobBal = data?.clob_balance ?? 0;
+        const pcash = data?.portfolio_cash ?? 0;
+        const buyOk = clobBal >= 1;
+        return (
+        <div className={`rounded-xl border px-4 py-3 text-sm ${buyOk ? "border-emerald-500/40 bg-emerald-950/30" : "border-amber-500/50 bg-amber-500/10"}`}>
+          <div className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest mb-2 ${buyOk ? "text-emerald-400" : "text-amber-400"}`}>
             <AlertTriangle size={14} />
             Trading wallet ≠ portfolio view / ארנק מסחר שונה מתצוגת התיק
           </div>
           <p className="text-amber-100/95 leading-relaxed text-[13px]">
-            Positions and balances are loaded for{" "}
+            Positions table uses{" "}
             <span className="font-mono text-white">{data.portfolio_address.slice(0, 6)}…{data.portfolio_address.slice(-4)}</span>
-            {" "}(<code className="text-amber-200/90">POLYMARKET_PORTFOLIO_ADDRESS</code>). Orders are signed by{" "}
-            <span className="font-mono text-white">{data.signer_address.slice(0, 6)}…{data.signer_address.slice(-4)}</span>
-            {" "}— that wallet must hold USDC on Polymarket. Either fund that address, set{" "}
-            <code className="text-amber-200/90">POLYMARKET_RELAYER_KEY</code> to the <strong className="text-white">funded</strong> account&apos;s key and matching{" "}
-            <code className="text-amber-200/90">POLYMARKET_SIGNER_ADDRESS</code>, or remove <code className="text-amber-200/90">POLYMARKET_PORTFOLIO_ADDRESS</code> so the UI matches the signing wallet.
+            {" "}(<code className="text-amber-200/90">POLYMARKET_PORTFOLIO_ADDRESS</code>). CLOB signs as maker{" "}
+            <span className="font-mono text-white">{tradeAddr.slice(0, 6)}…{tradeAddr.slice(-4)}</span>
+            {". "}
+            <strong className="text-white">BUY</strong> spends USDC from maker; <strong className="text-white">SELL</strong> needs outcome-token shares on the maker (not only on the portfolio row). Align{" "}
+            <code className="text-amber-200/90">POLYMARKET_RELAYER_KEY</code> / <code className="text-amber-200/90">POLYMARKET_SIGNER_ADDRESS</code> with the funded account, or clear <code className="text-amber-200/90">POLYMARKET_PORTFOLIO_ADDRESS</code> to match the UI to the maker.
           </p>
+          <p className="mt-2 pt-2 border-t border-white/10 text-[12px] text-slate-200/95 leading-relaxed">
+            Same dollar figure can mean different things: portfolio <span className="font-semibold text-white">Cash</span>{" "}
+            <span className="font-mono">{fmtUsd(pcash)}</span> is free USDC for{" "}
+            <span className="font-mono text-white">{data.portfolio_address.slice(0, 6)}…</span> (Polymarket data API).{" "}
+            <span className="font-semibold text-white">Tradable USDC (CLOB)</span>{" "}
+            <span className="font-mono text-white">{fmtUsd(clobBal)}</span> is collateral for orders from{" "}
+            <span className="font-mono text-white">{tradeAddr.slice(0, 6)}…</span>. They are not the same field.
+          </p>
+          {buyOk && (
+            <p className="mt-2 text-[12px] text-emerald-200/95 leading-relaxed">
+              BUY YES is funded on the maker wallet (CLOB). SELL still only sells tokens the maker actually holds — table rows tied to the portfolio address may not be sellable via this key.
+            </p>
+          )}
         </div>
-      )}
+        );
+      })()}
 
       {/* ══ PORTFOLIO HEADER (Polymarket clone) ══════════════════════════════ */}
       <HackerCard className="p-6" glow="cyan">

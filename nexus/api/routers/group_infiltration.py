@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -129,6 +129,22 @@ class ForceSearchResponse(BaseModel):
     in_search: bool
 
 
+class ForceSearchBody(BaseModel):
+    """Optional context when the group id exists in telefix.db but not yet in vault JSON."""
+
+    name_he: str | None = None
+    telegram_link: str | None = None
+
+
+def _append_factory_activity_safe(level: str, message: str) -> None:
+    try:
+        from src.nexus.services.api.routers.telefix_dashboard import append_group_factory_activity
+
+        append_group_factory_activity(level, message)
+    except Exception:
+        pass
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @router.get(
@@ -206,26 +222,74 @@ async def create_group(req: CreateGroupRequest) -> GroupRecord:
     response_model=ForceSearchResponse,
     summary="כפה חיפוש — סמן קבוצה כ-in_search",
 )
-async def force_search(group_id: str) -> ForceSearchResponse:
+async def force_search(group_id: str, body: ForceSearchBody = ForceSearchBody()) -> ForceSearchResponse:
+    """
+    מסמן קבוצה כ-in_search ב-vault/group_infiltration.json.
+    אם המזהה מגיע מ-telefix.db ועדיין לא ב-vault — נוצר רשומה (אחרי חיפוש ב-DB או מגוף הבקשה).
+    """
     data = _load()
-    groups: list[dict[str, Any]] = data.get("groups", [])
+    groups: list[dict[str, Any]] = list(data.get("groups", []))
+    gid = str(group_id).strip()
 
-    target = next((g for g in groups if g["id"] == group_id), None)
+    target = next(
+        (g for g in groups if isinstance(g, dict) and str(g.get("id")) == gid),
+        None,
+    )
+
     if target is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"קבוצה '{group_id}' לא נמצאה",
+        name_he = (body.name_he or "").strip() or None
+        telegram_link = (body.telegram_link or "").strip() or None
+        if not name_he:
+            try:
+                from src.nexus.services.api.routers.telefix_dashboard import lookup_telefix_group_by_id
+
+                looked = lookup_telefix_group_by_id(gid)
+            except Exception as exc:
+                looked = None
+                log.warning("force_search_lookup_failed", error=str(exc))
+            if looked:
+                name_he, telegram_link = looked[0], looked[1]
+        if not name_he:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "הקבוצה לא ב-vault ולא נמצאה ב-telefix.db. "
+                    "ודאו שהמזהה תואם לשורה ב-DB או צרו קבוצה דרך הממשק."
+                ),
+            )
+        joined_early = (
+            datetime.now(timezone.utc) - timedelta(days=_WARMUP_TARGET)
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
+        target = {
+            "id": gid,
+            "name_he": name_he,
+            "is_private": True,
+            "in_search": True,
+            "joined_at": joined_early,
+            "telegram_link": telegram_link,
+            "force_searched_at": _now_iso(),
+            "source": "force_search_upsert",
+        }
+        groups.append(target)
+        _append_factory_activity_safe(
+            "info",
+            f"Force Search: נרשמה קבוצה ב-vault — {name_he} (id={gid})",
+        )
+    else:
+        target["in_search"] = True
+        target["force_searched_at"] = _now_iso()
+        _append_factory_activity_safe(
+            "info",
+            f"Force Search: סומן in_search — {target.get('name_he', gid)}",
         )
 
-    target["in_search"] = True
-    target["force_searched_at"] = _now_iso()
     data["groups"] = groups
     _save(data)
 
-    log.info("group_infiltration_force_search", group_id=group_id)
+    log.info("group_infiltration_force_search", group_id=gid)
     return ForceSearchResponse(
-        detail=f"קבוצה '{target.get('name_he', group_id)}' סומנה כ-in_search ✓",
-        group_id=group_id,
+        detail=f"קבוצה '{target.get('name_he', gid)}' סומנה כ-in_search ✓",
+        group_id=gid,
         in_search=True,
     )
 
@@ -238,7 +302,7 @@ async def force_search(group_id: str) -> ForceSearchResponse:
 async def delete_group(group_id: str) -> None:
     data = _load()
     groups: list[dict[str, Any]] = data.get("groups", [])
-    new_groups = [g for g in groups if g["id"] != group_id]
+    new_groups = [g for g in groups if str(g.get("id")) != str(group_id)]
     if len(new_groups) == len(groups):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
