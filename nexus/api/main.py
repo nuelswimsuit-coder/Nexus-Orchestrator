@@ -61,7 +61,7 @@ from nexus.api.routers import (
 )
 from src.nexus.services.api.routers import telefix_dashboard
 from nexus.shared import redis_util
-from nexus.shared.config import settings
+from nexus.shared.config import log_polymarket_wallet_mismatch_at_startup, settings
 from nexus.shared.logging_config import configure_logging
 
 log = structlog.get_logger(__name__)
@@ -198,6 +198,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             name="poly_5m_scalper",
         )
         log.info("poly_scalper_background_task_started")
+
+    log_polymarket_wallet_mismatch_at_startup()
 
     log.info("nexus_api_started", docs="/docs", rate_limit="100/min")
 

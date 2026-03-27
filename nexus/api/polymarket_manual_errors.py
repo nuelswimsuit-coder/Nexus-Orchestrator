@@ -8,7 +8,7 @@ from typing import Literal
 from nexus.trading.polymarket_client import get_polymarket_clob_funder_address
 
 # Bump when changing enrich copy; exposed on GET /api/polymarket/dashboard.json as manual_order_error_enrich.
-MANUAL_ORDER_ENRICH_REV = "v2"
+MANUAL_ORDER_ENRICH_REV = "v4"
 
 # Appended to every enriched balance error — if you never see this in the UI, the client is not
 # hitting the same Python codebase that defines this module (stale worker, wrong host, or old venv).
@@ -34,6 +34,12 @@ def enrich_manual_order_error(err: str | None, side: Literal["BUY", "SELL"]) -> 
     funder = (get_polymarket_clob_funder_address() or "").strip()
     portfolio = (os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()
     addr = f"CLOB maker: {funder[:6]}…{funder[-4]}." if funder and len(funder) >= 10 else ""
+    deposit_line = ""
+    if funder:
+        deposit_line = (
+            f"\n\nDeposit USDC to the signing wallet used by this API (full address): {funder}\n"
+            "Polymarket: https://polymarket.com/"
+        )
     mismatch = ""
     if portfolio and funder and portfolio.lower() != funder.lower():
         mismatch = (
@@ -48,7 +54,8 @@ def enrich_manual_order_error(err: str | None, side: Literal["BUY", "SELL"]) -> 
             "It is not asking for USDC. “Balance 0” here usually means the maker wallet does not hold those shares."
             f"\n{addr}{mismatch}\n\n"
             "Fix: use POLYMARKET_RELAYER_KEY for the wallet that actually holds the position, or remove "
-            "POLYMARKET_PORTFOLIO_ADDRESS so UI and trading refer to the same account.\n\n"
+            "POLYMARKET_PORTFOLIO_ADDRESS so UI and trading refer to the same account."
+            f"{deposit_line}\n\n"
             "מכירה: נדרשות מניות על כתובת ה-maker — לא USDC."
             f"{_ENRICH_FOOTER}"
         )
@@ -56,9 +63,8 @@ def enrich_manual_order_error(err: str | None, side: Literal["BUY", "SELL"]) -> 
     return (
         f"{err}\n\n"
         "This was a BUY: CLOB spends USDC collateral (and allowance) on the maker wallet."
-        f"\n{addr}{mismatch}\n\n"
-        "Set POLYMARKET_API_* (L2) so balance matches the app, deposit USDC to Polymarket for the maker address, "
-        "or use the Polymarket site to refresh allowance.\n\n"
+        f"\n{addr}{mismatch}{deposit_line}\n\n"
+        "Set POLYMARKET_API_* (L2) so balance matches the app, or use Polymarket to refresh allowance after deposit.\n\n"
         "קנייה: נדרש USDC על כתובת החתימה / maker."
         f"{_ENRICH_FOOTER}"
     )

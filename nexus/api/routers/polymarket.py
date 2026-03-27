@@ -19,6 +19,7 @@ from typing import Any, Literal
 import httpx
 import structlog
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from nexus.api.dependencies import RedisDep
@@ -45,6 +46,8 @@ def _get_http_client() -> httpx.AsyncClient:
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/polymarket", tags=["polymarket-god-mode"])
+
+_MANUAL_ORDER_HEADERS = {"X-Nexus-Manual-Order-Enrich": MANUAL_ORDER_ENRICH_REV}
 
 
 def _short_ts(ts: str) -> str:
@@ -414,8 +417,14 @@ class ManualOrderBody(BaseModel):
 
 
 @router.post("/manual-order")
-async def polymarket_manual_order(body: ManualOrderBody, redis: RedisDep) -> dict[str, Any]:
-    """Map UI BUY/SELL to YES buy or outcome sell; price defaults from bot snapshot or 0.5."""
+async def polymarket_manual_order(
+    body: ManualOrderBody, redis: RedisDep
+) -> JSONResponse | dict[str, Any]:
+    """Map UI BUY/SELL to YES buy or outcome sell; price defaults from bot snapshot or 0.5.
+
+    Every response includes header ``X-Nexus-Manual-Order-Enrich`` so DevTools can prove which
+    API build handled the request (HTTPException would drop injected headers).
+    """
     # #region agent log
     _tid = body.token_id.strip()
     _agent_debug_ndjson_45(
@@ -468,21 +477,37 @@ async def polymarket_manual_order(body: ManualOrderBody, redis: RedisDep) -> dic
                 redis=redis,
             )
     except TradingHalted as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return JSONResponse(
+            status_code=503,
+            content={"detail": str(exc)},
+            headers=_MANUAL_ORDER_HEADERS,
+        )
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Order request timed out") from None
+        return JSONResponse(
+            status_code=504,
+            content={"detail": "Order request timed out"},
+            headers=_MANUAL_ORDER_HEADERS,
+        )
 
     if not result.success:
         raw_err = result.error or "Order rejected"
-        raise HTTPException(status_code=400, detail=enrich_manual_order_error(raw_err, body.side))
+        return JSONResponse(
+            status_code=400,
+            content={"detail": enrich_manual_order_error(raw_err, body.side)},
+            headers=_MANUAL_ORDER_HEADERS,
+        )
 
-    return {
-        "ok": True,
-        "order_id": result.order_id,
-        "paper": result.paper,
-        "side": body.side,
-        "spent_usd": result.spent_usd,
-    }
+    return JSONResponse(
+        status_code=200,
+        content={
+            "ok": True,
+            "order_id": result.order_id,
+            "paper": result.paper,
+            "side": body.side,
+            "spent_usd": result.spent_usd,
+        },
+        headers=_MANUAL_ORDER_HEADERS,
+    )
 
 
 class DepositBody(BaseModel):

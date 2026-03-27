@@ -2766,7 +2766,7 @@ function PolymarketTradingView({
     }
   };
 
-  const expectedManualOrderEnrich = "v2";
+  const expectedManualOrderEnrich = "v4";
 
   return (
     <div className="space-y-6" style={{ background: "transparent" }}>

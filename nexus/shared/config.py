@@ -152,6 +152,93 @@ class Settings(BaseSettings):
     )
 
 
+def apply_polymarket_wallet_alignment() -> None:
+    """
+    Keep ``POLYMARKET_SIGNER_ADDRESS`` and ``POLYMARKET_PORTFOLIO_ADDRESS`` aligned with the
+    EOA derived from ``POLYMARKET_RELAYER_KEY`` so the UI and CLOB signer match.
+
+    Disable with ``POLYMARKET_SYNC_WALLET_ENV=0`` (advanced: separate portfolio view address).
+    """
+    import os
+
+    if (os.getenv("POLYMARKET_SYNC_WALLET_ENV", "1") or "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return
+    key = (
+        (os.getenv("POLYMARKET_RELAYER_KEY") or "").strip()
+        or (os.getenv("NEXUS_POLY_PRIVATE_KEY") or "").strip()
+        or (os.getenv("POLY_PRIVATE_KEY") or "").strip()
+    )
+    if not key:
+        return
+    try:
+        from eth_account import Account
+
+        derived = Account.from_key(key).address
+    except Exception:
+        return
+    os.environ["POLYMARKET_SIGNER_ADDRESS"] = derived
+    os.environ["POLYMARKET_PORTFOLIO_ADDRESS"] = derived
+
+
+def log_polymarket_wallet_mismatch_at_startup() -> None:
+    """
+    If sync is disabled and portfolio / signer env disagree with the relayer key, log CRITICAL.
+    When ``POLYMARKET_SYNC_WALLET_ENV`` is default (on), env was already aligned — skip.
+    """
+    import os
+
+    import structlog
+
+    log = structlog.get_logger("nexus.polymarket.wallet")
+    if (os.getenv("POLYMARKET_SYNC_WALLET_ENV", "1") or "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return  # auto-sync on — portfolio/signer were forced to derived address
+    key = (
+        (os.getenv("POLYMARKET_RELAYER_KEY") or "").strip()
+        or (os.getenv("NEXUS_POLY_PRIVATE_KEY") or "").strip()
+        or (os.getenv("POLY_PRIVATE_KEY") or "").strip()
+    )
+    if not key:
+        return
+    try:
+        from eth_account import Account
+
+        derived = Account.from_key(key).address.lower()
+    except Exception:
+        return
+    port = (os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip().lower()
+    signer = (os.getenv("POLYMARKET_SIGNER_ADDRESS") or "").strip().lower()
+    if port and port != derived:
+        log.critical(
+            "FATAL: Wallet Mismatch! Master is looking at one wallet but signing with another.",
+            derived_signing_address=derived,
+            polymarket_portfolio_address=port,
+            hint="Set POLYMARKET_SYNC_WALLET_ENV=1 or align POLYMARKET_PORTFOLIO_ADDRESS with the relayer key.",
+        )
+    if signer and signer != derived:
+        allow = (os.getenv("POLYMARKET_ALLOW_FUNDER_ENV_MISMATCH") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if not allow:
+            log.critical(
+                "FATAL: Wallet Mismatch! POLYMARKET_SIGNER_ADDRESS does not match RELAYER_KEY-derived EOA.",
+                derived_signing_address=derived,
+                polymarket_signer_address=signer,
+            )
+
+
 # Module-level singleton — import `settings` everywhere.
 settings = Settings()
 settings.redis_url = coerce_redis_url_for_platform(settings.redis_url)
+apply_polymarket_wallet_alignment()

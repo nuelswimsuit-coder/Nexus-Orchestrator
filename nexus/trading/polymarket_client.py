@@ -522,6 +522,10 @@ class PolymarketClient:
             base.error = "Polymarket SDK not initialised (py-clob-client missing)"
             return base
 
+        from nexus.shared.polymarket_util import preflight_live_clob_order
+
+        await preflight_live_clob_order(self)
+
         loop = asyncio.get_event_loop()
         try:
             resp = await asyncio.wait_for(
@@ -608,6 +612,10 @@ class PolymarketClient:
         if self._clob is None:
             base.error = "Polymarket SDK not initialised (py-clob-client missing)"
             return base
+
+        from nexus.shared.polymarket_util import preflight_live_clob_order
+
+        await preflight_live_clob_order(self)
 
         loop = asyncio.get_event_loop()
         try:
