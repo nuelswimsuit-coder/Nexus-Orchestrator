@@ -1478,7 +1478,14 @@ interface AhuStatus {
 }
 
 interface AhuStats {
-  users: { total: number; premium: number; sources: number; premium_pct: number };
+  users: {
+    total: number;
+    premium: number;
+    sources: number;
+    premium_pct: number;
+    disk_only_count?: number;
+    disk_users_dir?: string;
+  };
   targets: Record<string, number>;
   enrollments: { total: number; by_status: Record<string, number> };
   last_runs: Record<string, string>;
@@ -1608,7 +1615,11 @@ function AhuDashboardTab({
           <AhuStatCard
             label="משתמשים"
             value={stats.users.total.toLocaleString()}
-            sub={`${stats.users.premium_pct}% פרימיום`}
+            sub={
+              (stats.users.disk_only_count ?? 0) > 0
+                ? `${stats.users.premium_pct}% פרימיום · +${stats.users.disk_only_count} מ«קהיל חיה» (דיסק)`
+                : `${stats.users.premium_pct}% פרימיום`
+            }
             icon={<Users size={12} />}
             accent="cyan"
           />

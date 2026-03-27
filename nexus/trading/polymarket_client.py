@@ -373,6 +373,7 @@ class PolymarketClient:
                         val = float(resp)
                         if val > 0:
                             return val
+                        return 0.0
                     if isinstance(resp, dict):
                         val = float(resp.get("balance", resp.get("USDC", 0.0)))
                         if val > 0:
@@ -426,6 +427,26 @@ class PolymarketClient:
                 f"Kill switch: balance ${balance:.2f} < "
                 f"${KILL_SWITCH_BALANCE_USD:.2f} — all trading halted"
             )
+
+    async def sync_collateral_allowance_async(self) -> None:
+        """Refresh CLOB USDC balance/allowance server-side cache (requires L2 API creds)."""
+        if self._clob is None:
+            return
+        fn = getattr(self._clob, "update_balance_allowance", None)
+        if fn is None:
+            return
+        loop = asyncio.get_event_loop()
+        try:
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            await asyncio.wait_for(
+                loop.run_in_executor(None, fn, params),
+                timeout=15.0,
+            )
+            log.info("polymarket.collateral_allowance_synced")
+        except Exception as exc:
+            log.debug("polymarket.sync_allowance_skip", error=str(exc))
 
     # ── Async order placement ─────────────────────────────────────────────────
 

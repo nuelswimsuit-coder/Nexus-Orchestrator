@@ -9,7 +9,7 @@ Endpoints:
   GET  /api/ahu/sessions         — session counts per folder (dynamic subdirs)
   POST /api/ahu/sessions/sync-scanned — copy new sessions from scanner → כללי
   POST /api/ahu/sessions/move    — move session files between folders
-  GET  /api/ahu/stats            — DB stats (users, premium, enrollments, targets)
+  GET  /api/ahu/stats            — DB stats; users also union JSON/CSV under data/קהיל חיה (TELEFIX_DISK_USERS_DIR)
   GET  /api/ahu/targets          — source + target groups from DB
   GET  /api/ahu/logs             — last N lines from telefix.log
   WS   /api/ahu/logs/stream      — live log streaming via WebSocket
@@ -18,6 +18,8 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import csv
+import json
 import os
 import shutil
 import sqlite3
@@ -82,6 +84,169 @@ def _operator_scan_dir() -> Path:
     if raw:
         return Path(raw).expanduser().resolve()
     return _NEXUS_REPO_ROOT / "sessions" / "validated_active"
+
+
+def _disk_users_dir() -> Path:
+    """
+    Extra scraped users on disk (e.g. exports under Telefix ``data/קהיל חיה``).
+    Override with TELEFIX_DISK_USERS_DIR.
+    """
+    raw = os.environ.get("TELEFIX_DISK_USERS_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return _telefix_root() / "data" / "קהיל חיה"
+
+
+def _parse_int_user_id(val: Any) -> int | None:
+    try:
+        if val is None or val == "":
+            return None
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _record_premium_flag(rec: dict[str, Any]) -> int:
+    v = rec.get("is_premium")
+    if v is None:
+        v = rec.get("isPremium") or rec.get("premium")
+    if v in (True, 1, "1", "true", "True"):
+        return 1
+    return 0
+
+
+def _record_user_id(rec: dict[str, Any]) -> int | None:
+    for key in ("user_id", "userId", "id", "telegram_id", "telegramId"):
+        if key in rec:
+            uid = _parse_int_user_id(rec.get(key))
+            if uid is not None:
+                return uid
+    return None
+
+
+def _record_source_group(rec: dict[str, Any]) -> str:
+    s = (
+        rec.get("source_group")
+        or rec.get("sourceGroup")
+        or rec.get("origin_group")
+        or ""
+    )
+    t = str(s).strip()
+    return t if t else "disk:קהיל חיה"
+
+
+def _iter_disk_scraped_records(root: Path) -> list[dict[str, Any]]:
+    """Load user dicts from JSON bundles, CSV, or per-file JSON under root."""
+    out: list[dict[str, Any]] = []
+    if not root.is_dir():
+        return out
+
+    for name in ("scraped_users.json", "users.json", "scraped.json"):
+        p = root / name
+        if not p.is_file():
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        if isinstance(data, list):
+            out.extend([x for x in data if isinstance(x, dict)])
+        elif isinstance(data, dict):
+            inner = data.get("users") or data.get("scraped_users")
+            if isinstance(inner, list):
+                out.extend([x for x in inner if isinstance(x, dict)])
+
+    for p in sorted(root.glob("*.csv")):
+        try:
+            with p.open(encoding="utf-8", errors="replace", newline="") as f:
+                for row in csv.DictReader(f):
+                    if isinstance(row, dict):
+                        out.append(dict(row))
+        except Exception:
+            pass
+
+    bundled = {"scraped_users.json", "users.json", "scraped.json"}
+    for p in sorted(root.glob("*.json")):
+        if p.name in bundled:
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            out.append(data)
+        elif isinstance(data, list):
+            out.extend([x for x in data if isinstance(x, dict)])
+
+    return out
+
+
+def _merge_disk_scraped_users(
+    *,
+    db_total: int,
+    db_premium: int,
+    db_sources: int,
+) -> tuple[int, int, int, int, str]:
+    """
+    Union SQLite scraped_users with user records found on disk under
+    ``data/קהיל חיה`` (or TELEFIX_DISK_USERS_DIR). Deduplicates by user_id.
+
+    Returns:
+        (merged_total, merged_premium, merged_source_count, disk_only_count, disk_dir_str)
+    """
+    root = _disk_users_dir()
+    disk_dir_str = str(root)
+
+    id_rows = _query("SELECT user_id FROM scraped_users")
+    db_ids: set[int] = set()
+    for r in id_rows:
+        try:
+            db_ids.add(int(r["user_id"]))
+        except (TypeError, ValueError, KeyError):
+            pass
+
+    src_rows = _query(
+        "SELECT DISTINCT source_group FROM scraped_users "
+        "WHERE source_group IS NOT NULL AND trim(source_group) != ''"
+    )
+    source_names: set[str] = set()
+    for r in src_rows:
+        try:
+            sg = str(r["source_group"]).strip()
+            if sg:
+                source_names.add(sg)
+        except Exception:
+            pass
+
+    if not root.is_dir():
+        return db_total, db_premium, db_sources, 0, disk_dir_str
+
+    records = _iter_disk_scraped_records(root)
+    if not records:
+        return db_total, db_premium, db_sources, 0, disk_dir_str
+
+    by_id: dict[int, dict[str, Any]] = {}
+    for rec in records:
+        uid = _record_user_id(rec)
+        if uid is None:
+            continue
+        by_id[uid] = rec
+
+    disk_ids = set(by_id.keys())
+    merged_ids = db_ids | disk_ids
+    merged_total = len(merged_ids)
+
+    disk_only = disk_ids - db_ids
+    extra_premium = sum(_record_premium_flag(by_id[u]) for u in disk_only)
+    merged_premium = db_premium + extra_premium
+
+    for u in disk_only:
+        source_names.add(_record_source_group(by_id[u]))
+
+    merged_sources = len(source_names)
+    disk_only_count = len(disk_only)
+
+    return merged_total, merged_premium, merged_sources, disk_only_count, disk_dir_str
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -427,14 +592,19 @@ async def sync_scanned_sessions() -> JSONResponse:
 
 @router.get("/stats")
 async def get_stats() -> JSONResponse:
-    # scraped_users
+    # scraped_users (SQLite) + optional union with JSON/CSV under data/קהיל חיה
     users_row = _query_one("SELECT COUNT(*) as total, SUM(is_premium) as premium FROM scraped_users")
     total_users = int(users_row["total"]) if users_row else 0
     premium_users = int(users_row["premium"] or 0) if users_row else 0
 
-    # distinct sources
     sources_row = _query_one("SELECT COUNT(DISTINCT source_group) as cnt FROM scraped_users")
     total_sources = int(sources_row["cnt"]) if sources_row else 0
+
+    merged_total, merged_premium, merged_sources, disk_only_count, disk_users_dir = _merge_disk_scraped_users(
+        db_total=total_users,
+        db_premium=premium_users,
+        db_sources=total_sources,
+    )
 
     # targets
     targets_rows = _query("SELECT role, COUNT(*) as cnt FROM targets GROUP BY role")
@@ -455,10 +625,12 @@ async def get_stats() -> JSONResponse:
 
     return JSONResponse({
         "users": {
-            "total": total_users,
-            "premium": premium_users,
-            "sources": total_sources,
-            "premium_pct": round(premium_users * 100 / total_users, 1) if total_users > 0 else 0,
+            "total": merged_total,
+            "premium": merged_premium,
+            "sources": merged_sources,
+            "premium_pct": round(merged_premium * 100 / merged_total, 1) if merged_total > 0 else 0,
+            "disk_only_count": disk_only_count,
+            "disk_users_dir": disk_users_dir,
         },
         "targets": targets_by_role,
         "enrollments": {
