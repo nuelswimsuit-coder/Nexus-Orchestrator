@@ -292,10 +292,10 @@ export default function NexusOsGodMode() {
 
   return (
     <div
-      className="min-h-[calc(100vh-56px)] bg-[#020617] text-slate-200 font-sans flex overflow-hidden selection:bg-cyan-500/30"
+      className="min-h-[calc(100vh-56px)] bg-[#020617] text-slate-200 font-sans flex selection:bg-cyan-500/30"
       dir="rtl"
     >
-      <aside className="w-80 bg-slate-950/90 border-l border-slate-800 backdrop-blur-3xl flex flex-col min-h-[calc(100vh-56px)] z-20 shadow-2xl overflow-hidden">
+      <aside className="w-80 bg-slate-950 border-l border-slate-800 flex flex-col min-h-[calc(100vh-56px)] shadow-2xl overflow-hidden">
         <div className="p-6 border-b border-slate-800/50 relative overflow-hidden group">
           <Link
             href="/dashboard"
@@ -425,7 +425,7 @@ export default function NexusOsGodMode() {
       </aside>
 
       <main className="flex-grow flex flex-col min-h-[calc(100vh-56px)] overflow-hidden bg-[radial-gradient(circle_at_20%_20%,#0f172a_0%,#020617_100%)]">
-        <header className="h-24 border-b border-slate-800/50 backdrop-blur-xl bg-slate-900/20 flex items-center justify-between px-10 z-10 shrink-0">
+        <header className="h-24 border-b border-slate-800/50 bg-slate-900/40 flex items-center justify-between px-10 shrink-0">
           <div className="flex gap-10 flex-wrap">
             <GlobalMetric
               label="יתרה (USDC)"

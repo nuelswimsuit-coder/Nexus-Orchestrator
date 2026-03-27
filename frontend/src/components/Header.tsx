@@ -544,7 +544,12 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
                   </button>
                 )}
                 <button
-                  onClick={() => setModalOpen(false)}
+                  onClick={() => {
+                    // #region agent log
+                    fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',location:'Header.tsx:MODAL_CLOSE_BTN',message:'Modal Close button clicked',data:{},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
+                    // #endregion
+                    setModalOpen(false);
+                  }}
                   style={{
                     fontFamily: "'Inter', var(--font-sans), sans-serif",
                     fontSize: "0.72rem", fontWeight: 500,
