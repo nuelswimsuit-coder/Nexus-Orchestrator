@@ -337,18 +337,14 @@ async def polymarket_live_orderbook(
             "token_id": None,
         }
 
-    relayer_key = os.getenv("POLYMARKET_RELAYER_KEY", "")
-    headers: dict[str, str] = {}
-    if relayer_key:
-        headers["Authorization"] = f"Bearer {relayer_key}"
-
+    # CLOB GET /book is public — do not send POLYMARKET_RELAYER_KEY as Bearer (hex private key
+    # breaks some stacks and is not valid L2 auth; see Polymarket CLOB "Get book" docs).
     client = _get_http_client()
     try:
         resp = await asyncio.wait_for(
             client.get(
                 f"{_CLOB_HOST}/book",
                 params={"token_id": token_id},
-                headers=headers,
             ),
             timeout=6.0,
         )
