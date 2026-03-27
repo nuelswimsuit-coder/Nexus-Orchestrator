@@ -59,12 +59,12 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
             log.debug("polymarket_dashboard_balance_skip", error=str(exc))
             return None
 
-    async def _portfolio_value() -> tuple[float, float, float]:
+    async def _portfolio_value() -> tuple[float, float, float, list[dict[str, Any]]]:
         """Fetch portfolio value + cash + positions from Polymarket data API.
 
         Uses POLYMARKET_PORTFOLIO_ADDRESS if set (personal account),
         otherwise falls back to POLYMARKET_SIGNER_ADDRESS (bot wallet).
-        Returns (portfolio_total, cash, positions_value).
+        Returns (portfolio_total, cash, positions_value, positions_list).
         """
         address = (
             os.getenv("POLYMARKET_PORTFOLIO_ADDRESS", "").strip()
@@ -93,20 +93,33 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
                     total_val = float(vdata[0].get("value", 0) or 0)
 
             positions_value = 0.0
-            cash = 0.0
+            positions_list: list[dict[str, Any]] = []
             if not isinstance(pos_resp, Exception) and pos_resp.status_code == 200:
-                positions = pos_resp.json()
-                if isinstance(positions, list):
-                    for p in positions:
-                        cur_val = float(p.get("curValue", 0) or p.get("value", 0) or 0)
+                raw_positions = pos_resp.json()
+                if isinstance(raw_positions, list):
+                    for p in raw_positions:
+                        cur_val = float(
+                            p.get("currentValue") or p.get("curValue") or p.get("value") or 0
+                        )
                         positions_value += cur_val
-                    # Cash = total - positions
-                    cash = max(total_val - positions_value, 0.0)
+                        positions_list.append({
+                            "title": str(p.get("title") or p.get("slug") or "")[:60],
+                            "outcome": str(p.get("outcome") or "YES"),
+                            "size": float(p.get("size") or 0),
+                            "avg_price": float(p.get("avgPrice") or 0),
+                            "cur_price": float(p.get("curPrice") or 0),
+                            "current_value": cur_val,
+                            "cash_pnl": float(p.get("cashPnl") or 0),
+                            "percent_pnl": float(p.get("percentPnl") or 0),
+                            "end_date": str(p.get("endDate") or ""),
+                        })
 
-            return (total_val, cash, positions_value)
+            # Cash = total portfolio value minus open positions
+            cash = max(total_val - positions_value, 0.0)
+            return (total_val, cash, positions_value, positions_list)
         except Exception as exc:
             log.debug("polymarket_dashboard_portfolio_skip", error=str(exc))
-        return (0.0, 0.0, 0.0)
+        return (0.0, 0.0, 0.0, [])
 
     try:
         chart, poly_bot, trades, cx, bal, portfolio_tuple = await asyncio.gather(
@@ -121,7 +134,7 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
         log.warning("polymarket_dashboard_aggregate_failed", error=str(exc))
         raise HTTPException(status_code=502, detail=f"dashboard aggregate failed: {exc}") from exc
 
-    portfolio_val, portfolio_cash, portfolio_positions = portfolio_tuple
+    portfolio_val, portfolio_cash, portfolio_positions, portfolio_positions_list = portfolio_tuple
 
     buy_pct = 50.0
     sell_pct = 50.0
@@ -199,6 +212,7 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
         "portfolio_value": portfolio_val,
         "portfolio_cash": portfolio_cash,
         "portfolio_positions": portfolio_positions,
+        "portfolio_positions_list": portfolio_positions_list,
         "portfolio_address": portfolio_address,
         "clob_balance": bal or 0.0,
         "btc_up_pct": round(buy_pct, 2),

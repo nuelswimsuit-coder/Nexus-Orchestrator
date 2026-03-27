@@ -53,11 +53,24 @@ import { API_BASE, triggerPanic, swrFetcher } from "@/lib/api";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
+export interface PortfolioPosition {
+  title: string;
+  outcome: string;
+  size: number;
+  avg_price: number;
+  cur_price: number;
+  current_value: number;
+  cash_pnl: number;
+  percent_pnl: number;
+  end_date: string;
+}
+
 export interface GodModeDashboard {
   collateral_usdc: string;
   portfolio_value?: number;
   portfolio_cash?: number;
   portfolio_positions?: number;
+  portfolio_positions_list?: PortfolioPosition[];
   portfolio_address?: string;
   clob_balance?: number;
   btc_up_pct: number;
@@ -2250,12 +2263,37 @@ function PolymarketTradingView({
           ? killSwitchBalance
           : Math.max(bot?.total_pnl_usd ?? 0, 0);
 
-  const totalPnl = bot?.total_pnl_usd ?? 0;
+  // Use real portfolio PnL from positions list if available
+  const realPositionsPnl = (data?.portfolio_positions_list ?? []).reduce((sum, p) => sum + p.cash_pnl, 0);
+  const totalPnl = realPositionsPnl !== 0 ? realPositionsPnl : (bot?.total_pnl_usd ?? 0);
   const realizedPnl = bot?.realized_pnl_usd ?? 0;
   const unrealizedPnl = bot?.unrealized_pnl_usd ?? 0;
   const isPnlPositive = totalPnl >= 0;
 
   const positions = useMemo(() => {
+    // Prefer real Polymarket positions from the portfolio API
+    const apiPositions = data?.portfolio_positions_list;
+    if (apiPositions && apiPositions.length > 0) {
+      return apiPositions.map((p) => ({
+        asset: p.title,
+        title: p.title,
+        outcome: p.outcome,
+        netShares: p.size,
+        avgPrice: p.avg_price,
+        nowPrice: p.cur_price,
+        value: p.current_value,
+        pnlDelta: p.cash_pnl,
+        pnlPct: p.percent_pnl,
+        totalSpent: p.size * p.avg_price,
+        count: 1,
+        endDate: p.end_date,
+        // legacy compat fields
+        buys: p.size,
+        sells: 0,
+        lastPrice: String(p.cur_price),
+      }));
+    }
+    // Fallback: derive from trading history
     const history = data?.trading_history ?? [];
     const map = new Map<string, { asset: string; buys: number; sells: number; totalSpent: number; count: number; lastPrice: string }>();
     for (const t of history) {
@@ -2274,9 +2312,9 @@ function PolymarketTradingView({
       const value = netShares * nowPrice;
       const pnlDelta = netShares * (nowPrice - avgPrice);
       const pnlPct = avgPrice > 0 ? ((nowPrice - avgPrice) / avgPrice) * 100 : 0;
-      return { ...p, netShares, avgPrice, nowPrice, value, pnlDelta, pnlPct };
+      return { ...p, netShares, avgPrice, nowPrice, value, pnlDelta, pnlPct, title: p.asset, outcome: "YES", endDate: "" };
     }).filter((p) => p.netShares > 0);
-  }, [data?.trading_history]);
+  }, [data?.portfolio_positions_list, data?.trading_history]);
 
   const aiRecs = useMemo(() => {
     const signal = cx?.signal ?? "NEUTRAL";
@@ -2670,12 +2708,20 @@ function PolymarketTradingView({
                           </div>
                           <div>
                             <div className="flex items-center gap-1.5">
-                              <div className="font-bold text-white truncate max-w-[120px]">{pos.asset}</div>
+                              <div className="font-bold text-white truncate max-w-[160px]" title={pos.title || pos.asset}>
+                                {(pos as {title?: string}).title || pos.asset}
+                              </div>
+                              {(pos as {outcome?: string}).outcome && (pos as {outcome?: string}).outcome !== "YES" && (
+                                <span className="text-[8px] font-black px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30">{(pos as {outcome?: string}).outcome}</span>
+                              )}
                               {whaleAlert && (
                                 <span className="text-[8px] font-black px-1 py-0.5 rounded animate-pulse" style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" }} title="Whale activity detected">🐋</span>
                               )}
                             </div>
-                            <div className="text-[10px] text-slate-500 font-mono">{pos.netShares.toFixed(1)} shares</div>
+                            <div className="text-[10px] text-slate-500 font-mono">
+                              {pos.netShares.toFixed(1)} shares
+                              {(pos as {endDate?: string}).endDate && <span className="ml-1 text-slate-600">· exp {new Date((pos as {endDate?: string}).endDate!).toLocaleDateString("en-US", {month:"short",day:"numeric"})}</span>}
+                            </div>
                           </div>
                         </div>
                       </td>
