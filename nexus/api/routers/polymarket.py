@@ -46,6 +46,32 @@ def _short_ts(ts: str) -> str:
     return s[-8:] if len(s) >= 8 else s or "—"
 
 
+def _extract_position_clob_token_id(p: dict[str, Any]) -> str:
+    """Best-effort CLOB outcome token id from a Data API `/positions` row."""
+    for key in ("asset", "assetId", "tokenId", "token_id", "tokenID", "clobTokenId"):
+        v = p.get(key)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    raw: Any = p.get("clobTokenIds")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = []
+    if isinstance(raw, list) and raw:
+        oi = p.get("outcomeIndex")
+        if isinstance(oi, int) and 0 <= oi < len(raw):
+            tok = raw[oi]
+        else:
+            outcome = str(p.get("outcome") or "Yes").strip().lower()
+            idx = 1 if outcome in ("no", "down", "n") else 0
+            idx = min(idx, len(raw) - 1)
+            tok = raw[idx]
+        if tok is not None and str(tok).strip():
+            return str(tok).strip()
+    return ""
+
+
 @router.get("/dashboard.json")
 async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
     """Aggregate several prediction/redis sources into one payload for the God Mode UI."""
@@ -102,16 +128,11 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
                             p.get("currentValue") or p.get("curValue") or p.get("value") or 0
                         )
                         positions_value += cur_val
-                        asset_raw = (
-                            p.get("asset")
-                            or p.get("assetId")
-                            or p.get("tokenId")
-                            or p.get("clobTokenId")
-                            or ""
-                        )
-                        token_id = str(asset_raw).strip() if asset_raw else ""
+                        token_id = _extract_position_clob_token_id(p)
+                        slug = str(p.get("slug") or "").strip()
                         positions_list.append({
                             "title": str(p.get("title") or p.get("slug") or "")[:60],
+                            "slug": slug,
                             "outcome": str(p.get("outcome") or "YES"),
                             "size": float(p.get("size") or 0),
                             "avg_price": float(p.get("avgPrice") or 0),

@@ -80,6 +80,7 @@ class PolymarketSnapshot(BaseModel):
     no_price:         Optional[float] = None
     market_id:        Optional[str]   = None
     volume:           Optional[Any]   = None
+    slug:             Optional[str]   = None
     clob_token_ids:   Optional[list[str]] = Field(default=None, description="CLOB token IDs; [0]=YES")
 
 

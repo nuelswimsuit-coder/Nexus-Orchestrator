@@ -34,6 +34,7 @@ Data sources:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal as _signal
@@ -378,6 +379,24 @@ def _is_valid_clob_token_id(token_id: str) -> bool:
     if s.startswith("<") and s.endswith(">"):
         return False
     return s.isdigit()
+
+
+def _yes_token_from_poly_snapshot(poly: object) -> str | None:
+    """YES CLOB token from cross-exchange ``polymarket`` JSON (snake_case or camelCase)."""
+    import json as _json_mod
+
+    if not isinstance(poly, dict):
+        return None
+    raw = poly.get("clob_token_ids") or poly.get("clobTokenIds")
+    if isinstance(raw, str):
+        try:
+            raw = _json_mod.loads(raw)
+        except Exception:
+            raw = []
+    if not isinstance(raw, list) or not raw:
+        return None
+    t = str(raw[0]).strip()
+    return t if _is_valid_clob_token_id(t) else None
 
 
 def _now_utc() -> str:
@@ -1204,8 +1223,11 @@ def _compute_ai_recs(positions: list[dict], portfolio_val: float) -> list[dict]:
         rec_amount = round(portfolio_val * pct_of_portfolio / 100, 2)
 
         tid = str(p.get("token_id") or p.get("asset") or "").strip()
+        slug = str(p.get("slug") or "").strip()
+        outcome = str(p.get("outcome") or "YES")
         recs.append({
             "title": title,
+            "outcome": outcome,
             "action_type": action_type,
             "action_he": action_he,
             "action_en": action_en,
@@ -1217,6 +1239,7 @@ def _compute_ai_recs(positions: list[dict], portfolio_val: float) -> list[dict]:
             "pct_of_portfolio": pct_of_portfolio,
             "rec_amount": rec_amount,
             "token_id": tid,
+            "slug": slug,
         })
     return recs
 
@@ -1674,6 +1697,63 @@ async def cmd_poly_sell(message: Message) -> None:
         )
 
 
+def _clob_token_from_gamma_market_dict(m: dict, outcome: str = "YES") -> str:
+    """Pick YES/NO CLOB id from a Gamma ``markets`` row."""
+    raw = m.get("clobTokenIds")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = []
+    if not isinstance(raw, list) or not raw:
+        return ""
+    o = (outcome or "YES").strip().lower()
+    idx = 1 if o in ("no", "n", "down") else 0
+    if idx >= len(raw):
+        idx = 0
+    tok = str(raw[idx]).strip()
+    return tok if _is_valid_clob_token_id(tok) else ""
+
+
+async def _gamma_clob_token_for_slug(slug: str, outcome: str = "YES") -> str:
+    """Resolve CLOB outcome token via Gamma when dashboard omits asset."""
+    slug = (slug or "").strip()
+    if len(slug) < 3:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            resp = await client.get(
+                "https://gamma-api.polymarket.com/markets",
+                params={"slug": slug},
+            )
+        if resp.status_code != 200:
+            return ""
+        data = resp.json()
+        if not isinstance(data, list) or not data:
+            return ""
+        return _clob_token_from_gamma_market_dict(data[0], outcome)
+    except Exception:
+        return ""
+
+
+async def _gamma_clob_token_for_market_id(market_id: str, outcome: str = "YES") -> str:
+    """GET /markets/{id} — list search sometimes omits ``clobTokenIds``."""
+    mid = (market_id or "").strip()
+    if len(mid) < 4:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            resp = await client.get(f"https://gamma-api.polymarket.com/markets/{mid}")
+        if resp.status_code != 200:
+            return ""
+        m = resp.json()
+        if not isinstance(m, dict):
+            return ""
+        return _clob_token_from_gamma_market_dict(m, outcome)
+    except Exception:
+        return ""
+
+
 async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
     """
     Proactive AI alert: fetch Polymarket data and send high-confidence
@@ -1694,10 +1774,13 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
         portfolio_val = float(dash.get("portfolio_value") or 0.0)
         cx_poly = (cx or {}).get("polymarket") if isinstance((cx or {}).get("polymarket"), dict) else {}
         cx_market_q = str(cx_poly.get("market_question") or "")
-        _raw_ids = cx_poly.get("clob_token_ids")
-        cx_yes_token: str | None = None
-        if isinstance(_raw_ids, list) and _raw_ids:
-            cx_yes_token = str(_raw_ids[0]).strip() or None
+        cx_yes_token = _yes_token_from_poly_snapshot(cx_poly)
+        if not cx_yes_token and cx_poly.get("slug"):
+            tslug = await _gamma_clob_token_for_slug(str(cx_poly.get("slug")), "YES")
+            cx_yes_token = tslug if tslug else None
+        if not cx_yes_token and cx_poly.get("market_id"):
+            tmid = await _gamma_clob_token_for_market_id(str(cx_poly.get("market_id")), "YES")
+            cx_yes_token = tmid if tmid else None
 
         recs = _compute_ai_recs(positions, portfolio_val)
         # Only alert on high-confidence recs (>= 75%)
@@ -1724,7 +1807,7 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
             if cx_market_q:
                 cx_alert_lines.append(f"📋 *Market / שוק:* `{_esc(cx_market_q[:200])}`")
                 cx_alert_lines.append("")
-            if cx_yes_token and _is_valid_clob_token_id(cx_yes_token):
+            if cx_yes_token:
                 cx_alert_lines += [
                     "🔑 *YES CLOB token:*",
                     f"`{_esc(cx_yes_token)}`",
@@ -1738,8 +1821,10 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
                 ]
             else:
                 cx_alert_lines += [
-                    f"_YES token not in API response — open /polymarket → Positions for the long numeric ID\\._",
-                    f"_או אשר את ההתראה לקבלת שורת פקודה עם טוקן \\(אם זמין\\)_",
+                    "_⚠️ No YES CLOB token from Gamma \\(expired/resolved market or tokens removed\\)\\._",
+                    "_Open /polymarket → Positions for a numeric id if trading is still open\\._",
+                    "",
+                    "_אין מזהה YES ב־API — שוק שפג או בלי ספר פקודות פעיל\\._",
                     "",
                 ]
 
@@ -1762,7 +1847,12 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
                 f"  💡 Recommended size: `${rec['rec_amount']:.2f}` \\({rec['pct_of_portfolio']:.0f}% of portfolio\\)\n\n"
             )
             tid = str(rec.get("token_id") or "").strip()
-            if tid and len(tid) >= 8:
+            if (not tid or not _is_valid_clob_token_id(tid)) and rec.get("slug"):
+                tid = await _gamma_clob_token_for_slug(
+                    str(rec["slug"]),
+                    str(rec.get("outcome") or "YES"),
+                )
+            if tid and _is_valid_clob_token_id(tid):
                 amt = rec["rec_amount"]
                 alert_text += (
                     f"🔑 *CLOB token \\(this position\\):*\n"
@@ -1773,7 +1863,7 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
                 )
             else:
                 alert_text += (
-                    "⚠️ _Token id not in feed — open 📊 Positions for `🔑 token` line\\._\n\n"
+                    "⚠️ _Could not resolve CLOB token \\(Data API \\+ Gamma\\) — check 📊 Positions if the market is still active\\._\n\n"
                 )
             alert_text += (
                 f"_האם לבצע? / Execute?_\n"
@@ -1907,11 +1997,7 @@ async def handle_poly_cx_approve(callback: CallbackQuery) -> None:
             poly = cx.get("polymarket")
             if isinstance(poly, dict):
                 mq = str(poly.get("market_question") or "")
-                ids = poly.get("clob_token_ids")
-                if isinstance(ids, list) and ids:
-                    t = str(ids[0]).strip()
-                    if _is_valid_clob_token_id(t):
-                        yes_tok = t
+                yes_tok = _yes_token_from_poly_snapshot(poly)
     except Exception:
         pass
 

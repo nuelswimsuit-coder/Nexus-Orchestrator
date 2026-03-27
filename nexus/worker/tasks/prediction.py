@@ -351,6 +351,28 @@ async def fetch_polymarket_btc_odds() -> dict[str, Any]:
         except Exception:
             raw_token_ids = []
     clob_token_ids: list[str] = raw_token_ids if isinstance(raw_token_ids, list) else []
+    # Also handle list-shaped clobTokenIds without JSON parse (some Gamma responses)
+    if not clob_token_ids and isinstance(market.get("clobTokenIds"), list):
+        clob_token_ids = [str(x).strip() for x in market["clobTokenIds"] if x]
+
+    # List search sometimes omits token ids; single-market GET often has full clobTokenIds.
+    mid = market.get("id")
+    if (not clob_token_ids) and mid:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r2 = await client.get(f"{POLYMARKET_GAMMA_URL}/{mid}")
+                if r2.status_code == 200:
+                    m2 = r2.json()
+                    rt = m2.get("clobTokenIds", "[]")
+                    if isinstance(rt, str):
+                        try:
+                            rt = _json.loads(rt)
+                        except Exception:
+                            rt = []
+                    if isinstance(rt, list) and rt:
+                        clob_token_ids = [str(x).strip() for x in rt if x]
+        except Exception:
+            pass
 
     return {
         "market_found":    True,
@@ -359,6 +381,7 @@ async def fetch_polymarket_btc_odds() -> dict[str, Any]:
         "no_price":        round(no_price, 4),
         "market_id":       market.get("id"),
         "volume":          market.get("volume"),
+        "slug":            market.get("slug"),
         "clob_token_ids":  clob_token_ids,
     }
 
