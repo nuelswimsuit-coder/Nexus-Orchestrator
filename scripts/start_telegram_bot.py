@@ -346,6 +346,40 @@ async def _api_post(
         return None
 
 
+async def _api_post_manual_order(path: str, payload: dict) -> tuple[dict | None, str | None]:
+    """POST JSON; returns ``(data, None)`` on success or ``(None, error_detail)`` on failure."""
+    try:
+        hdrs = {"Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(f"{API_BASE}{path}", json=payload, headers=hdrs)
+            if resp.status_code >= 400:
+                detail = resp.text[:800]
+                try:
+                    body = resp.json()
+                    if isinstance(body, dict) and "detail" in body:
+                        d = body["detail"]
+                        detail = d if isinstance(d, str) else str(d)
+                except Exception:
+                    pass
+                return None, detail
+            return resp.json(), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _is_valid_clob_token_id(token_id: str) -> bool:
+    """Polymarket CLOB outcome tokens are long numeric strings; reject placeholder paste mistakes."""
+    s = (token_id or "").strip()
+    if len(s) < 15:
+        return False
+    sl = s.lower()
+    if sl in ("<token_id>", "token_id", "<token>", "token", "<paste_token_id>"):
+        return False
+    if s.startswith("<") and s.endswith(">"):
+        return False
+    return s.isdigit()
+
+
 def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -1078,6 +1112,9 @@ def _fmt_poly_positions(dash: dict) -> str:
             ]
             if end_date:
                 lines.append(f"  📅 Exp: `{_esc(end_date)}`")
+            tid = str(p.get("token_id") or "").strip()
+            if tid and len(tid) >= 8:
+                lines.append(f"  🔑 token: `{_esc(tid[:20])}…{_esc(tid[-8:])}`")
             lines.append("")
 
     lines.append(f"🔄 _Updated: {_esc(_now_utc())}_")
@@ -1166,6 +1203,7 @@ def _compute_ai_recs(positions: list[dict], portfolio_val: float) -> list[dict]:
         pct_of_portfolio = min(15.0, abs(edge) * 1.5) if portfolio_val > 0 else 0.0
         rec_amount = round(portfolio_val * pct_of_portfolio / 100, 2)
 
+        tid = str(p.get("token_id") or p.get("asset") or "").strip()
         recs.append({
             "title": title,
             "action_type": action_type,
@@ -1178,6 +1216,7 @@ def _compute_ai_recs(positions: list[dict], portfolio_val: float) -> list[dict]:
             "avg_price": avg_p,
             "pct_of_portfolio": pct_of_portfolio,
             "rec_amount": rec_amount,
+            "token_id": tid,
         })
     return recs
 
@@ -1426,11 +1465,10 @@ async def handle_poly_buy_prompt(callback: CallbackQuery) -> None:
     await callback.answer()
     await callback.message.edit_text(
         "🟢 *קנה YES / BUY YES*\n\n"
-        "שלח פקודה / Send command:\n"
-        "`/poly\\_buy <token\\_id> <amount\\_usdc>`\n\n"
-        "לדוגמה / Example:\n"
-        "`/poly\\_buy 0xabc123 50`\n\n"
-        "_הסכום ב\\-USDC / Amount in USDC_",
+        "1\\. פתח `/polymarket` → Positions והעתק את *המספר הארוך* \\(מזהה CLOB ל־YES\\)\\.\n"
+        "2\\. שלח / Send \\(מספר ארוך \\+ סכום USDC\\):\n"
+        "`/poly\\_buy 123456789012345678901234567890 50`\n\n"
+        "_המספר הארוך הוא מהטבלה — לא כותרת השוק\\. אל תשלח את המילים token\\_id\\._",
         parse_mode=ParseMode.MARKDOWN_V2,
         reply_markup=get_polymarket_menu(),
     )
@@ -1540,9 +1578,18 @@ async def cmd_poly_buy(message: Message) -> None:
         await message.answer("❌ סכום לא תקין / Invalid amount\\.")
         return
 
-    await message.answer(f"⏳ מבצע קנייה / Executing BUY… `{_esc(token_id[:20])}` × `${amount:.2f}`", parse_mode=ParseMode.MARKDOWN_V2)
+    if not _is_valid_clob_token_id(token_id):
+        await message.answer(
+            "❌ *מזהה טוקן לא תקין / Invalid token*\n\n"
+            "אל להעתיק את המילים `token\\_id` או \\<token\\_id\\> — צריך מספר ארוך \\(מ\\-Positions / מההתראה\\)\\.\n"
+            "_Do not paste the placeholder text — use the long numeric YES token ID\\._",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        return
 
-    data = await _api_post("/api/polymarket/manual-order", {
+    await message.answer(f"⏳ מבצע קנייה / Executing BUY… `{_esc(token_id[:20])}…` × `${amount:.2f}`", parse_mode=ParseMode.MARKDOWN_V2)
+
+    data, err_detail = await _api_post_manual_order("/api/polymarket/manual-order", {
         "token_id": token_id,
         "side": "BUY",
         "amount": amount,
@@ -1560,7 +1607,12 @@ async def cmd_poly_buy(message: Message) -> None:
             parse_mode=ParseMode.MARKDOWN_V2,
         )
     else:
-        await message.answer("❌ *Execution failed / שגיאה בביצוע*\n\nבדוק את חיבור ה\\-API\\.", parse_mode=ParseMode.MARKDOWN_V2)
+        detail = _esc((err_detail or "unknown")[:400])
+        await message.answer(
+            f"❌ *Execution failed / שגיאה בביצוע*\n\n"
+            f"`{detail}`",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
 
 
 async def cmd_poly_sell(message: Message) -> None:
@@ -1585,9 +1637,18 @@ async def cmd_poly_sell(message: Message) -> None:
         await message.answer("❌ סכום לא תקין / Invalid amount\\.")
         return
 
-    await message.answer(f"⏳ מבצע מכירה / Executing SELL… `{_esc(token_id[:20])}` × `${amount:.2f}`", parse_mode=ParseMode.MARKDOWN_V2)
+    if not _is_valid_clob_token_id(token_id):
+        await message.answer(
+            "❌ *מזהה טוקן לא תקין / Invalid token*\n\n"
+            "אל להעתיק את המילים `token\\_id` — צריך מספר ארוך מ\\-Positions\\.\n"
+            "_Use the long numeric token ID, not the placeholder text\\._",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        return
 
-    data = await _api_post("/api/polymarket/manual-order", {
+    await message.answer(f"⏳ מבצע מכירה / Executing SELL… `{_esc(token_id[:20])}…` × `${amount:.2f}`", parse_mode=ParseMode.MARKDOWN_V2)
+
+    data, err_detail = await _api_post_manual_order("/api/polymarket/manual-order", {
         "token_id": token_id,
         "side": "SELL",
         "amount": amount,
@@ -1605,7 +1666,12 @@ async def cmd_poly_sell(message: Message) -> None:
             parse_mode=ParseMode.MARKDOWN_V2,
         )
     else:
-        await message.answer("❌ *Execution failed / שגיאה בביצוע*\n\nבדוק את חיבור ה\\-API\\.", parse_mode=ParseMode.MARKDOWN_V2)
+        detail = _esc((err_detail or "unknown")[:400])
+        await message.answer(
+            f"❌ *Execution failed / שגיאה בביצוע*\n\n"
+            f"`{detail}`",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
 
 
 async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
@@ -1626,7 +1692,12 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
         cx_signal     = str((cx or {}).get("signal_label") or (cx or {}).get("signal") or "")
         arb_gap       = float((cx or {}).get("arbitrage_gap") or 0.0)
         portfolio_val = float(dash.get("portfolio_value") or 0.0)
-        cx_market_q   = str(((cx or {}).get("polymarket") or {}).get("market_question") or "")
+        cx_poly = (cx or {}).get("polymarket") if isinstance((cx or {}).get("polymarket"), dict) else {}
+        cx_market_q = str(cx_poly.get("market_question") or "")
+        _raw_ids = cx_poly.get("clob_token_ids")
+        cx_yes_token: str | None = None
+        if isinstance(_raw_ids, list) and _raw_ids:
+            cx_yes_token = str(_raw_ids[0]).strip() or None
 
         recs = _compute_ai_recs(positions, portfolio_val)
         # Only alert on high-confidence recs (>= 75%)
@@ -1651,12 +1722,26 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
                 f"",
             ]
             if cx_market_q:
-                cx_alert_lines.append(f"📋 *Market:* `{_esc(cx_market_q[:80])}`")
-                cx_alert_lines.append(f"")
-            cx_alert_lines += [
-                f"_Use `/poly\\_buy` to execute_",
-                f"",
-            ]
+                cx_alert_lines.append(f"📋 *Market / שוק:* `{_esc(cx_market_q[:200])}`")
+                cx_alert_lines.append("")
+            if cx_yes_token and _is_valid_clob_token_id(cx_yes_token):
+                cx_alert_lines += [
+                    "🔑 *YES CLOB token:*",
+                    f"`{_esc(cx_yes_token)}`",
+                    "",
+                    "⚡ *Copy / העתק:*",
+                    f"`/poly\\_buy {_esc(cx_yes_token)} {_esc(f'{cx_rec_amt:.2f}')}`",
+                    "",
+                    "_Copy the line above — do not type placeholder `token\\_id`_",
+                    "_העתק את השורה — לא את המילים token\\_id_",
+                    "",
+                ]
+            else:
+                cx_alert_lines += [
+                    f"_YES token not in API response — open /polymarket → Positions for the long numeric ID\\._",
+                    f"_או אשר את ההתראה לקבלת שורת פקודה עם טוקן \\(אם זמין\\)_",
+                    "",
+                ]
 
         if not high_conf_recs and not cx_alert_lines:
             return
@@ -1675,6 +1760,22 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
                 f"  Current Value: `${rec['cur_val']:.2f}`\n"
                 f"  Avg Price: `{rec['avg_price']*100:.1f}c` → Now: `{rec['cur_price']*100:.1f}c`\n\n"
                 f"  💡 Recommended size: `${rec['rec_amount']:.2f}` \\({rec['pct_of_portfolio']:.0f}% of portfolio\\)\n\n"
+            )
+            tid = str(rec.get("token_id") or "").strip()
+            if tid and len(tid) >= 8:
+                amt = rec["rec_amount"]
+                alert_text += (
+                    f"🔑 *CLOB token \\(this position\\):*\n"
+                    f"`{_esc(tid)}`\n\n"
+                    f"⚡ *Copy command / פקודה מוכנה:*\n"
+                    f"`/poly\\_buy {_esc(tid)} {amt:.2f}`\n\n"
+                    f"_Do not type `<token\\_id>` — paste the line above\\._\n\n"
+                )
+            else:
+                alert_text += (
+                    "⚠️ _Token id not in feed — open 📊 Positions for `🔑 token` line\\._\n\n"
+                )
+            alert_text += (
                 f"_האם לבצע? / Execute?_\n"
                 f"🔄 _{_esc(_now_utc())}_"
             )
@@ -1766,9 +1867,11 @@ async def handle_poly_alert_approve(callback: CallbackQuery) -> None:
     await callback.answer("✅ אישור התקבל / Approved")
     await callback.message.edit_text(
         f"✅ *Approved / אושר* {icon}\n\n"
-        f"⚡ לביצוע, שלח:\n"
-        f"`/poly\\_{cmd} <token\\_id> {_esc(amount)}`\n\n"
-        f"💡 _קבל token\\_id מ: /polymarket → Positions_",
+        f"⚡ *לביצוע / To execute:*\n"
+        f"שלח `/poly\\_{cmd}` ואז את מזהה ה\\-YES \\(מספר ארוך\\) ואת הסכום — מ\\-`/polymarket` → Positions\\.\n"
+        f"_Send `/poly\\_{cmd}` \\+ long numeric YES token \\+ `{_esc(amount)}` — from Positions\\._\n\n"
+        f"⚠️ _לא להקליד את המילים \"token\\_id\" — רק המספר_\n"
+        f"⚠️ _Do not type the word token\\_id — paste the number only_",
         parse_mode=ParseMode.MARKDOWN_V2,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [
@@ -1796,14 +1899,48 @@ async def handle_poly_cx_approve(callback: CallbackQuery) -> None:
     cmd    = "buy" if side == "BUY" else "sell"
     icon   = "📈" if side == "BUY" else "📉"
 
+    yes_tok: str | None = None
+    mq: str = ""
+    try:
+        cx = await _api_get("/api/prediction/cross-exchange")
+        if isinstance(cx, dict):
+            poly = cx.get("polymarket")
+            if isinstance(poly, dict):
+                mq = str(poly.get("market_question") or "")
+                ids = poly.get("clob_token_ids")
+                if isinstance(ids, list) and ids:
+                    t = str(ids[0]).strip()
+                    if _is_valid_clob_token_id(t):
+                        yes_tok = t
+    except Exception:
+        pass
+
     await callback.answer("✅ אישור התקבל / Approved")
+
+    if yes_tok:
+        body = (
+            f"✅ *Approved / אושר* {icon}\n\n"
+            f"⚡ *Cross\\-Exchange — ביצוע / Execute*\n\n"
+        )
+        if mq:
+            body += f"📋 `{_esc(mq[:180])}`\n\n"
+        body += (
+            f"`/poly\\_{cmd} {_esc(yes_tok)} {_esc(amount)}`\n\n"
+            f"_העתק את השורה למעלה — אל תקליד \\<token\\_id\\>_\n"
+            f"_Copy the line above — do not type placeholder text_"
+        )
+    else:
+        body = (
+            f"✅ *Approved / אושר* {icon}\n\n"
+            f"⚡ *Cross\\-Exchange — ביצוע*\n\n"
+            f"שלח: `/poly\\_{cmd}` \\+ מזהה YES הארוך \\+ `{_esc(amount)}`\n"
+            f"מ\\-`/polymarket` → Positions \\(או מההתראה עם שורת הפקודה המלאה\\)\\.\n\n"
+            f"⚠️ _לא להדביק את המילים token\\_id — רק המספר_\n"
+            f"📊 _ARB = cross\\-exchange opportunity_"
+        )
+
     await callback.message.edit_text(
-        f"✅ *Approved / אושר* {icon}\n\n"
-        f"⚡ *Cross\\-Exchange Signal — ביצוע*\n\n"
-        f"שלח את הפקודה הבאה עם ה\\-token\\_id:\n"
-        f"`/poly\\_{cmd} <token\\_id> {_esc(amount)}`\n\n"
-        f"💡 _קבל token\\_id מ: /polymarket → Positions_\n"
-        f"📊 _ARB Gap מצביע על הזדמנות ארביטראז' חוצת בורסות_",
+        body,
         parse_mode=ParseMode.MARKDOWN_V2,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [

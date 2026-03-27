@@ -102,6 +102,14 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
                             p.get("currentValue") or p.get("curValue") or p.get("value") or 0
                         )
                         positions_value += cur_val
+                        asset_raw = (
+                            p.get("asset")
+                            or p.get("assetId")
+                            or p.get("tokenId")
+                            or p.get("clobTokenId")
+                            or ""
+                        )
+                        token_id = str(asset_raw).strip() if asset_raw else ""
                         positions_list.append({
                             "title": str(p.get("title") or p.get("slug") or "")[:60],
                             "outcome": str(p.get("outcome") or "YES"),
@@ -112,6 +120,7 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
                             "cash_pnl": float(p.get("cashPnl") or 0),
                             "percent_pnl": float(p.get("percentPnl") or 0),
                             "end_date": str(p.get("endDate") or ""),
+                            "token_id": token_id,
                         })
 
             # Cash = total portfolio value minus open positions

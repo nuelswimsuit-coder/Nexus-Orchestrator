@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional
 
 import structlog
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from nexus.api.dependencies import RedisDep
 from nexus.trading.config import (
@@ -70,12 +70,17 @@ class BinanceSnapshot(BaseModel):
 
 
 class PolymarketSnapshot(BaseModel):
+    """Gamma/CLOB snapshot; ``clob_token_ids`` index 0 = YES outcome token."""
+
+    model_config = ConfigDict(extra="ignore")
+
     market_found:     bool
     market_question:  Optional[str]   = None
     yes_price:        Optional[float] = None
     no_price:         Optional[float] = None
     market_id:        Optional[str]   = None
     volume:           Optional[Any]   = None
+    clob_token_ids:   Optional[list[str]] = Field(default=None, description="CLOB token IDs; [0]=YES")
 
 
 class PredictionCIBand(BaseModel):
