@@ -272,10 +272,24 @@ class PolymarketClient:
         try:
             balance = await self.get_balance_usdc()
         except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
+            # #region agent log
+            import json as _json, time as _time
+            try:
+                with open("debug-020f7b.log", "a") as _f:
+                    _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:check_kill_switch","message":"kill_switch_balance_timeout","data":{"error":str(exc)},"hypothesisId":"H-C"}) + "\n")
+            except Exception: pass
+            # #endregion
             raise TradingHalted(
                 f"Kill switch engaged: balance check timed out ({exc})"
             ) from exc
 
+        # #region agent log
+        import json as _json, time as _time
+        try:
+            with open("debug-020f7b.log", "a") as _f:
+                _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:check_kill_switch","message":"kill_switch_balance_result","data":{"balance_usd":balance,"threshold":KILL_SWITCH_BALANCE_USD,"will_halt":balance < KILL_SWITCH_BALANCE_USD},"hypothesisId":"H-C"}) + "\n")
+        except Exception: pass
+        # #endregion
         log.info(
             "polymarket.kill_switch_check",
             balance_usd=balance,
@@ -325,12 +339,24 @@ class PolymarketClient:
             ``TradeResult`` — never raises on order failures, only on
             ``TradingHalted`` or ``asyncio.TimeoutError``.
         """
+        # #region agent log
+        import json as _json, time as _time
+        def _dbg_client(msg, data, hyp="H-B"):
+            try:
+                with open("debug-020f7b.log", "a") as _f:
+                    _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:place_order_async","message":msg,"data":data,"hypothesisId":hyp}) + "\n")
+            except Exception: pass
+        _dbg_client("place_order_entry", {"token_id": token_id[:20], "side": side, "price": price, "budget_usd": budget_usd, "clob_is_none": self._clob is None, "private_key_set": bool(self._private_key), "funder_set": bool(self._funder)}, "H-B/H-C")
+        # #endregion
         await self.check_kill_switch()
 
         shares = round(budget_usd / price, 2) if price > 0 else 0.0
 
         ep = await effective_paper_trading(redis)
         paper_mode = ep and not force_live
+        # #region agent log
+        _dbg_client("place_order_mode", {"paper_mode": paper_mode, "effective_paper": ep, "force_live": force_live, "PAPER_TRADING_config": PAPER_TRADING}, "H-B")
+        # #endregion
 
         base = TradeResult(
             success=False,

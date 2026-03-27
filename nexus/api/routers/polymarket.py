@@ -376,6 +376,15 @@ class ManualOrderBody(BaseModel):
 @router.post("/manual-order")
 async def polymarket_manual_order(body: ManualOrderBody, redis: RedisDep) -> dict[str, Any]:
     """Map UI BUY/SELL to YES buy or outcome sell; price defaults from bot snapshot or 0.5."""
+    # #region agent log
+    import json as _json, time as _time
+    def _dbg(msg, data, hyp="H-B"):
+        try:
+            with open("debug-020f7b.log", "a") as _f:
+                _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket.py:manual_order","message":msg,"data":data,"hypothesisId":hyp}) + "\n")
+        except Exception: pass
+    _dbg("manual_order_entry", {"token_id": body.token_id[:20], "side": body.side, "amount": body.amount, "price": body.price}, "H-A/H-B")
+    # #endregion
 
     price = body.price
     market_question = ""

@@ -3088,43 +3088,46 @@ function PolymarketTradingView({
                     {/* Row header — clickable */}
                     <button
                       type="button"
-                      className="w-full flex items-center gap-3 p-3 text-left"
+                      className="w-full flex items-center gap-3 px-4 py-3 text-left"
                       onClick={() => {
                         setExpandedRecIdx(isExpanded ? null : i);
                         setTokenId(rec.asset);
                         setSelectedPosition(rec.asset);
                       }}
                     >
-                      {/* Rank badge */}
-                      <div className="shrink-0 w-6 h-6 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-[10px] font-black text-slate-400">
-                        {i + 1}
+                      {/* Left: action badge */}
+                      <div className="shrink-0 flex flex-col items-center gap-1.5">
+                        <span className={`text-sm font-black px-3 py-1 rounded-lg border whitespace-nowrap ${actionColor}`}>
+                          {actionLabelHe}
+                          <span className="text-[10px] opacity-60 ml-1">/ {actionLabelEn}</span>
+                        </span>
+                        {/* Confidence bar */}
+                        <div className="w-full flex items-center gap-1.5">
+                          <div className="flex-1 h-1 bg-slate-800 rounded-full overflow-hidden">
+                            <div className="h-full bg-violet-500 rounded-full" style={{ width: `${rec.confidence}%` }} />
+                          </div>
+                          <span className={`text-[10px] font-black px-1 py-0.5 rounded border ${confTier.color}`}>{rec.confidence.toFixed(0)}%</span>
+                        </div>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-bold text-white truncate leading-snug">{rec.asset}</div>
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-0.5">
-                          <span className="text-xs font-bold text-slate-300">יתרון: <span className={`font-black ${pnlColor}`}>{fmtPct(rec.pnlPct)}</span></span>
+
+                      {/* Center: market title + stats */}
+                      <div className="flex-1 min-w-0 text-right">
+                        <div className="text-sm font-bold text-white leading-snug line-clamp-2">{rec.asset}</div>
+                        <div className="flex flex-wrap justify-end items-center gap-x-3 gap-y-0.5 mt-1">
+                          <span className="text-xs text-slate-400">ממוצע: <span className="text-slate-200 font-semibold">{(rec.avgPrice * 100).toFixed(1)}¢</span></span>
                           <span className="text-[10px] text-slate-600">·</span>
                           <span className="text-xs text-slate-400">אמצע: <span className="text-slate-200 font-semibold">{(rec.nowPrice * 100).toFixed(1)}¢</span></span>
                           <span className="text-[10px] text-slate-600">·</span>
-                          <span className="text-xs text-slate-400">ממוצע: <span className="text-slate-200 font-semibold">{(rec.avgPrice * 100).toFixed(1)}¢</span></span>
+                          <span className="text-xs font-bold text-slate-300">יתרון: <span className={`font-black ${pnlColor}`}>{fmtPct(rec.pnlPct)}</span></span>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        {/* Confidence bar + tier */}
-                        <div className="hidden sm:flex flex-col items-end gap-1 w-24">
-                          <div className="flex items-center gap-1.5">
-                            <span className={`text-[10px] font-black px-1.5 py-0.5 rounded border ${confTier.color}`}>{confTier.label}</span>
-                            <span className="text-xs font-black text-violet-300">{rec.confidence.toFixed(0)}%</span>
-                          </div>
-                          <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                            <div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${rec.confidence}%` }} />
-                          </div>
+
+                      {/* Right: rank + chevron */}
+                      <div className="shrink-0 flex flex-col items-center gap-1">
+                        <div className="w-6 h-6 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-[10px] font-black text-slate-400">
+                          {i + 1}
                         </div>
-                        <span className={`text-xs font-black px-2.5 py-1.5 rounded-lg border ${actionColor}`}>
-                          <span className="text-sm">{actionLabelHe}</span>
-                          <span className="text-[10px] opacity-60 ml-1">/ {actionLabelEn}</span>
-                        </span>
-                        <ChevronRight size={16} className={`text-slate-500 transition-transform duration-200 ${isExpanded ? "rotate-90 text-violet-400" : ""}`} />
+                        <ChevronRight size={14} className={`text-slate-500 transition-transform duration-200 ${isExpanded ? "rotate-90 text-violet-400" : ""}`} />
                       </div>
                     </button>
 
@@ -3156,24 +3159,49 @@ function PolymarketTradingView({
 
                         {/* Recommended bet box */}
                         <div className="bg-violet-500/5 border border-violet-500/25 rounded-xl p-4">
-                          <div className="text-xs font-black text-violet-300 uppercase tracking-widest mb-3">
+                          <div className="text-sm font-black text-violet-300 uppercase tracking-widest mb-3">
                             🎯 הימור מומלץ / Recommended Bet
                           </div>
+
+                          {/* 3-col summary */}
                           <div className="grid grid-cols-3 gap-3 mb-4">
-                            <div className="text-center">
-                              <div className="text-[11px] font-bold text-slate-400 mb-1">פוזיציה מומלצת</div>
-                              <div className={`text-lg font-black ${rec.recSide === "BUY" ? "text-emerald-400" : "text-rose-400"}`}>
-                                {rec.recSide === "BUY" ? "קנה YES ↑" : "מכור SELL ↓"}
+                            <div className="bg-slate-900/60 rounded-lg p-3 text-center">
+                              <div className="text-xs font-bold text-slate-400 mb-1">פוזיציה מומלצת</div>
+                              <div className={`text-xl font-black ${rec.recSide === "BUY" ? "text-emerald-400" : "text-rose-400"}`}>
+                                {rec.recSide === "BUY" ? "קנה YES ↑" : "מכור ↓"}
                               </div>
+                              <div className="text-[10px] text-slate-500 mt-0.5">{rec.recSide === "BUY" ? "BUY YES" : "SELL"}</div>
                             </div>
-                            <div className="text-center">
-                              <div className="text-[11px] font-bold text-slate-400 mb-1">סכום מומלץ</div>
-                              <div className="text-lg font-black text-white">{fmtUsd(rec.recBet)}</div>
+                            <div className="bg-slate-900/60 rounded-lg p-3 text-center">
+                              <div className="text-xs font-bold text-slate-400 mb-1">סכום מומלץ</div>
+                              <div className="text-xl font-black text-white">{fmtUsd(rec.recBet)}</div>
+                              <div className="text-[10px] text-slate-500 mt-0.5">Kelly sizing</div>
                             </div>
-                            <div className="text-center">
-                              <div className="text-[11px] font-bold text-slate-400 mb-1">ביטחון AI</div>
-                              <div className="text-lg font-black text-violet-300">{rec.confidence.toFixed(0)}%</div>
+                            <div className="bg-slate-900/60 rounded-lg p-3 text-center">
+                              <div className="text-xs font-bold text-slate-400 mb-1">ביטחון AI</div>
+                              <div className="text-xl font-black text-violet-300">{rec.confidence.toFixed(0)}%</div>
+                              <div className={`text-[10px] mt-0.5 font-bold ${confTier.color.split(" ")[0]}`}>{confTier.label}</div>
                             </div>
+                          </div>
+
+                          {/* Adjustable amount row */}
+                          <div className="flex items-center gap-2 mb-3">
+                            <span className="text-xs font-bold text-slate-400 shrink-0">סכום לביצוע ($):</span>
+                            <input
+                              type="number"
+                              min="1"
+                              step="5"
+                              defaultValue={rec.recBet.toFixed(0)}
+                              id={`rec-bet-input-${i}`}
+                              className="flex-1 bg-slate-900 border border-slate-700 focus:border-violet-500 rounded-lg px-3 py-1.5 text-sm font-black text-white outline-none transition"
+                            />
+                            {[25, 50, 100].map((v) => (
+                              <button key={v} type="button"
+                                onClick={() => { const el = document.getElementById(`rec-bet-input-${i}`) as HTMLInputElement | null; if (el) el.value = String(v); }}
+                                className="text-[10px] font-black text-slate-400 hover:text-violet-300 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 transition">
+                                ${v}
+                              </button>
+                            ))}
                           </div>
 
                           {/* Execute buttons */}
@@ -3181,27 +3209,32 @@ function PolymarketTradingView({
                             <button
                               type="button"
                               disabled={recStatus?.loading}
-                              onClick={() => void handleRecOrder(i, rec.asset, rec.recSide, rec.recBet)}
-                              className={`flex-1 py-3 rounded-xl font-black text-sm uppercase tracking-widest transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg ${
+                              onClick={() => {
+                                const el = document.getElementById(`rec-bet-input-${i}`) as HTMLInputElement | null;
+                                const betAmt = el ? parseFloat(el.value) || rec.recBet : rec.recBet;
+                                void handleRecOrder(i, rec.asset, rec.recSide, betAmt);
+                              }}
+                              className={`flex-1 py-3 rounded-xl font-black text-base uppercase tracking-widest transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg ${
                                 rec.recSide === "BUY"
                                   ? "bg-emerald-500 hover:bg-emerald-400 text-black shadow-emerald-500/20"
                                   : "bg-rose-500 hover:bg-rose-400 text-white shadow-rose-500/20"
                               }`}
                             >
-                              {recStatus?.loading ? "⏳ שולח..." : rec.recSide === "BUY" ? `✅ בצע קנייה — ${fmtUsd(rec.recBet)}` : `🔴 בצע מכירה — ${fmtUsd(rec.recBet)}`}
+                              {recStatus?.loading ? "⏳ שולח פקודה..." : rec.recSide === "BUY" ? "✅ בצע קנייה" : "🔴 בצע מכירה"}
                             </button>
                             <button
                               type="button"
                               onClick={() => { setTokenId(rec.asset); setAmount(rec.recBet.toFixed(0)); setSelectedPosition(rec.asset); setExpandedRecIdx(null); }}
-                              className="px-4 py-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-black rounded-xl transition uppercase tracking-widest"
+                              className="px-4 py-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-sm font-black rounded-xl transition"
+                              title="ערוך בפאנל הסחר"
                             >
-                              ✏️ ערוך
+                              ✏️
                             </button>
                           </div>
 
                           {/* Order status */}
                           {recStatus && !recStatus.loading && (
-                            <div className={`mt-2 flex items-center gap-2 p-2.5 rounded-lg text-xs font-black border ${recStatus.ok ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "bg-rose-500/10 border-rose-500/30 text-rose-400"}`}>
+                            <div className={`mt-3 flex items-center gap-2 p-3 rounded-lg text-sm font-black border ${recStatus.ok ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "bg-rose-500/10 border-rose-500/30 text-rose-400"}`}>
                               {recStatus.msg}
                             </div>
                           )}

@@ -4767,3 +4767,4 @@ eded the max restart limit (3). Manual intervention required.
 [watchdog] [frontend] restarted — pid=6164
 [launcher] child process exited pid=6164 label=frontend returncode=1.
 [WATCHDOG] Service *frontend* has crashed 3 times and exceeded the max restart limit (3). Manual intervention required.
+[launcher] received signal 2; kill_all()
