@@ -95,6 +95,8 @@ export interface GodModeDashboard {
   total_withdrawn?: number;
   break_even_delta?: number;
   realized_pnl?: number;
+  /** Matches nexus.api.polymarket_manual_errors.MANUAL_ORDER_ENRICH_REV — if missing or old, UI talks to stale API */
+  manual_order_error_enrich?: string;
 }
 
 interface TelefixGroup {
@@ -1013,6 +1015,20 @@ function GroupFactoryView() {
   const [startFactoryLoading, setStartFactoryLoading] = useState(false);
 
   const showToast = (msg: string, ok = true) => {
+    // #region agent log
+    fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c7f075" },
+      body: JSON.stringify({
+        sessionId: "c7f075",
+        location: "NexusOsGodMode.tsx:GroupFactoryView.showToast",
+        message: "group_factory_toast",
+        data: { msg, ok },
+        timestamp: Date.now(),
+        hypothesisId: "H0",
+      }),
+    }).catch(() => {});
+    // #endregion
     setToast({ msg, ok });
     setTimeout(() => setToast(null), 5000);
   };
@@ -1038,7 +1054,23 @@ function GroupFactoryView() {
   const loadSchedule = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/telefix/group-factory/schedule`);
-      if (!res.ok) return;
+      // #region agent log
+      if (!res.ok) {
+        fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c7f075" },
+          body: JSON.stringify({
+            sessionId: "c7f075",
+            location: "NexusOsGodMode.tsx:loadSchedule",
+            message: "group_factory_schedule_fetch",
+            data: { status: res.status, apiBase: API_BASE },
+            timestamp: Date.now(),
+            hypothesisId: "H3",
+          }),
+        }).catch(() => {});
+        return;
+      }
+      // #endregion
       const j = (await res.json()) as { settings: GroupFactorySettingsForm };
       if (j.settings) {
         setScheduleSettings(j.settings);
@@ -1050,6 +1082,23 @@ function GroupFactoryView() {
   const loadActivity = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/telefix/group-factory/activity`);
+      // #region agent log
+      if (!res.ok) {
+        fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c7f075" },
+          body: JSON.stringify({
+            sessionId: "c7f075",
+            location: "NexusOsGodMode.tsx:loadActivity",
+            message: "group_factory_activity_fetch",
+            data: { status: res.status, apiBase: API_BASE },
+            timestamp: Date.now(),
+            hypothesisId: "H3",
+          }),
+        }).catch(() => {});
+        return;
+      }
+      // #endregion
       if (!res.ok) return;
       const j = (await res.json()) as { entries?: ActivityEntry[] };
       setActivityEntries(Array.isArray(j.entries) ? j.entries : []);
@@ -2717,8 +2766,23 @@ function PolymarketTradingView({
     }
   };
 
+  const expectedManualOrderEnrich = "v2";
+
   return (
     <div className="space-y-6" style={{ background: "transparent" }}>
+
+      {data && data.manual_order_error_enrich !== expectedManualOrderEnrich && (
+        <div className="rounded-xl border border-rose-500/50 bg-rose-950/35 px-4 py-3 text-[12px] text-rose-100/95 leading-relaxed">
+          <span className="font-black uppercase tracking-widest text-[10px] text-rose-400">API build mismatch / גרסת שרת</span>
+          <p className="mt-1">
+            <code className="text-white">dashboard.json</code> did not report{" "}
+            <code className="text-white">manual_order_error_enrich={expectedManualOrderEnrich}</code>
+            {" "}(got <code className="text-white">{String(data.manual_order_error_enrich ?? "∅")}</code>).{" "}
+            This browser is calling a Nexus API that is <strong className="text-white">not</strong> the current repo build — manual-order errors stay on old wording until you deploy/restart the API on{" "}
+            <code className="text-white">{API_BASE}</code>.
+          </p>
+        </div>
+      )}
 
       {polyWalletMismatch && data?.portfolio_address && (data?.clob_funder_address || data?.signer_address) && (() => {
         const tradeAddr = data.clob_funder_address ?? data.signer_address ?? "";

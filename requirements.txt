@@ -34,6 +34,9 @@ aiogram>=3.20
 # ── HTTP client ───────────────────────────────────────────────────────────────
 httpx>=0.27
 
+# ── Ops Sync (ahu) — merge nexus_audit_*.xlsx Account Summary into /api/ahu/stats
+openpyxl>=3.1.2
+
 # ── Binance websocket (Polymarket bot Linux worker) ───────────────────────────
 websockets>=12.0
 

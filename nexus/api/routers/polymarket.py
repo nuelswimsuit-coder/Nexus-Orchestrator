@@ -22,7 +22,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from nexus.api.dependencies import RedisDep
-from nexus.api.polymarket_manual_errors import enrich_manual_order_error
+from nexus.api.polymarket_manual_errors import MANUAL_ORDER_ENRICH_REV, enrich_manual_order_error
 from nexus.api.routers import prediction as prediction_routes
 from nexus.trading.poly_bot_state import POLY_BOT_PNL_KEY
 from nexus.trading.polymarket_client import (
@@ -291,6 +291,7 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
         "total_withdrawn": total_withdrawn,
         "break_even_delta": round(break_even_delta, 2),
         "realized_pnl": round(realized_pnl, 2),
+        "manual_order_error_enrich": MANUAL_ORDER_ENRICH_REV,
     }
 
 

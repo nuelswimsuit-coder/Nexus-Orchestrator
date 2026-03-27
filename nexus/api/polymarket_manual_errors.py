@@ -7,61 +7,58 @@ from typing import Literal
 
 from nexus.trading.polymarket_client import get_polymarket_clob_funder_address
 
+# Bump when changing enrich copy; exposed on GET /api/polymarket/dashboard.json as manual_order_error_enrich.
+MANUAL_ORDER_ENRICH_REV = "v2"
+
+# Appended to every enriched balance error — if you never see this in the UI, the client is not
+# hitting the same Python codebase that defines this module (stale worker, wrong host, or old venv).
+_ENRICH_FOOTER = f"\n\n— nexus:polymarket-enrich@{MANUAL_ORDER_ENRICH_REV}"
+
 
 def enrich_manual_order_error(err: str | None, side: Literal["BUY", "SELL"]) -> str:
     """
-    When CLOB returns zero balance, append operator guidance (signing wallet vs portfolio UI).
-
-    BUY: collateral is USDC on the signing wallet. SELL: CLOB checks outcome-token (shares)
-    balance for this token_id on the signing wallet — not USDC.
+    PolyApiException often returns the same generic string for BUY (no USDC) and SELL
+    (no outcome-token balance). We must branch on *request* side first so a red
+    "מכירה" click never shows USDC-deposit-only guidance.
     """
     if not err:
         return "Order rejected"
     low = err.lower()
     if "not enough balance" not in low and "balance: 0" not in low:
         return err
+
     su = (side or "BUY").strip().upper()
     if su not in ("BUY", "SELL"):
         su = "BUY"
+
     funder = (get_polymarket_clob_funder_address() or "").strip()
     portfolio = (os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()
-    addr_hint = ""
-    if funder and len(funder) >= 10:
-        addr_hint = f"CLOB maker (signing wallet): {funder[:6]}…{funder[-4]}."
-    portfolio_mismatch = bool(portfolio and funder and portfolio.lower() != funder.lower())
-    mismatch_line = ""
-    if portfolio_mismatch:
-        mismatch_line = (
-            "POLYMARKET_PORTFOLIO_ADDRESS (UI) ≠ CLOB maker — positions in the table are for the portfolio "
-            "address; orders only use the maker wallet."
-        )
-
-    # Same PolyApiException text for “no USDC” (BUY) and “no shares” (SELL). If two addresses are set,
-    # always explain both so ChatOps / Telegram never shows USDC-only text on a SELL click.
-    if portfolio_mismatch:
-        return (
-            f"{err}\n\n"
-            "CLOB often uses the same error for BUY (no USDC) and SELL (no outcome-token balance). "
-            "You have two addresses: portfolio UI vs maker — align keys or remove POLYMARKET_PORTFOLIO_ADDRESS.\n\n"
-            "• BUY: USDC collateral must be on the maker.\n"
-            "• SELL: shares of this token must be on the maker; positions shown for 0x… (portfolio) may not be sellable here.\n\n"
-            f"{addr_hint}\n{mismatch_line}\n\n"
-            "מכירה: צריך מניות על כתובת החותם. קנייה: צריך USDC על כתובת החותם."
+    addr = f"CLOB maker: {funder[:6]}…{funder[-4]}." if funder and len(funder) >= 10 else ""
+    mismatch = ""
+    if portfolio and funder and portfolio.lower() != funder.lower():
+        mismatch = (
+            f"\n\nUI portfolio {portfolio[:6]}…{portfolio[-4]} (POLYMARKET_PORTFOLIO_ADDRESS) ≠ maker above — "
+            "the positions table is not the same on-chain account as this API key."
         )
 
     if su == "SELL":
         return (
             f"{err}\n\n"
-            "מכירה (SELL): CLOB דורש יתרת מניות (outcome tokens) של אותו token על כתובת החתימה — לא USDC. "
-            "אם הפוזיציה מוצגת בחשבון אחר (UI), המפתח הנוכחי לא מחזיק את אותן המניות ולכן המכירה נכשלת."
-            f" {addr_hint}\n\n"
-            "SELL: Use the same Polymarket account as POLYMARKET_RELAYER_KEY / POLYMARKET_SIGNER_ADDRESS, "
-            "or export/switch keys so the signing wallet holds those shares."
+            "This was a SELL: CLOB needs outcome-token (share) balance on the maker for this token_id. "
+            "It is not asking for USDC. “Balance 0” here usually means the maker wallet does not hold those shares."
+            f"\n{addr}{mismatch}\n\n"
+            "Fix: use POLYMARKET_RELAYER_KEY for the wallet that actually holds the position, or remove "
+            "POLYMARKET_PORTFOLIO_ADDRESS so UI and trading refer to the same account.\n\n"
+            "מכירה: נדרשות מניות על כתובת ה-maker — לא USDC."
+            f"{_ENRICH_FOOTER}"
         )
+
     return (
         f"{err}\n\n"
-        "CLOB has no USDC (or allowance) for the wallet that signs orders "
-        "(POLYMARKET_RELAYER_KEY must derive POLYMARKET_SIGNER_ADDRESS; that address must hold USDC on Polymarket)."
-        f" {addr_hint}\n\n"
-        "אין USDC בכתובת החתימה — הפקד ל־Polymarket על אותה כתובת או עדכן מפתח/כתובת לחשבון הממומן."
+        "This was a BUY: CLOB spends USDC collateral (and allowance) on the maker wallet."
+        f"\n{addr}{mismatch}\n\n"
+        "Set POLYMARKET_API_* (L2) so balance matches the app, deposit USDC to Polymarket for the maker address, "
+        "or use the Polymarket site to refresh allowance.\n\n"
+        "קנייה: נדרש USDC על כתובת החתימה / maker."
+        f"{_ENRICH_FOOTER}"
     )

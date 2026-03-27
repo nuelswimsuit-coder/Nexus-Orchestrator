@@ -124,6 +124,27 @@ def _record_user_id(rec: dict[str, Any]) -> int | None:
     return None
 
 
+def _normalize_phone_cell(val: Any) -> int | None:
+    """Excel / CSV phone → int digits (Account Summary «Phone» column)."""
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, float):
+        if val != val or abs(val) > 1e15:  # nan or huge
+            return None
+        val = int(round(val))
+    s = str(val).strip().replace("+", "").replace("-", "").replace(" ", "")
+    if not s or not s.isdigit():
+        return None
+    if len(s) < 9:
+        return None
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
+
 def _record_source_group(rec: dict[str, Any]) -> str:
     s = (
         rec.get("source_group")
@@ -181,6 +202,95 @@ def _iter_disk_scraped_records(root: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _iter_audit_xlsx_account_summary(repo_root: Path) -> list[dict[str, Any]]:
+    """
+    Rows from ``nexus_audit_*.xlsx`` → sheet ``Account Summary`` (Phone per account).
+
+    These are Telethon accounts audited on disk — not the same rows as
+    ``scraped_users`` in telefix.db (those are scraped *members*). openpyxl optional.
+    """
+    try:
+        import openpyxl  # type: ignore[import-untyped]
+    except ImportError:
+        return []
+
+    out: list[dict[str, Any]] = []
+    for path in sorted(repo_root.glob("nexus_audit_*.xlsx")):
+        wb: Any = None
+        try:
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            if "Account Summary" not in wb.sheetnames:
+                continue
+            ws = wb["Account Summary"]
+            rows = ws.iter_rows(values_only=True)
+            header = next(rows, None)
+            if not header:
+                continue
+            h = [str(x).strip() if x is not None else "" for x in header]
+            try:
+                pi = h.index("Phone")
+            except ValueError:
+                continue
+            prem_i: int | None = None
+            for cand in ("Premium", "Premium Acc"):
+                if cand in h:
+                    prem_i = h.index(cand)
+                    break
+            for row in rows:
+                if not row:
+                    continue
+                cell = row[pi] if pi < len(row) else None
+                phone = _normalize_phone_cell(cell)
+                if phone is None:
+                    continue
+                pr = 0
+                if prem_i is not None and prem_i < len(row):
+                    pv = row[prem_i]
+                    if str(pv).strip().lower() in ("yes", "true", "1", "premium"):
+                        pr = 1
+                out.append(
+                    {
+                        "user_id": phone,
+                        "is_premium": pr,
+                        "source_group": f"audit:{path.name}",
+                    }
+                )
+        except Exception:
+            continue
+        finally:
+            if wb is not None:
+                try:
+                    wb.close()
+                except Exception:
+                    pass
+    return out
+
+
+def _iter_group_audit_csv_session_ids(repo_root: Path) -> list[dict[str, Any]]:
+    """``nexus_group_audit.csv`` — numeric Session_Name → synthetic id (group audit export)."""
+    p = repo_root / "nexus_group_audit.csv"
+    if not p.is_file():
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        with p.open(encoding="utf-8", errors="replace", newline="") as f:
+            for row in csv.DictReader(f):
+                sn = (row.get("Session_Name") or "").strip()
+                if not sn.isdigit() or len(sn) < 9:
+                    continue
+                uid = int(sn)
+                out.append(
+                    {
+                        "user_id": uid,
+                        "is_premium": 0,
+                        "source_group": "audit:nexus_group_audit.csv",
+                    }
+                )
+    except Exception:
+        pass
+    return out
+
+
 def _merge_disk_scraped_users(
     *,
     db_total: int,
@@ -188,8 +298,14 @@ def _merge_disk_scraped_users(
     db_sources: int,
 ) -> tuple[int, int, int, int, str]:
     """
-    Union SQLite scraped_users with user records found on disk under
-    ``data/קהיל חיה`` (or TELEFIX_DISK_USERS_DIR). Deduplicates by user_id.
+    Union SQLite scraped_users with:
+
+    - JSON/CSV under ``data/קהיל חיה`` (TELEFIX_DISK_USERS_DIR)
+    - ``nexus_audit_*.xlsx`` → ``Account Summary`` (Phone = account id)
+    - ``nexus_group_audit.csv`` numeric Session_Name (session stem)
+
+    Deduplicates by numeric id. DB rows are Telegram *scraped members*; audit
+    files are *accounts/sessions* — different concepts, merged only for dashboard cardinality.
 
     Returns:
         (merged_total, merged_premium, merged_source_count, disk_only_count, disk_dir_str)
@@ -218,10 +334,12 @@ def _merge_disk_scraped_users(
         except Exception:
             pass
 
-    if not root.is_dir():
-        return db_total, db_premium, db_sources, 0, disk_dir_str
+    records: list[dict[str, Any]] = []
+    if root.is_dir():
+        records.extend(_iter_disk_scraped_records(root))
+    records.extend(_iter_audit_xlsx_account_summary(_NEXUS_REPO_ROOT))
+    records.extend(_iter_group_audit_csv_session_ids(_NEXUS_REPO_ROOT))
 
-    records = _iter_disk_scraped_records(root)
     if not records:
         return db_total, db_premium, db_sources, 0, disk_dir_str
 
