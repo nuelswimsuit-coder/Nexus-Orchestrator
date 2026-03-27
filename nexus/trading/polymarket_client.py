@@ -602,10 +602,12 @@ class PolymarketClient:
                 _f.write(_json.dumps({"sessionId":"e259b0","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:_place_limit_order_sync","message":"create_order_signature_error","data":{"error":str(_e)},"hypothesisId":"H3"}) + "\n")
         # #endregion
 
+        from py_clob_client.clob_types import PartialCreateOrderOptions
+
         log.info(f"Preparing order for Builder: {self.builder_id}")
         signed = self._clob.create_order(
             OrderArgs(token_id=token_id, price=price, size=size, side=side),
-            options={"tick_size": tick_size, "neg_risk": neg_risk},
+            options=PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk),
         )
         return self._clob.post_order(signed, OrderType.GTC)
 
