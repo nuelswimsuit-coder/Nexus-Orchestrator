@@ -66,12 +66,12 @@
 
 html {
   color-scheme: dark;
-  font-size: calc(21px * var(--text-scale-factor, 1)); /* 25% larger than original 17px */
+  font-size: calc(16px * var(--text-scale-factor, 1));
 }
 
-/* Hebrew text is globally 15% larger than English for optimal legibility */
+/* Hebrew text is globally 5% larger than English for optimal legibility */
 html[lang="he"] {
-  font-size: calc(21px * var(--text-scale-factor, 1) * 1.15);
+  font-size: calc(16px * var(--text-scale-factor, 1) * 1.05);
 }
 
 body {
@@ -448,4 +448,77 @@ body {
 .topology-glass {
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
+}
+
+/* ── Swarm Node Terminal — custom animations ───────────────────────────────── */
+
+/* Heartbeat pulse glow on LIVE node cards */
+@keyframes node-heartbeat-glow {
+  0%, 100% { box-shadow: 0 0 18px rgba(34,211,238,0.10), 0 0 0 1px rgba(34,211,238,0.18) inset; }
+  50%       { box-shadow: 0 0 36px rgba(34,211,238,0.28), 0 0 0 1px rgba(34,211,238,0.38) inset; }
+}
+
+/* ECG / pulse line draw animation */
+@keyframes ecg-scroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+/* Circular gauge fill animation */
+@keyframes gauge-fill {
+  from { stroke-dashoffset: 251; }
+}
+
+/* Waiting-for-node radar sweep */
+@keyframes radar-sweep {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Waiting node dots bounce */
+@keyframes node-search-dot {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.3; }
+  40%           { transform: scale(1);   opacity: 1; }
+}
+
+/* Slide-up entrance for new log lines */
+@keyframes log-line-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Task stopwatch tick */
+@keyframes task-tick {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+
+/* Hamburger menu slide-down */
+@keyframes menu-slide-down {
+  from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
+.node-heartbeat-live {
+  animation: node-heartbeat-glow 2.4s ease-in-out infinite;
+}
+
+.ecg-track {
+  display: flex;
+  width: 200%;
+  animation: ecg-scroll 3s linear infinite;
+}
+
+.node-search-dot {
+  animation: node-search-dot 1.4s ease-in-out infinite;
+}
+.node-search-dot:nth-child(2) { animation-delay: 0.16s; }
+.node-search-dot:nth-child(3) { animation-delay: 0.32s; }
+
+.menu-slide-down {
+  animation: menu-slide-down 0.15s ease-out forwards;
+}
+
+.log-line-new {
+  animation: log-line-in 0.18s ease-out forwards;
 }

@@ -2381,6 +2381,12 @@ function PolymarketTradingView({
     setTimeout(() => setBatchStatus(null), 4000);
   };
 
+  // #region agent log
+  React.useEffect(() => {
+    fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',location:'NexusOsGodMode.tsx:POLY_VIEW_MOUNT',message:'PolymarketTradingView mounted',data:{containLayout:'removed'},timestamp:Date.now(),hypothesisId:'D'})}).catch(()=>{});
+  }, []);
+  // #endregion
+
   return (
     <div className="space-y-6" style={{ background: "transparent" }}>
 
@@ -4178,17 +4184,55 @@ function SwarmMonitorView() {
         </div>
       )}
 
-      {/* ── Remote Terminal — one per worker node (Jacob sees all laptops) ──── */}
+      {/* ── Swarm Node Terminals ─────────────────────────────────────────── */}
       {cards.filter((c) => c.name !== "Jacob-PC").length > 0 && (
         <div className="space-y-4">
-          <div className="text-[10px] font-black text-cyan-400 uppercase tracking-widest flex items-center gap-2">
-            <Terminal size={12} />
-            REMOTE TERMINALS — WORKER NODES
-            <span className="text-slate-600 font-normal normal-case tracking-normal">
-              (live WebSocket stream from each laptop)
-            </span>
+          {/* Section header */}
+          <div
+            className="flex items-center justify-between px-4 py-2.5 rounded-xl"
+            style={{
+              background: "linear-gradient(90deg, rgba(8,14,28,0.9) 0%, rgba(4,8,18,0.7) 100%)",
+              border: "1px solid rgba(34,211,238,0.12)",
+              boxShadow: "0 0 24px rgba(34,211,238,0.04) inset",
+            }}
+          >
+            <div className="flex items-center gap-3">
+              <div
+                className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
+                style={{
+                  background: "rgba(34,211,238,0.08)",
+                  border: "1px solid rgba(34,211,238,0.2)",
+                  boxShadow: "0 0 12px rgba(34,211,238,0.15)",
+                }}
+              >
+                <Terminal size={13} className="text-cyan-400" />
+              </div>
+              <div>
+                <div
+                  className="text-[11px] font-black uppercase tracking-widest"
+                  style={{
+                    color: "rgba(165,243,252,0.9)",
+                    textShadow: "0 0 16px rgba(34,211,238,0.4)",
+                    fontFamily: "var(--font-mono)",
+                  }}
+                >
+                  Swarm Node Terminals
+                </div>
+                <div className="text-[9px] text-slate-600 font-mono mt-0.5">
+                  Live WebSocket streams · {cards.filter((c) => c.name !== "Jacob-PC").length} worker nodes
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" style={{ boxShadow: "0 0 6px rgba(34,211,238,0.8)" }} />
+              <span className="text-[9px] font-mono text-cyan-500/70">
+                {cards.filter((c) => c.name !== "Jacob-PC" && c.status === "LIVE").length} LIVE
+              </span>
+            </div>
           </div>
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+
+          {/* Responsive grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-5">
             {cards
               .filter((c) => c.name !== "Jacob-PC")
               .map((c) => (
@@ -5217,9 +5261,233 @@ function LiveConsole({ nodeId, label }: { nodeId: string; label: string }) {
   );
 }
 
+// ── Swarm Node Terminal — helper types ────────────────────────────────────────
+
+interface ParsedLogLine {
+  raw: string;
+  type: "heartbeat" | "stats" | "task" | "error" | "warn" | "success" | "git" | "info";
+  cpu?: number;
+  ram?: number;
+  ramTotal?: number;
+  taskId?: string;
+  taskType?: string;
+}
+
+function parseLogLine(raw: string): ParsedLogLine {
+  const lower = raw.toLowerCase();
+  // Heartbeat JSON
+  if (/heartbeat.*true|"heartbeat"\s*:\s*true/i.test(raw)) {
+    return { raw, type: "heartbeat" };
+  }
+  // System stats line: "CPU 24.1% | RAM 24725MB/32652MB"
+  const statsMatch = raw.match(/cpu\s+([\d.]+)%.*ram\s+([\d.]+)\s*mb\s*\/\s*([\d.]+)\s*mb/i);
+  if (statsMatch) {
+    return {
+      raw,
+      type: "stats",
+      cpu: parseFloat(statsMatch[1]),
+      ram: parseFloat(statsMatch[2]),
+      ramTotal: parseFloat(statsMatch[3]),
+    };
+  }
+  // Task execution line
+  const taskMatch = raw.match(/task[_\s-]?id[:\s]+([a-z0-9_-]{4,20}).*type[:\s]+([a-z_]+)/i)
+    || raw.match(/\[task\]\s*([a-z0-9_-]{4,20})\s+([a-z_]+)/i);
+  if (taskMatch) {
+    return { raw, type: "task", taskId: taskMatch[1], taskType: taskMatch[2] };
+  }
+  if (/error|exception|traceback|critical|fatal/i.test(lower)) return { raw, type: "error" };
+  if (/warn|warning/i.test(lower)) return { raw, type: "warn" };
+  if (/success|completed|done|started|ready/i.test(lower)) return { raw, type: "success" };
+  if (/\[git/i.test(raw)) return { raw, type: "git" };
+  return { raw, type: "info" };
+}
+
+// ── Circular Gauge (SVG) ──────────────────────────────────────────────────────
+
+function CircularGauge({
+  value,
+  max = 100,
+  label,
+  unit = "%",
+  size = 72,
+}: {
+  value: number;
+  max?: number;
+  label: string;
+  unit?: string;
+  size?: number;
+}) {
+  const pct = Math.min(100, Math.max(0, (value / max) * 100));
+  const r = (size - 10) / 2;
+  const circ = 2 * Math.PI * r;
+  const dash = (pct / 100) * circ;
+  const gap = circ - dash;
+  const color = pct > 80 ? "#f43f5e" : pct > 55 ? "#f59e0b" : "#10b981";
+  const trackColor = "rgba(255,255,255,0.06)";
+
+  return (
+    <div className="flex flex-col items-center gap-1" title={`${label}: ${value.toFixed(1)}${unit}`}>
+      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={trackColor} strokeWidth={6} />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke={color}
+          strokeWidth={6}
+          strokeLinecap="round"
+          strokeDasharray={`${dash} ${gap}`}
+          style={{
+            filter: `drop-shadow(0 0 4px ${color})`,
+            transition: "stroke-dasharray 0.6s ease, stroke 0.4s ease",
+          }}
+        />
+      </svg>
+      <div className="text-center -mt-1" style={{ transform: "translateY(-4px)" }}>
+        <div
+          className="font-black font-mono leading-none"
+          style={{ fontSize: 11, color }}
+        >
+          {value.toFixed(0)}{unit}
+        </div>
+        <div className="text-[8px] font-bold uppercase tracking-widest text-slate-500 mt-0.5">
+          {label}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── ECG Heartbeat Visualizer ──────────────────────────────────────────────────
+
+function EcgPulse({ pulseCount }: { pulseCount: number }) {
+  // Simple SVG ECG path that "ticks" on each heartbeat
+  const w = 200;
+  const h = 36;
+  const mid = h / 2;
+
+  // Build a repeating ECG-like path segment
+  const seg = `M0,${mid} L20,${mid} L24,${mid - 4} L28,${mid + 8} L32,${mid - 14} L36,${mid + 10} L40,${mid - 4} L44,${mid} L${w / 2},${mid}`;
+  const seg2 = `M${w / 2},${mid} L${w / 2 + 20},${mid} L${w / 2 + 24},${mid - 4} L${w / 2 + 28},${mid + 8} L${w / 2 + 32},${mid - 14} L${w / 2 + 36},${mid + 10} L${w / 2 + 40},${mid - 4} L${w / 2 + 44},${mid} L${w},${mid}`;
+
+  return (
+    <div className="relative overflow-hidden rounded-lg bg-black/30 border border-cyan-500/10" style={{ height: h, width: "100%" }}>
+      <div className="ecg-track h-full" style={{ width: "200%" }}>
+        <svg width={w} height={h} className="shrink-0">
+          <path d={seg + " " + seg2} fill="none" stroke="rgba(34,211,238,0.7)" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        <svg width={w} height={h} className="shrink-0">
+          <path d={seg + " " + seg2} fill="none" stroke="rgba(34,211,238,0.7)" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </div>
+      <div className="absolute inset-0 bg-gradient-to-r from-transparent via-transparent to-black/60 pointer-events-none" />
+      <div className="absolute top-1 right-2 text-[8px] font-mono text-cyan-400/60 font-bold">
+        ×{pulseCount}
+      </div>
+    </div>
+  );
+}
+
+// ── Active Task Row ───────────────────────────────────────────────────────────
+
+function ActiveTaskRow({ taskId, taskType, startedAt }: { taskId: string; taskType: string; startedAt: number }) {
+  const [elapsed, setElapsed] = React.useState(0);
+
+  React.useEffect(() => {
+    const iv = setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(iv);
+  }, [startedAt]);
+
+  const fmt = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m}:${String(sec).padStart(2, "0")}`;
+  };
+
+  return (
+    <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-cyan-950/30 border border-cyan-500/20">
+      <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse shrink-0" />
+      <span className="text-[9px] font-mono text-slate-400 shrink-0 truncate max-w-[60px]" title={taskId}>
+        {taskId.slice(0, 8)}…
+      </span>
+      <span className="text-[9px] font-black text-cyan-300 uppercase tracking-widest flex-1 truncate">
+        {taskType}
+      </span>
+      <span className="text-[9px] font-mono text-amber-400 shrink-0" style={{ animation: "task-tick 1s ease-in-out infinite" }}>
+        {fmt(elapsed)}
+      </span>
+    </div>
+  );
+}
+
+// ── Waiting-for-Node Placeholder ──────────────────────────────────────────────
+
+function WaitingNodePanel({ label, ip }: { label: string; ip: string }) {
+  return (
+    <div
+      className="rounded-2xl border border-slate-700/40 overflow-hidden flex flex-col"
+      style={{
+        background: "rgba(8,12,22,0.7)",
+        backdropFilter: "blur(12px)",
+        boxShadow: "0 0 0 1px rgba(100,116,139,0.08) inset",
+      }}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800/60 shrink-0">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-1.5 h-1.5 rounded-full bg-slate-600 shrink-0" />
+          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest truncate">
+            {label}
+          </span>
+          <span className="text-[9px] font-mono text-slate-700 shrink-0">{ip}</span>
+        </div>
+        <span className="text-[9px] font-bold text-slate-600 uppercase tracking-widest border border-slate-800 px-1.5 py-0.5 rounded-md">
+          OFFLINE
+        </span>
+      </div>
+
+      {/* Body */}
+      <div className="flex flex-col items-center justify-center gap-4 py-8 px-4">
+        {/* Radar sweep */}
+        <div className="relative w-12 h-12">
+          <div className="absolute inset-0 rounded-full border border-slate-700/50" />
+          <div className="absolute inset-1 rounded-full border border-slate-800/50" />
+          <div
+            className="absolute inset-0 rounded-full border-t-2 border-slate-500/40"
+            style={{ animation: "radar-sweep 2s linear infinite" }}
+          />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <Radio size={14} className="text-slate-600" />
+          </div>
+        </div>
+
+        {/* Searching dots */}
+        <div className="flex flex-col items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <div className="w-1.5 h-1.5 rounded-full bg-slate-600 node-search-dot" />
+            <div className="w-1.5 h-1.5 rounded-full bg-slate-600 node-search-dot" />
+            <div className="w-1.5 h-1.5 rounded-full bg-slate-600 node-search-dot" />
+          </div>
+          <span className="text-[9px] font-mono text-slate-600 uppercase tracking-widest">
+            Searching for new nodes…
+          </span>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="px-3 py-1.5 border-t border-slate-800/40 flex items-center justify-between shrink-0">
+        <span className="text-[8px] font-mono text-slate-700">0 lines · node: {label.toLowerCase().replace(/\s+/g, "-")}</span>
+        <span className="text-[8px] font-bold uppercase tracking-widest text-slate-700">IDLE</span>
+      </div>
+    </div>
+  );
+}
+
 // ── Remote Terminal Panel ─────────────────────────────────────────────────────
-// Full embedded terminal per worker node, piping logs from the laptop directly
-// to Jacob-PC's dashboard via the existing WebSocket endpoint.
+// Enterprise-grade glassmorphic swarm node card with ECG pulse, circular gauges,
+// smart log parsing, and hamburger action menu.
 
 function RemoteTerminalPanel({
   nodeId,
@@ -5236,8 +5504,25 @@ function RemoteTerminalPanel({
   const [connected, setConnected] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [expanded, setExpanded] = React.useState(true);
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const [pulseCount, setPulseCount] = React.useState(0);
+  const [latestStats, setLatestStats] = React.useState<{ cpu: number; ram: number; ramTotal: number } | null>(null);
+  const [activeTasks, setActiveTasks] = React.useState<{ taskId: string; taskType: string; startedAt: number }[]>([]);
   const bottomRef = React.useRef<HTMLDivElement>(null);
   const wsRef = React.useRef<WebSocket | null>(null);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+
+  // Close hamburger menu on outside click
+  React.useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuOpen]);
 
   React.useEffect(() => {
     if (!expanded) return;
@@ -5253,8 +5538,29 @@ function RemoteTerminalPanel({
       setError(null);
     };
     ws.onmessage = (ev) => {
+      const raw = String(ev.data);
+      const parsed = parseLogLine(raw);
+
+      if (parsed.type === "heartbeat") {
+        setPulseCount((p) => p + 1);
+        return; // Don't add raw heartbeat JSON to log lines
+      }
+
+      if (parsed.type === "stats" && parsed.cpu != null && parsed.ram != null && parsed.ramTotal != null) {
+        setLatestStats({ cpu: parsed.cpu, ram: parsed.ram, ramTotal: parsed.ramTotal });
+        return; // Stats are shown as gauges, not raw text
+      }
+
+      if (parsed.type === "task" && parsed.taskId && parsed.taskType) {
+        setActiveTasks((prev) => {
+          const exists = prev.find((t) => t.taskId === parsed.taskId);
+          if (exists) return prev;
+          return [...prev.slice(-4), { taskId: parsed.taskId!, taskType: parsed.taskType!, startedAt: Date.now() }];
+        });
+      }
+
       setLines((prev) => {
-        const next = [...prev, String(ev.data)];
+        const next = [...prev, raw];
         return next.length > 300 ? next.slice(next.length - 300) : next;
       });
     };
@@ -5273,105 +5579,279 @@ function RemoteTerminalPanel({
     }
   }, [lines, expanded]);
 
+  // Show waiting panel when not connected and no lines yet
+  if (!connected && lines.length === 0 && !error && status !== "LIVE") {
+    return <WaitingNodePanel label={label} ip={ip} />;
+  }
+
+  const isLive = connected && status === "LIVE";
+
   return (
     <div
-      className={`rounded-2xl border overflow-hidden flex flex-col transition ${
-        status === "LIVE"
-          ? "border-cyan-500/40 bg-[#050a10] shadow-[0_0_20px_rgba(34,211,238,0.08)]"
-          : "border-slate-800 bg-[#080808]"
-      }`}
+      className={`rounded-2xl overflow-hidden flex flex-col transition-all duration-500 ${isLive ? "node-heartbeat-live" : ""}`}
+      style={{
+        background: "linear-gradient(145deg, rgba(5,10,20,0.92) 0%, rgba(3,7,15,0.96) 100%)",
+        backdropFilter: "blur(20px)",
+        WebkitBackdropFilter: "blur(20px)",
+        border: isLive
+          ? "1px solid rgba(34,211,238,0.28)"
+          : "1px solid rgba(51,65,85,0.5)",
+        boxShadow: isLive
+          ? "0 0 0 1px rgba(34,211,238,0.06) inset, 0 8px 32px rgba(0,0,0,0.6)"
+          : "0 4px 16px rgba(0,0,0,0.4)",
+      }}
     >
-      {/* Title bar */}
-      <div className="flex items-center justify-between px-4 py-2.5 bg-slate-950 border-b border-slate-800 shrink-0">
+      {/* ── Title bar ──────────────────────────────────────────────────────── */}
+      <div
+        className="flex items-center justify-between px-4 py-2.5 shrink-0"
+        style={{
+          background: "rgba(2,6,14,0.8)",
+          borderBottom: isLive ? "1px solid rgba(34,211,238,0.12)" : "1px solid rgba(30,41,59,0.8)",
+        }}
+      >
         <div className="flex items-center gap-3 min-w-0">
-          <Terminal size={12} className="text-cyan-400 shrink-0" />
-          <span className="text-[11px] font-black text-cyan-300 uppercase tracking-widest truncate">
-            {label}
-          </span>
-          <span className="text-[10px] font-mono text-slate-600 shrink-0">{ip}</span>
-          <span
-            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-              connected
-                ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)] animate-pulse"
-                : "bg-rose-500"
-            }`}
-          />
-          <span className="text-[9px] font-bold text-slate-500 shrink-0">
-            {connected ? "LIVE" : error ? "ERR" : "CONNECTING…"}
-          </span>
+          {/* Live indicator */}
+          <div className="relative shrink-0">
+            <div
+              className={`w-2 h-2 rounded-full ${
+                connected ? "bg-emerald-400" : error ? "bg-rose-500" : "bg-amber-500"
+              }`}
+              style={connected ? { boxShadow: "0 0 8px rgba(52,211,153,0.9), 0 0 16px rgba(52,211,153,0.4)" } : {}}
+            />
+            {connected && (
+              <div className="absolute inset-0 rounded-full bg-emerald-400/30 animate-ping" />
+            )}
+          </div>
+
+          {/* Node name */}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                className="text-[12px] font-black uppercase tracking-widest truncate"
+                style={{
+                  color: isLive ? "rgba(165,243,252,1)" : "rgba(148,163,184,0.8)",
+                  textShadow: isLive ? "0 0 12px rgba(34,211,238,0.5)" : "none",
+                  fontFamily: "var(--font-mono)",
+                }}
+              >
+                {label}
+              </span>
+              <span
+                className={`text-[8px] font-black px-1.5 py-0.5 rounded-md uppercase tracking-widest shrink-0 ${
+                  isLive
+                    ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                    : "bg-slate-800 text-slate-500 border border-slate-700"
+                }`}
+              >
+                {connected ? "LIVE" : error ? "ERR" : "CONNECTING"}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-[9px] font-mono text-slate-500">{ip}</span>
+              <span className="text-[9px] font-mono text-slate-700">·</span>
+              <span className="text-[9px] font-mono text-slate-600 truncate max-w-[120px]">{nodeId}</span>
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+
+        {/* Hamburger menu */}
+        <div className="relative shrink-0" ref={menuRef}>
           <button
             type="button"
-            onClick={() => setLines([])}
-            className="text-[9px] font-bold text-slate-600 hover:text-amber-400 transition uppercase tracking-widest px-1"
+            onClick={() => setMenuOpen((v) => !v)}
+            className="flex flex-col items-center justify-center gap-[3px] w-7 h-7 rounded-lg hover:bg-slate-800/80 transition"
+            title="Actions"
           >
-            CLR
+            <span className="w-3.5 h-px bg-slate-500 rounded-full" />
+            <span className="w-3.5 h-px bg-slate-500 rounded-full" />
+            <span className="w-3.5 h-px bg-slate-500 rounded-full" />
           </button>
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="text-[9px] font-bold text-slate-500 hover:text-cyan-400 transition uppercase tracking-widest px-1"
-          >
-            {expanded ? "▲ COLLAPSE" : "▼ EXPAND"}
-          </button>
+          {menuOpen && (
+            <div
+              className="absolute right-0 top-8 z-50 rounded-xl overflow-hidden menu-slide-down"
+              style={{
+                background: "rgba(8,14,26,0.97)",
+                border: "1px solid rgba(34,211,238,0.18)",
+                boxShadow: "0 8px 32px rgba(0,0,0,0.7), 0 0 0 1px rgba(34,211,238,0.06) inset",
+                minWidth: 140,
+              }}
+            >
+              <button
+                type="button"
+                className="w-full text-left px-3 py-2 text-[10px] font-bold text-slate-400 hover:text-cyan-300 hover:bg-cyan-950/40 transition uppercase tracking-widest"
+                onClick={() => { setExpanded((v) => !v); setMenuOpen(false); }}
+              >
+                {expanded ? "▲ Collapse" : "▼ Expand"}
+              </button>
+              <button
+                type="button"
+                className="w-full text-left px-3 py-2 text-[10px] font-bold text-slate-400 hover:text-amber-400 hover:bg-amber-950/30 transition uppercase tracking-widest"
+                onClick={() => { setLines([]); setMenuOpen(false); }}
+              >
+                ✕ Clear Logs
+              </button>
+              <button
+                type="button"
+                className="w-full text-left px-3 py-2 text-[10px] font-bold text-slate-400 hover:text-rose-400 hover:bg-rose-950/30 transition uppercase tracking-widest"
+                onClick={() => { setActiveTasks([]); setMenuOpen(false); }}
+              >
+                ⊘ Clear Tasks
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Terminal body */}
+      {/* ── Body ───────────────────────────────────────────────────────────── */}
       {expanded && (
-        <div className="flex-1 overflow-y-auto p-3 font-mono text-[10px] leading-relaxed bg-[#030303] text-green-400 nexus-os-scrollbar max-h-[280px]">
-          {error && (
-            <div className="text-rose-400 mb-1">[ERROR] {error}</div>
-          )}
-          {lines.length === 0 && !error && (
-            <div className="text-slate-700 animate-pulse">
-              Connecting to {label} log stream via WebSocket…
+        <div className="flex flex-col gap-0">
+
+          {/* ── Stats row: gauges + ECG ─────────────────────────────────── */}
+          <div
+            className="px-4 py-3 flex items-center gap-4 shrink-0"
+            style={{ borderBottom: "1px solid rgba(15,23,42,0.8)" }}
+          >
+            {/* Circular gauges */}
+            {latestStats ? (
+              <div className="flex items-center gap-4 shrink-0">
+                <CircularGauge value={latestStats.cpu} label="CPU" size={68} />
+                <CircularGauge
+                  value={latestStats.ram}
+                  max={latestStats.ramTotal}
+                  label="RAM"
+                  unit="MB"
+                  size={68}
+                />
+              </div>
+            ) : (
+              <div className="flex items-center gap-4 shrink-0">
+                <div className="flex flex-col items-center gap-1 opacity-30">
+                  <div className="w-[68px] h-[68px] rounded-full border-2 border-dashed border-slate-700 flex items-center justify-center">
+                    <Cpu size={16} className="text-slate-600" />
+                  </div>
+                  <span className="text-[8px] text-slate-600 uppercase tracking-widest">CPU</span>
+                </div>
+                <div className="flex flex-col items-center gap-1 opacity-30">
+                  <div className="w-[68px] h-[68px] rounded-full border-2 border-dashed border-slate-700 flex items-center justify-center">
+                    <Database size={16} className="text-slate-600" />
+                  </div>
+                  <span className="text-[8px] text-slate-600 uppercase tracking-widest">RAM</span>
+                </div>
+              </div>
+            )}
+
+            {/* ECG + heartbeat */}
+            <div className="flex-1 flex flex-col gap-2 min-w-0">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                  <Activity size={9} className="text-cyan-500" />
+                  Heartbeat
+                </span>
+                {pulseCount > 0 && (
+                  <span className="text-[8px] font-mono text-emerald-400/70">
+                    {pulseCount} pulses
+                  </span>
+                )}
+              </div>
+              {pulseCount > 0 ? (
+                <EcgPulse pulseCount={pulseCount} />
+              ) : (
+                <div
+                  className="rounded-lg flex items-center justify-center"
+                  style={{
+                    height: 36,
+                    background: "rgba(0,0,0,0.3)",
+                    border: "1px solid rgba(30,41,59,0.5)",
+                  }}
+                >
+                  <span className="text-[8px] font-mono text-slate-700 animate-pulse">
+                    Awaiting heartbeat…
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Active tasks ────────────────────────────────────────────── */}
+          {activeTasks.length > 0 && (
+            <div
+              className="px-4 py-2.5 flex flex-col gap-1.5 shrink-0"
+              style={{ borderBottom: "1px solid rgba(15,23,42,0.8)" }}
+            >
+              <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1.5">
+                <Zap size={9} className="text-amber-400" />
+                Active Tasks
+              </div>
+              {activeTasks.map((t) => (
+                <ActiveTaskRow key={t.taskId} {...t} />
+              ))}
             </div>
           )}
-          {lines.map((line, i) => {
-            const isError = /error|exception|traceback|critical|fatal/i.test(line);
-            const isWarn = /warn|warning/i.test(line);
-            const isSuccess = /success|completed|done|started|ready/i.test(line);
-            const isGit = /\[git/i.test(line);
-            return (
-              <div
-                key={i}
-                className={`whitespace-pre-wrap break-all ${
-                  isError
-                    ? "text-rose-400"
-                    : isWarn
-                      ? "text-amber-400"
-                      : isSuccess
-                        ? "text-emerald-400"
-                        : isGit
-                          ? "text-purple-400"
-                          : "text-green-400/80"
-                }`}
-              >
-                {line}
+
+          {/* ── Log stream ──────────────────────────────────────────────── */}
+          <div
+            className="flex-1 overflow-y-auto p-3 nexus-os-scrollbar"
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 10,
+              lineHeight: 1.6,
+              background: "rgba(1,3,8,0.8)",
+              maxHeight: 200,
+            }}
+          >
+            {error && (
+              <div className="text-rose-400 mb-1 text-[10px]">[ERROR] {error}</div>
+            )}
+            {lines.length === 0 && !error && (
+              <div className="text-slate-700 animate-pulse text-[10px]">
+                Connecting to {label} log stream…
               </div>
-            );
-          })}
-          <div ref={bottomRef} />
+            )}
+            {lines.map((line, i) => {
+              const p = parseLogLine(line);
+              const colorClass =
+                p.type === "error" ? "text-rose-400" :
+                p.type === "warn"  ? "text-amber-400" :
+                p.type === "success" ? "text-emerald-400" :
+                p.type === "git"   ? "text-purple-400" :
+                p.type === "task"  ? "text-cyan-300" :
+                "text-green-400/70";
+              return (
+                <div
+                  key={i}
+                  className={`whitespace-pre-wrap break-all log-line-new ${colorClass}`}
+                >
+                  {line}
+                </div>
+              );
+            })}
+            <div ref={bottomRef} />
+          </div>
         </div>
       )}
 
-      {/* Footer */}
-      {expanded && (
-        <div className="px-3 py-1.5 bg-slate-950 border-t border-slate-800 flex items-center justify-between shrink-0">
-          <span className="text-[9px] text-slate-600 font-mono">
-            {lines.length} lines · node: {nodeId}
-          </span>
-          <span
-            className={`text-[9px] font-bold uppercase tracking-widest ${
-              status === "LIVE" ? "text-emerald-400" : "text-amber-400"
-            }`}
-          >
-            {status}
-          </span>
-        </div>
-      )}
+      {/* ── Footer ─────────────────────────────────────────────────────────── */}
+      <div
+        className="px-3 py-1.5 flex items-center justify-between shrink-0"
+        style={{
+          background: "rgba(2,5,12,0.9)",
+          borderTop: "1px solid rgba(15,23,42,0.8)",
+        }}
+      >
+        <span className="text-[8px] font-mono text-slate-700">
+          {lines.length} lines
+        </span>
+        <span className="text-[8px] font-mono text-slate-700 truncate max-w-[160px] mx-2">
+          {nodeId}
+        </span>
+        <span
+          className={`text-[8px] font-black uppercase tracking-widest ${
+            isLive ? "text-emerald-400" : "text-slate-600"
+          }`}
+        >
+          {isLive ? "● LIVE" : "○ IDLE"}
+        </span>
+      </div>
     </div>
   );
 }
