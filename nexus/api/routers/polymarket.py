@@ -59,30 +59,57 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
             log.debug("polymarket_dashboard_balance_skip", error=str(exc))
             return None
 
-    async def _portfolio_value() -> float | None:
-        """Fetch total portfolio value (cash + positions) from Polymarket data API."""
-        funder = os.getenv("POLYMARKET_SIGNER_ADDRESS", "")
-        if not funder:
-            return None
+    async def _portfolio_value() -> tuple[float, float, float]:
+        """Fetch portfolio value + cash + positions from Polymarket data API.
+
+        Uses POLYMARKET_PORTFOLIO_ADDRESS if set (personal account),
+        otherwise falls back to POLYMARKET_SIGNER_ADDRESS (bot wallet).
+        Returns (portfolio_total, cash, positions_value).
+        """
+        address = (
+            os.getenv("POLYMARKET_PORTFOLIO_ADDRESS", "").strip()
+            or os.getenv("POLYMARKET_SIGNER_ADDRESS", "").strip()
+        )
+        if not address:
+            return (0.0, 0.0, 0.0)
+        addr = address.lower()
         try:
             client = _get_http_client()
-            resp = await asyncio.wait_for(
-                client.get(
-                    f"https://data-api.polymarket.com/value?user={funder.lower()}",
+            value_resp, pos_resp = await asyncio.gather(
+                asyncio.wait_for(
+                    client.get(f"https://data-api.polymarket.com/value?user={addr}"),
+                    timeout=5.0,
                 ),
-                timeout=5.0,
+                asyncio.wait_for(
+                    client.get(f"https://data-api.polymarket.com/positions?user={addr}&sizeThreshold=.01&limit=50"),
+                    timeout=5.0,
+                ),
+                return_exceptions=True,
             )
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list) and data:
-                    val = float(data[0].get("value", 0) or 0)
-                    return val if val > 0 else None
+            total_val = 0.0
+            if not isinstance(value_resp, Exception) and value_resp.status_code == 200:
+                vdata = value_resp.json()
+                if isinstance(vdata, list) and vdata:
+                    total_val = float(vdata[0].get("value", 0) or 0)
+
+            positions_value = 0.0
+            cash = 0.0
+            if not isinstance(pos_resp, Exception) and pos_resp.status_code == 200:
+                positions = pos_resp.json()
+                if isinstance(positions, list):
+                    for p in positions:
+                        cur_val = float(p.get("curValue", 0) or p.get("value", 0) or 0)
+                        positions_value += cur_val
+                    # Cash = total - positions
+                    cash = max(total_val - positions_value, 0.0)
+
+            return (total_val, cash, positions_value)
         except Exception as exc:
             log.debug("polymarket_dashboard_portfolio_skip", error=str(exc))
-        return None
+        return (0.0, 0.0, 0.0)
 
     try:
-        chart, poly_bot, trades, cx, bal, portfolio_val = await asyncio.gather(
+        chart, poly_bot, trades, cx, bal, portfolio_tuple = await asyncio.gather(
             prediction_routes.get_chart_data(redis),
             prediction_routes.get_polymarket_bot_pnl(redis),
             prediction_routes.get_trade_log(redis),
@@ -93,6 +120,8 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
     except Exception as exc:
         log.warning("polymarket_dashboard_aggregate_failed", error=str(exc))
         raise HTTPException(status_code=502, detail=f"dashboard aggregate failed: {exc}") from exc
+
+    portfolio_val, portfolio_cash, portfolio_positions = portfolio_tuple
 
     buy_pct = 50.0
     sell_pct = 50.0
@@ -160,9 +189,17 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
 
     signer = os.getenv("POLYMARKET_SIGNER_ADDRESS", "")
 
+    portfolio_address = (
+        os.getenv("POLYMARKET_PORTFOLIO_ADDRESS", "").strip()
+        or signer
+    )
+
     return {
         "collateral_usdc": collateral,
-        "portfolio_value": portfolio_val or 0.0,
+        "portfolio_value": portfolio_val,
+        "portfolio_cash": portfolio_cash,
+        "portfolio_positions": portfolio_positions,
+        "portfolio_address": portfolio_address,
         "clob_balance": bal or 0.0,
         "btc_up_pct": round(buy_pct, 2),
         "btc_down_pct": round(sell_pct, 2),

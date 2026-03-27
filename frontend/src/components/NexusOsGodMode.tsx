@@ -56,6 +56,9 @@ import { API_BASE, triggerPanic, swrFetcher } from "@/lib/api";
 export interface GodModeDashboard {
   collateral_usdc: string;
   portfolio_value?: number;
+  portfolio_cash?: number;
+  portfolio_positions?: number;
+  portfolio_address?: string;
   clob_balance?: number;
   btc_up_pct: number;
   btc_down_pct: number;
@@ -409,7 +412,9 @@ export default function NexusOsGodMode() {
           <div className="flex gap-10 flex-wrap">
             <GlobalMetric
               label="יתרה (USDC)"
-              value={marketData?.collateral_usdc || "0.00"}
+              value={marketData?.portfolio_value && marketData.portfolio_value > 0
+                ? `$${marketData.portfolio_value.toFixed(2)}`
+                : marketData?.collateral_usdc || "0.00"}
               color="emerald"
               icon={<TrendingUp size={14} />}
             />
@@ -2230,10 +2235,11 @@ function PolymarketTradingView({
     return series.filter((p) => now - new Date(p.time).getTime() <= cutoff);
   }, [data?.pnl_series, pnlRange]);
 
-  // Best-effort portfolio value: prefer portfolio_value from data-api,
-  // then CLOB collateral balance, then kill-switch balance, then bot PnL.
-  const collateralRaw = parseFloat(data?.collateral_usdc ?? "0");
+  // Portfolio from real Polymarket account (POLYMARKET_PORTFOLIO_ADDRESS or bot wallet)
   const portfolioApiValue = data?.portfolio_value ?? 0;
+  const portfolioCash = data?.portfolio_cash ?? 0;
+  const portfolioPositions = data?.portfolio_positions ?? 0;
+  const collateralRaw = parseFloat(data?.collateral_usdc ?? "0");
   const killSwitchBalance = tradeLog?.kill_switch_balance_usd ?? 0;
   const portfolioValue =
     portfolioApiValue > 0
@@ -2352,19 +2358,21 @@ function PolymarketTradingView({
             <div className={`text-sm font-mono font-bold ${isPnlPositive ? "text-emerald-400" : "text-rose-400"}`}>
               {isPnlPositive ? <ArrowUpRight size={14} className="inline" /> : <ArrowDownRight size={14} className="inline" />}
               {fmtUsd(totalPnl)} ({fmtPct(portfolioValue > 0 ? (totalPnl / portfolioValue) * 100 : 0)})
-              {data?.signer_address
-                ? <span className="text-slate-500 font-mono text-xs ml-1">{data.signer_address.slice(0,6)}…{data.signer_address.slice(-4)}</span>
-                : <span className="text-slate-600 text-xs ml-1">live</span>
-              }
+              {(() => {
+                const addr = data?.portfolio_address || data?.signer_address;
+                return addr
+                  ? <span className="text-slate-500 font-mono text-xs ml-1">{addr.slice(0,6)}…{addr.slice(-4)}</span>
+                  : <span className="text-slate-600 text-xs ml-1">live</span>;
+              })()}
             </div>
           </div>
 
           {/* Center: cash + stats */}
           <div className="flex flex-wrap gap-8">
-            <StatBadge label="Cash (USDC)" value={fmtUsd(portfolioValue)} icon={DollarSign} color="cyan" />
-            <StatBadge label="Realized PnL" value={fmtUsd(bot?.realized_pnl_usd ?? 0)} icon={BarChart2} color={( bot?.realized_pnl_usd ?? 0) >= 0 ? "emerald" : "rose"} />
-            <StatBadge label="Unrealized" value={fmtUsd(bot?.unrealized_pnl_usd ?? 0)} icon={Activity} color={(bot?.unrealized_pnl_usd ?? 0) >= 0 ? "emerald" : "rose"} />
-            <StatBadge label="Win Rate" value={`${(perf?.win_rate ?? 0).toFixed(1)}%`} sub={`${perf?.total_trades ?? 0} trades`} icon={Percent} color="violet" />
+            <StatBadge label="Portfolio" value={fmtUsd(portfolioValue)} icon={TrendingUp} color="cyan" />
+            <StatBadge label="Cash (USDC)" value={fmtUsd(portfolioCash > 0 ? portfolioCash : collateralRaw)} icon={DollarSign} color="emerald" />
+            <StatBadge label="Positions" value={fmtUsd(portfolioPositions)} icon={BarChart2} color="violet" />
+            <StatBadge label="Win Rate" value={`${(perf?.win_rate ?? 0).toFixed(1)}%`} sub={`${perf?.total_trades ?? 0} trades`} icon={Percent} color="amber" />
           </div>
 
           {/* Right: action buttons */}
