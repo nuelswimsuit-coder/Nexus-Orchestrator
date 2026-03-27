@@ -51,39 +51,44 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
     """Aggregate several prediction/redis sources into one payload for the God Mode UI."""
 
     async def _balance() -> float | None:
-        # #region agent log
-        import json as _json, time as _time
-        _log_path = "debug-c21539.log"
-        def _dbg(msg, data):
-            try:
-                with open(_log_path, "a") as _f:
-                    _f.write(_json.dumps({"sessionId":"c21539","timestamp":int(_time.time()*1000),"location":"polymarket.py:_balance","message":msg,"data":data}) + "\n")
-            except Exception: pass
-        # #endregion
         try:
             c = PolymarketClient()
-            # #region agent log
-            _dbg("balance_client_init", {"private_key_set": bool(c._private_key), "funder": c._funder, "clob_none": c._clob is None, "hypothesisId": "H-A"})
-            # #endregion
             result = await asyncio.wait_for(c.get_balance_usdc(), timeout=4.0)
-            # #region agent log
-            _dbg("balance_result", {"result": result, "hypothesisId": "H-A"})
-            # #endregion
             return result
         except Exception as exc:
-            # #region agent log
-            _dbg("balance_exception", {"error": str(exc), "type": type(exc).__name__, "hypothesisId": "H-B"})
-            # #endregion
             log.debug("polymarket_dashboard_balance_skip", error=str(exc))
             return None
 
+    async def _portfolio_value() -> float | None:
+        """Fetch total portfolio value (cash + positions) from Polymarket data API."""
+        funder = os.getenv("POLYMARKET_SIGNER_ADDRESS", "")
+        if not funder:
+            return None
+        try:
+            client = _get_http_client()
+            resp = await asyncio.wait_for(
+                client.get(
+                    f"https://data-api.polymarket.com/value?user={funder.lower()}",
+                ),
+                timeout=5.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and data:
+                    val = float(data[0].get("value", 0) or 0)
+                    return val if val > 0 else None
+        except Exception as exc:
+            log.debug("polymarket_dashboard_portfolio_skip", error=str(exc))
+        return None
+
     try:
-        chart, poly_bot, trades, cx, bal = await asyncio.gather(
+        chart, poly_bot, trades, cx, bal, portfolio_val = await asyncio.gather(
             prediction_routes.get_chart_data(redis),
             prediction_routes.get_polymarket_bot_pnl(redis),
             prediction_routes.get_trade_log(redis),
             prediction_routes.get_cross_exchange(),
             _balance(),
+            _portfolio_value(),
         )
     except Exception as exc:
         log.warning("polymarket_dashboard_aggregate_failed", error=str(exc))
@@ -129,18 +134,14 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
     if not pnl_series:
         pnl_series = [{"time": "—", "pnl": round(base_pnl, 4)}]
 
+    # Prefer: portfolio_value (data-api) > CLOB balance > bot PnL
     collateral = "0.00"
-    if bal is not None:
+    if portfolio_val is not None and portfolio_val > 0:
+        collateral = f"{portfolio_val:.2f}"
+    elif bal is not None and bal > 0:
         collateral = f"{bal:.2f}"
-    elif poly_bot.available:
-        collateral = f"{max(poly_bot.total_pnl_usd, 0.0):.2f}"
-    # #region agent log
-    try:
-        import json as _j2, time as _t2
-        with open("debug-c21539.log", "a") as _f2:
-            _f2.write(_j2.dumps({"sessionId":"c21539","timestamp":int(_t2.time()*1000),"location":"polymarket.py:collateral","message":"collateral_computed","data":{"bal":bal,"collateral":collateral,"poly_bot_available":poly_bot.available,"poly_bot_pnl":float(poly_bot.total_pnl_usd),"hypothesisId":"H-C"}}) + "\n")
-    except Exception: pass
-    # #endregion
+    elif poly_bot.available and poly_bot.total_pnl_usd > 0:
+        collateral = f"{poly_bot.total_pnl_usd:.2f}"
 
     trading_history: list[dict[str, Any]] = []
     for e in trades.entries[:25]:
@@ -161,6 +162,8 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
 
     return {
         "collateral_usdc": collateral,
+        "portfolio_value": portfolio_val or 0.0,
+        "clob_balance": bal or 0.0,
         "btc_up_pct": round(buy_pct, 2),
         "btc_down_pct": round(sell_pct, 2),
         "direction_side": direction,
@@ -200,7 +203,17 @@ async def polymarket_live_orderbook(
             pass
 
     if not token_id:
-        raise HTTPException(status_code=422, detail="token_id required — no active bot token found in Redis")
+        return {
+            "no_position": True,
+            "source": "NO_ACTIVE_POSITION",
+            "market_question": "No active bot position",
+            "bids": [],
+            "asks": [],
+            "mid_price": 0.0,
+            "spread": 0.0,
+            "price_series": [],
+            "token_id": None,
+        }
 
     relayer_key = os.getenv("POLYMARKET_RELAYER_KEY", "")
     headers: dict[str, str] = {}

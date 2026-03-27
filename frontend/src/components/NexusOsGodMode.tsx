@@ -55,6 +55,8 @@ import { API_BASE, triggerPanic, swrFetcher } from "@/lib/api";
 
 export interface GodModeDashboard {
   collateral_usdc: string;
+  portfolio_value?: number;
+  clob_balance?: number;
   btc_up_pct: number;
   btc_down_pct: number;
   direction_side: string;
@@ -179,12 +181,14 @@ const DECISION_DOT: Record<string, string> = {
 // ── Root ────────────────────────────────────────────────────────────────────
 
 export default function NexusOsGodMode() {
-  const _initialTab = typeof window !== "undefined"
-    ? (new URLSearchParams(window.location.search).get("tab") ?? "master-hub")
-    : "master-hub";
-  const [activeTab, setActiveTab] = useState(_initialTab);
+  const [activeTab, setActiveTab] = useState("master-hub");
   const [currentTime, setCurrentTime] = useState("");
   const [marketData, setMarketData] = useState<GodModeDashboard | null>(null);
+
+  useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (tab) setActiveTab(tab);
+  }, []);
   const [loading, setLoading] = useState(true);
   const [warmGroups, setWarmGroups] = useState<number>(0);
   const [readySearch, setReadySearch] = useState<number>(0);
@@ -2014,7 +2018,7 @@ function AhuManagementView() {
 // ── Polymarket Tab Types ─────────────────────────────────────────────────────
 
 interface OrderbookData {
-  token_id: string;
+  token_id: string | null;
   best_bid: number | null;
   best_ask: number | null;
   spread: number | null;
@@ -2024,6 +2028,7 @@ interface OrderbookData {
   price_series: { price: number; size: number; side: "bid" | "ask" }[];
   source: string;
   expired?: boolean;
+  no_position?: boolean;
   market_question?: string;
 }
 
@@ -2185,10 +2190,10 @@ function PolymarketTradingView({
       }
       const ob = (await res.json()) as OrderbookData;
       setOrderbook(ob);
-      setObError(ob.expired ? null : null);
+      setObError(null);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setObError(msg.includes("404") || msg.includes("Failed to fetch") ? "TOKEN_ID REQUIRED — NO ACTIVE BOT TOKEN FOUND IN REDIS" : msg);
+      setObError(msg);
       setOrderbook(null);
     } finally {
       setObLoading(false);
@@ -2225,19 +2230,19 @@ function PolymarketTradingView({
     return series.filter((p) => now - new Date(p.time).getTime() <= cutoff);
   }, [data?.pnl_series, pnlRange]);
 
-  // Best-effort portfolio value: prefer live USDC balance from dashboard,
-  // fall back to kill-switch balance from trade log, then bot PnL baseline.
+  // Best-effort portfolio value: prefer portfolio_value from data-api,
+  // then CLOB collateral balance, then kill-switch balance, then bot PnL.
   const collateralRaw = parseFloat(data?.collateral_usdc ?? "0");
+  const portfolioApiValue = data?.portfolio_value ?? 0;
   const killSwitchBalance = tradeLog?.kill_switch_balance_usd ?? 0;
   const portfolioValue =
-    collateralRaw > 0
-      ? collateralRaw
-      : killSwitchBalance > 0
-        ? killSwitchBalance
-        : Math.max(bot?.total_pnl_usd ?? 0, 0);
-  // #region agent log
-  fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',location:'NexusOsGodMode.tsx:portfolioValue',message:'portfolio_computed',data:{collateralRaw,killSwitchBalance,portfolioValue,botPnl:bot?.total_pnl_usd,collateral_usdc:data?.collateral_usdc,tradeLogKsb:tradeLog?.kill_switch_balance_usd},timestamp:Date.now(),hypothesisId:'H-D'})}).catch(()=>{});
-  // #endregion
+    portfolioApiValue > 0
+      ? portfolioApiValue
+      : collateralRaw > 0
+        ? collateralRaw
+        : killSwitchBalance > 0
+          ? killSwitchBalance
+          : Math.max(bot?.total_pnl_usd ?? 0, 0);
 
   const totalPnl = bot?.total_pnl_usd ?? 0;
   const realizedPnl = bot?.realized_pnl_usd ?? 0;
@@ -2795,7 +2800,13 @@ function PolymarketTradingView({
             {orderbook?.expired && (
               <div className="flex items-center gap-2 p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-400 text-[10px] font-black uppercase tracking-widest mb-3">
                 <AlertTriangle size={12} />
-                MARKET EXPIRED — {orderbook.market_question || orderbook.token_id?.slice(0, 16) + "…"} — no active orderbook
+                MARKET EXPIRED — {orderbook.market_question || (orderbook.token_id?.slice(0, 16) ?? "") + "…"} — no active orderbook
+              </div>
+            )}
+            {orderbook?.no_position && (
+              <div className="flex items-center gap-2 p-2.5 bg-slate-700/40 border border-slate-600/30 rounded-xl text-slate-400 text-[10px] font-black uppercase tracking-widest mb-3">
+                <Activity size={12} />
+                NO ACTIVE POSITION — Bot is idle, waiting for next signal
               </div>
             )}
             {obError && (
