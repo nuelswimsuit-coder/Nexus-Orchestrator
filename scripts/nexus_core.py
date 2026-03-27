@@ -258,7 +258,12 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Abort if no worker heartbeats (ignored with --dry-run)",
     )
-    parser.add_argument('--worker', action='store_true', help='Start in worker mode')
+    parser.add_argument(
+        "--worker",
+        action="store_true",
+        help="Worker only: start start_worker.py (no start_api / no telegram bot). "
+        "Use with nexus_launcher, which spawns API and bots separately.",
+    )
     parser.add_argument('--turbo-boost', action='store_true', help='Enable high process priority')
     parser.add_argument('--skip-sync-check', action='store_true', help='Skip Redis sync check on startup')
     return parser.parse_args()
@@ -353,23 +358,35 @@ def main() -> None:
     )
     limiter.start()
 
-    processes = [
-        Process(target=_run_script, args=(str(API_SCRIPT),), name="nexus-api"),
-        Process(target=_run_script, args=(str(BOT_SCRIPT),), name="nexus-telegram-bot"),
-        Process(
-            target=_run_script,
-            args=(
-                str(WORKER_SCRIPT),
-                {
-                    "NODE_ID": MASTER_NODE_ID,
-                    "MASTER_IP": master_ip,
-                    "REDIS_URL": _coerce_redis_url(f"redis://{master_ip}:6379/0"),
-                    "REDIS_HOST": master_ip,
-                },
-            ),
-            name="nexus-local-worker",
+    worker_proc = Process(
+        target=_run_script,
+        args=(
+            str(WORKER_SCRIPT),
+            {
+                "NODE_ID": MASTER_NODE_ID,
+                "MASTER_IP": master_ip,
+                "REDIS_URL": _coerce_redis_url(f"redis://{master_ip}:6379/0"),
+                "REDIS_HOST": master_ip,
+            },
         ),
-    ]
+        name="nexus-local-worker",
+    )
+
+    # ``nexus_launcher`` passes ``--worker`` and also spawns ``start_api.py`` / ``start_telegram_bot.py``
+    # as separate services. Without this branch, two ``start_api`` processes fight for port 8001
+    # (Windows Errno 10048) and neither binds — browser gets ERR_CONNECTION_REFUSED.
+    if args.worker:
+        processes = [worker_proc]
+        print(
+            "[nexus_core] --worker: only the ARQ worker is started here; "
+            "run API / Telegram via the launcher or start_api.py / start_telegram_bot.py."
+        )
+    else:
+        processes = [
+            Process(target=_run_script, args=(str(API_SCRIPT),), name="nexus-api"),
+            Process(target=_run_script, args=(str(BOT_SCRIPT),), name="nexus-telegram-bot"),
+            worker_proc,
+        ]
 
     for proc in processes:
         proc.start()
