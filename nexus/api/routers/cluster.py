@@ -233,7 +233,7 @@ async def get_cluster_health(redis: RedisDep) -> ClusterHealthResponse:
         os_lower = (hb.os_info or "").lower()
         is_windows = "windows" in os_lower
         if is_master:
-            label = "מאסטר ניהול" if is_windows else "מאסטר עובד"
+            label = "מחשב מאסטר עובד ומנהל בהתאמה"
         else:
             label = "לפטופ ווינדוס עובד" if is_windows else "לפטופ לינוקס עובד"
         nodes_out.append(

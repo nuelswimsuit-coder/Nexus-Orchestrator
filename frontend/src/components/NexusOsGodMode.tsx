@@ -63,6 +63,8 @@ export interface PortfolioPosition {
   cash_pnl: number;
   percent_pnl: number;
   end_date: string;
+  /** CLOB outcome token id (required for manual-order API) */
+  token_id?: string;
 }
 
 export interface GodModeDashboard {
@@ -169,6 +171,8 @@ interface ClusterHealthNode {
   cpu_percent: number;
   status: string;
   online: boolean;
+  /** API field; -1 means sensor unavailable */
+  cpu_temp_c?: number | null;
   cpu_temp?: number | null;
   role?: string;
   ram_used_mb?: number;
@@ -2295,6 +2299,7 @@ function PolymarketTradingView({
         totalSpent: p.size * p.avg_price,
         count: 1,
         endDate: p.end_date,
+        clobTokenId: (p.token_id ?? "").trim(),
         // legacy compat fields
         buys: p.size,
         sells: 0,
@@ -2320,7 +2325,7 @@ function PolymarketTradingView({
       const value = netShares * nowPrice;
       const pnlDelta = netShares * (nowPrice - avgPrice);
       const pnlPct = avgPrice > 0 ? ((nowPrice - avgPrice) / avgPrice) * 100 : 0;
-      return { ...p, netShares, avgPrice, nowPrice, value, pnlDelta, pnlPct, title: p.asset, outcome: "YES", endDate: "" };
+      return { ...p, netShares, avgPrice, nowPrice, value, pnlDelta, pnlPct, title: p.asset, outcome: "YES", endDate: "", clobTokenId: "" };
     }).filter((p) => p.netShares > 0);
   }, [data?.portfolio_positions_list, data?.trading_history]);
 
@@ -2371,7 +2376,15 @@ function PolymarketTradingView({
 
   // ── Direct rec order handler (fires from expanded panel) ─────────────────
   const [recOrderStatus, setRecOrderStatus] = useState<Record<number, { msg: string; ok: boolean; loading?: boolean }>>({});
-  const handleRecOrder = async (recIdx: number, tokenAsset: string, side: "BUY" | "SELL", betAmount: number) => {
+  const handleRecOrder = async (recIdx: number, clobTokenId: string, side: "BUY" | "SELL", betAmount: number) => {
+    const tid = clobTokenId.trim();
+    if (!tid) {
+      setRecOrderStatus((prev) => ({
+        ...prev,
+        [recIdx]: { msg: "חסר מזהה CLOB לפוזיציה — רענן את הדשבורד / Missing CLOB token — refresh dashboard", ok: false },
+      }));
+      return;
+    }
     setRecOrderStatus((prev) => ({ ...prev, [recIdx]: { msg: "שולח פקודה...", ok: true, loading: true } }));
     try {
       // #region agent log
@@ -2382,14 +2395,13 @@ function PolymarketTradingView({
           sessionId: "c91743",
           hypothesisId: "H1",
           location: "NexusOsGodMode.tsx:handleRecOrder",
-          message: "rec_order_tokenAsset_shape",
+          message: "rec_order_clob_token_shape",
           data: {
             recIdx,
             side,
-            assetLen: tokenAsset.trim().length,
-            assetIsAllDigits: /^\d+$/.test(tokenAsset.trim()),
-            assetHasSpace: tokenAsset.includes(" "),
-            assetPrefix: tokenAsset.trim().slice(0, 40),
+            tokenLen: tid.length,
+            tokenIsAllDigits: /^\d+$/.test(tid),
+            tokenPrefix: tid.slice(0, 40),
           },
           timestamp: Date.now(),
         }),
@@ -2398,7 +2410,7 @@ function PolymarketTradingView({
       const res = await fetch(`${API_BASE}/api/polymarket/manual-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token_id: tokenAsset.trim(), side, amount: betAmount }),
+        body: JSON.stringify({ token_id: tid, side, amount: betAmount }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -3112,7 +3124,7 @@ function PolymarketTradingView({
                       className="w-full flex items-center gap-3 px-4 py-3 text-left"
                       onClick={() => {
                         setExpandedRecIdx(isExpanded ? null : i);
-                        setTokenId(rec.asset);
+                        setTokenId(rec.clobTokenId ?? "");
                         setSelectedPosition(rec.asset);
                       }}
                     >
@@ -3233,7 +3245,7 @@ function PolymarketTradingView({
                               onClick={() => {
                                 const el = document.getElementById(`rec-bet-input-${i}`) as HTMLInputElement | null;
                                 const betAmt = el ? parseFloat(el.value) || rec.recBet : rec.recBet;
-                                void handleRecOrder(i, rec.asset, rec.recSide, betAmt);
+                                void handleRecOrder(i, rec.clobTokenId ?? "", rec.recSide, betAmt);
                               }}
                               className={`flex-1 py-3 rounded-xl font-black text-base uppercase tracking-widest transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg ${
                                 rec.recSide === "BUY"
@@ -3245,7 +3257,7 @@ function PolymarketTradingView({
                             </button>
                             <button
                               type="button"
-                              onClick={() => { setTokenId(rec.asset); setAmount(rec.recBet.toFixed(0)); setSelectedPosition(rec.asset); setExpandedRecIdx(null); }}
+                              onClick={() => { setTokenId(rec.clobTokenId ?? ""); setAmount(rec.recBet.toFixed(0)); setSelectedPosition(rec.asset); setExpandedRecIdx(null); }}
                               className="px-4 py-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-sm font-black rounded-xl transition"
                               title="ערוך בפאנל הסחר"
                             >
@@ -3604,11 +3616,21 @@ function PolymarketTradingView({
                       <div className="h-full rounded-full transition-all duration-500" style={{ width: `${Math.min(ramPct, 100)}%`, background: ramColor, boxShadow: `0 0 5px ${ramColor}` }} />
                     </div>
                   </div>
-                  {node.cpu_temp && (
-                    <div className="text-[8px] font-black uppercase tracking-widest mt-1" style={{ color: node.cpu_temp > 75 ? "#f87171" : "#475569" }}>
-                      TEMP / טמפ׳: {node.cpu_temp.toFixed(0)}°C
-                    </div>
-                  )}
+                  {(() => {
+                    const t = node.cpu_temp_c ?? node.cpu_temp;
+                    if (t == null || t < 0) {
+                      return (
+                        <div className="text-[8px] font-black uppercase tracking-widest mt-1 text-slate-600">
+                          TEMP / טמפ׳: N/A
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="text-[8px] font-black uppercase tracking-widest mt-1" style={{ color: t > 75 ? "#f87171" : "#475569" }}>
+                        TEMP / טמפ׳: {t.toFixed(0)}°C
+                      </div>
+                    );
+                  })()}
                   {node.role && <div className="text-[8px] text-slate-600 uppercase tracking-widest mt-0.5">{node.role}</div>}
                 </div>
               );
@@ -4210,7 +4232,11 @@ function SwarmMonitorView() {
               n.online && (n.status === "ok" || n.status === "degraded")
                 ? ("LIVE" as const)
                 : ("IDLE" as const),
-            cpuTemp: n.cpu_temp ?? null,
+            cpuTemp: (() => {
+              const t = n.cpu_temp_c ?? n.cpu_temp;
+              if (t == null || t < 0) return null;
+              return t;
+            })(),
             role: n.role ?? "worker",
             ramUsed: n.ram_used_mb ?? null,
             ramTotal: n.ram_total_mb ?? null,
@@ -4304,7 +4330,7 @@ function SwarmMonitorView() {
           <div className="w-4 h-4 rounded-full bg-cyan-400 shadow-[0_0_18px_rgba(34,211,238,1)] animate-pulse" />
           <div>
             <div className="text-[11px] font-black text-cyan-300 uppercase tracking-widest mb-0.5 drop-shadow-[0_0_8px_rgba(34,211,238,0.9)]">
-              👑 MASTER — Jacob-PC
+              👑 מחשב מאסטר עובד ומנהל בהתאמה
             </div>
             <div className="text-lg font-black text-cyan-300">
               {jacobSessions.length > 0
@@ -4442,7 +4468,7 @@ function SwarmMonitorView() {
       )}
 
       {/* ── Swarm Node Terminals ─────────────────────────────────────────── */}
-      {cards.filter((c) => c.name !== "Jacob-PC").length > 0 && (
+      {cards.filter((c) => c.role !== "master").length > 0 && (
         <div className="space-y-4">
           {/* Section header */}
           <div
@@ -4476,14 +4502,14 @@ function SwarmMonitorView() {
                   Swarm Node Terminals
                 </div>
                 <div className="text-[9px] text-slate-600 font-mono mt-0.5">
-                  Live WebSocket streams · {cards.filter((c) => c.name !== "Jacob-PC").length} worker nodes
+                  Live WebSocket streams · {cards.filter((c) => c.role !== "master").length} worker nodes
                 </div>
               </div>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" style={{ boxShadow: "0 0 6px rgba(34,211,238,0.8)" }} />
               <span className="text-[9px] font-mono text-cyan-500/70">
-                {cards.filter((c) => c.name !== "Jacob-PC" && c.status === "LIVE").length} LIVE
+                {cards.filter((c) => c.role !== "master" && c.status === "LIVE").length} LIVE
               </span>
             </div>
           </div>
@@ -4491,7 +4517,7 @@ function SwarmMonitorView() {
           {/* Responsive grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-5">
             {cards
-              .filter((c) => c.name !== "Jacob-PC")
+              .filter((c) => c.role !== "master")
               .map((c) => (
                 <RemoteTerminalPanel
                   key={`remote-${c.nodeId}`}
@@ -5417,7 +5443,7 @@ function LiveConsoleModal({
 // ── Thermal Gauge ─────────────────────────────────────────────────────────────
 
 function ThermalGauge({ temp }: { temp: number | null }) {
-  if (temp === null || temp === undefined) {
+  if (temp === null || temp === undefined || temp < 0) {
     return <div className="text-[10px] text-slate-600 font-mono">N/A</div>;
   }
 
