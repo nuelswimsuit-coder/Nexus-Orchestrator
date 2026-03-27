@@ -235,12 +235,16 @@ class PolymarketClient:
                         val = float(raw)
                         if val > 1_000_000:
                             val = val / 1_000_000
-                        return val
-                    if isinstance(resp, (int, float)):
+                        if val > 0:
+                            return val
+                        # SDK returned 0 — relayer wallet may be unfunded; fall through
+                        # to portfolio address REST check below
+                    elif isinstance(resp, (int, float)):
                         val = float(resp)
                         if val > 1_000_000:
                             val = val / 1_000_000
-                        return val
+                        if val > 0:
+                            return val
                 except asyncio.TimeoutError:
                     log.error("polymarket.get_balance_timeout", method="get_balance_allowance")
                     raise
@@ -272,14 +276,55 @@ class PolymarketClient:
                     except Exception: pass
                     # #endregion
                     if isinstance(resp, (int, float)):
-                        return float(resp)
+                        val = float(resp)
+                        if val > 0:
+                            return val
                     if isinstance(resp, dict):
-                        return float(resp.get("balance", resp.get("USDC", 0.0)))
+                        val = float(resp.get("balance", resp.get("USDC", 0.0)))
+                        if val > 0:
+                            return val
                 except asyncio.TimeoutError:
                     log.error("polymarket.get_balance_timeout", method="get_balance")
                     raise
                 except Exception as exc:
                     log.debug("polymarket.get_balance_sdk_miss", method="get_balance", error=str(exc))
+
+        # REST fallback: query POLYMARKET_PORTFOLIO_ADDRESS (personal funded wallet)
+        # then POLYMARKET_SIGNER_ADDRESS via the Polymarket data API.
+        # The SDK's get_balance_allowance is scoped to the relayer/signing key address
+        # which may hold $0 USDC even when the portfolio wallet is funded.
+        portfolio_addr = (
+            os.getenv("POLYMARKET_PORTFOLIO_ADDRESS", "").strip()
+            or self._funder
+        )
+        if portfolio_addr:
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as hclient:
+                    r = await hclient.get(
+                        f"https://data-api.polymarket.com/value?user={portfolio_addr.lower()}"
+                    )
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list) and data:
+                        total_val = float(data[0].get("value", 0) or 0)
+                        log.info(
+                            "polymarket.balance_from_data_api",
+                            address=portfolio_addr[:10] + "…",
+                            balance_usd=total_val,
+                        )
+                        # #region agent log
+                        import json as _json, time as _time
+                        try:
+                            with open("debug-020f7b.log", "a") as _f:
+                                _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:get_balance_usdc","message":"data_api_balance_result","data":{"address":portfolio_addr[:12],"total_val":total_val},"hypothesisId":"H-C-fix"}) + "\n")
+                        except Exception: pass
+                        # #endregion
+                        return total_val
+            except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
+                log.error("polymarket.get_balance_data_api_timeout", error=str(exc))
+                raise
+            except Exception as exc:
+                log.debug("polymarket.get_balance_data_api_error", error=str(exc))
 
         log.warning("polymarket.get_balance_unavailable", default=100.0)
         return 100.0

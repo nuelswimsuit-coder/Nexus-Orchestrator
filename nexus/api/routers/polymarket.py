@@ -261,6 +261,16 @@ async def polymarket_live_orderbook(
     token_id: str | None = Query(default=None, description="CLOB outcome token ID; defaults to active bot token"),
 ) -> dict[str, Any]:
     """Fetch live orderbook from the real Polymarket CLOB API using the Relayer Key."""
+    # #region agent log
+    import time as _time, json as _json_dbg
+    _DBG_LOG = "debug-651181.log"
+    def _dbg(msg: str, data: dict, hyp: str) -> None:
+        try:
+            entry = _json_dbg.dumps({"sessionId": "651181", "timestamp": int(_time.time() * 1000), "location": "polymarket.py:orderbook", "message": msg, "data": data, "hypothesisId": hyp}) + "\n"
+            with open(_DBG_LOG, "a", encoding="utf-8") as _f: _f.write(entry)
+        except Exception: pass
+    # #endregion
+
     market_question: str = ""
     if not token_id:
         try:
@@ -278,10 +288,16 @@ async def polymarket_live_orderbook(
                     or (p.get("open_position") or {}).get("market_question")
                     or ""
                 )
+                # #region agent log
+                _dbg("redis_pnl_loaded", {"token_id": token_id, "market_question": market_question[:80], "has_open_position": bool(p.get("open_position")), "pnl_keys": list(p.keys())}, "H-A")
+                # #endregion
         except Exception:
             pass
 
     if not token_id:
+        # #region agent log
+        _dbg("no_token_id_found", {"redis_had_data": raw is not None if 'raw' in dir() else False}, "H-A")
+        # #endregion
         return {
             "no_position": True,
             "source": "NO_ACTIVE_POSITION",
@@ -293,6 +309,10 @@ async def polymarket_live_orderbook(
             "price_series": [],
             "token_id": None,
         }
+
+    # #region agent log
+    _dbg("clob_request_start", {"token_id": token_id, "market_question": market_question[:80], "clob_host": _CLOB_HOST}, "H-C")
+    # #endregion
 
     relayer_key = os.getenv("POLYMARKET_RELAYER_KEY", "")
     headers: dict[str, str] = {}
@@ -311,10 +331,16 @@ async def polymarket_live_orderbook(
         )
         resp.raise_for_status()
         book: dict[str, Any] = resp.json()
+        # #region agent log
+        _dbg("clob_success", {"status": resp.status_code, "bids_count": len(book.get("bids") or []), "asks_count": len(book.get("asks") or [])}, "H-B")
+        # #endregion
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="CLOB orderbook request timed out") from None
     except httpx.HTTPStatusError as exc:
         err_body = exc.response.text
+        # #region agent log
+        _dbg("clob_http_error", {"status_code": exc.response.status_code, "err_body": err_body[:300], "token_id": token_id, "is_404": exc.response.status_code == 404, "has_no_orderbook_msg": "No orderbook exists" in err_body}, "H-B,H-E")
+        # #endregion
         # Market expired / resolved — CLOB returns 404 with "No orderbook exists"
         if exc.response.status_code == 404 or "No orderbook exists" in err_body:
             log.warning(
@@ -337,6 +363,9 @@ async def polymarket_live_orderbook(
             }
         raise HTTPException(status_code=exc.response.status_code, detail=f"CLOB API error: {err_body[:200]}") from exc
     except Exception as exc:
+        # #region agent log
+        _dbg("clob_other_error", {"error": str(exc), "error_type": type(exc).__name__}, "H-B")
+        # #endregion
         raise HTTPException(status_code=502, detail=f"CLOB fetch failed: {exc}") from exc
 
     bids: list[dict[str, Any]] = book.get("bids") or []

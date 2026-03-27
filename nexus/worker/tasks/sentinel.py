@@ -406,6 +406,22 @@ async def report(parameters: dict[str, Any]) -> dict[str, Any]:
     failed     = len(events) - successful
     duration   = round(time.monotonic() - t0, 2)
 
+    # Notify the Brain about flood-waits and successes so it can adapt delays.
+    try:
+        from src.nexus.core.brain import get_brain  # guarded — Brain is optional
+        _brain = await get_brain()
+        for _ev in events:
+            detail = _ev.get("detail", "")
+            if "FloodWait" in detail:
+                import re as _re
+                _m = _re.search(r"FloodWait\s+(\d+)", detail)
+                _wait_s = int(_m.group(1)) if _m else 120
+                await _brain.record_flood_wait(_wait_s)
+        for _ in range(successful):
+            await _brain.record_task_success()
+    except Exception:
+        pass  # Brain is non-critical; never let it break the sentinel task
+
     log.info("sentinel_complete",
              submitted=successful, failed=failed,
              duration_s=duration, dry_run=dry_run)

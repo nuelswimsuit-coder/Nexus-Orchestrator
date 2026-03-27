@@ -1626,6 +1626,7 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
         cx_signal     = str((cx or {}).get("signal_label") or (cx or {}).get("signal") or "")
         arb_gap       = float((cx or {}).get("arbitrage_gap") or 0.0)
         portfolio_val = float(dash.get("portfolio_value") or 0.0)
+        cx_market_q   = str(((cx or {}).get("polymarket") or {}).get("market_question") or "")
 
         recs = _compute_ai_recs(positions, portfolio_val)
         # Only alert on high-confidence recs (>= 75%)
@@ -1648,6 +1649,11 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
                 f"📊 ARB Gap: `{arb_gap*100:.3f}%`",
                 f"💰 Rec / המלצה: `${cx_rec_amt:.2f}` \\({pct:.0f}% מהתיק\\)",
                 f"",
+            ]
+            if cx_market_q:
+                cx_alert_lines.append(f"📋 *Market:* `{_esc(cx_market_q[:80])}`")
+                cx_alert_lines.append(f"")
+            cx_alert_lines += [
                 f"_Use `/poly\\_buy` to execute_",
                 f"",
             ]
