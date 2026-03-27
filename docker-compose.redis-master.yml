@@ -1,0 +1,17 @@
+# Redis on the Master — published on all host interfaces so LAN workers can reach 10.100.102.8:6379.
+# Your previous container used 127.0.0.1:6379->6379 (localhost only). This uses 6379:6379.
+#
+# Usage (from repo root):
+#   docker compose -f docker-compose.redis-master.yml down
+#   docker compose -f docker-compose.redis-master.yml up -d
+#
+# If you used a password before, add to `command` e.g.:
+#   command: ["redis-server", "--bind", "0.0.0.0", "--requirepass", "YOUR_SECRET"]
+
+services:
+  warmer_redis:
+    image: redis:7.2-alpine
+    container_name: warmer_redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--bind", "0.0.0.0"]
