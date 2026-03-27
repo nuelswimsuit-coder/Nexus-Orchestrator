@@ -5302,3 +5302,28 @@ eded the max restart limit (3). Manual intervention required.
 [launcher] spawn [frontend]: C:\Program Files\nodejs\npm.CMD ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator\frontend)
 [launcher] spawn [israeli-swarm]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
 [launcher] spawn [git-sync]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] child process exited pid=21264 label=api returncode=1.
+[watchdog] Restarting [api] in 5s (attempt 1/3)…
+[launcher] child process exited pid=37864 label=core returncode=0.
+[launcher] child process exited pid=29240 label=deployer returncode=3.
+[watchdog] Restarting [deployer] in 5s (attempt 1/3)…
+[auto-worker] No worker heartbeats — auto-spawning local worker…
+[auto-worker] Worker spawned — pid=500
+[watchdog] [api] restarted — pid=22648
+[watchdog] [deployer] restarted — pid=41408
+[launcher] child process exited pid=22648 label=api returncode=1.
+[watchdog] Restarting [api] in 10s (attempt 2/3)…
+[launcher] child process exited pid=41408 label=deployer returncode=3.
+[watchdog] Restarting [deployer] in 10s (attempt 2/3)…
+[watchdog] [api] restarted — pid=6028
+[watchdog] [deployer] restarted — pid=3492
+[launcher] child process exited pid=6028 label=api returncode=1.
+[watchdog] Restarting [api] in 15s (attempt 3/3)…
+[launcher] child process exited pid=3492 label=deployer returncode=3.
+[watchdog] Restarting [deployer] in 15s (attempt 3/3)…
+[watchdog] [api] restarted — pid=15564
+[watchdog] [deployer] restarted — pid=9428
+[launcher] child process exited pid=15564 label=api returncode=1.
+[WATCHDOG] Service *api* has crashed 3 times and exceeded the max restart limit (3). Manual intervention required.
+[launcher] child process exited pid=9428 label=deployer returncode=3.
+[WATCHDOG] Service *deployer* has crashed 3 times and exceeded the max restart limit (3). Manual intervention required.

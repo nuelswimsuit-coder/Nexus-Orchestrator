@@ -88,6 +88,7 @@ def erc20_balance_wei(contract: str, owner: str) -> int | None:
 
 
 def main() -> None:
+    sync_env = (os.getenv("POLYMARKET_SYNC_WALLET_ENV") or "1").strip()
     key = (
         (os.getenv("POLYMARKET_RELAYER_KEY") or "").strip()
         or (os.getenv("NEXUS_POLY_PRIVATE_KEY") or "").strip()
@@ -102,14 +103,34 @@ def main() -> None:
         except Exception as exc:
             print(f"Could not derive from POLYMARKET_RELAYER_KEY: {exc}")
 
+    portfolio_from_file = (os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()
+
+    # Import after snapshot: loading nexus.shared.config runs apply_polymarket_wallet_alignment() once.
+    from nexus.shared.config import apply_polymarket_wallet_alignment
+
+    apply_polymarket_wallet_alignment()
+
     signer = (os.getenv("POLYMARKET_SIGNER_ADDRESS") or "").strip()
     portfolio = (os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()
 
+    legacy_portfolio: str | None = None
+    if (
+        derived
+        and portfolio_from_file
+        and portfolio_from_file.lower() != derived.lower()
+    ):
+        legacy_portfolio = portfolio_from_file
+
     print("=== Polymarket wallet sync check ===")
+    print(f"POLYMARKET_SYNC_WALLET_ENV={sync_env!r} (default 1 = signer/portfolio forced to relayer EOA in-process)")
     print(f"POLYGON_RPC candidates: {', '.join(_polygon_rpc_urls()[:4])} ...")
-    print(f"Derived from RELAYER_KEY: {derived or '(no key)'}")
-    print(f"POLYMARKET_SIGNER_ADDRESS:   {signer or '(unset)'}")
-    print(f"POLYMARKET_PORTFOLIO_ADDRESS: {portfolio or '(unset)'}")
+    print(f"Derived from RELAYER_KEY (CLOB signing EOA): {derived or '(no key)'}")
+    if legacy_portfolio and sync_env.lower() not in ("0", "false", "no", "off"):
+        print(
+            f"  (.env had POLYMARKET_PORTFOLIO_ADDRESS={legacy_portfolio} - ignored when sync is on; effective below)"
+        )
+    print(f"POLYMARKET_SIGNER_ADDRESS (effective):   {signer or '(unset)'}")
+    print(f"POLYMARKET_PORTFOLIO_ADDRESS (effective): {portfolio or '(unset)'}")
     if derived and signer and derived.lower() != signer.lower():
         print("WARNING: signer env does not match derived EOA (unless POLYMARKET_ALLOW_FUNDER_ENV_MISMATCH=1).")
     if derived and portfolio and derived.lower() != portfolio.lower():
@@ -117,7 +138,14 @@ def main() -> None:
 
     addrs: list[tuple[str, str]] = []
     if derived:
-        addrs.append(("derived (signing)", derived))
+        addrs.append(("CLOB signing wallet (use this for deposits / Polymarket balance)", derived))
+    if legacy_portfolio and legacy_portfolio.lower() != (derived or "").lower():
+        addrs.append(
+            (
+                "Legacy .env POLYMARKET_PORTFOLIO_ADDRESS (on-chain USDC only; not debited by CLOB if different from signing)",
+                legacy_portfolio,
+            )
+        )
     if signer and all(a[1].lower() != signer.lower() for a in addrs):
         addrs.append(("POLYMARKET_SIGNER_ADDRESS", signer))
     if portfolio and all(a[1].lower() != portfolio.lower() for a in addrs):
@@ -132,6 +160,22 @@ def main() -> None:
         else:
             human = bal / 1_000_000
             print(f"  {label} {addr}: {human:.6f} USDC (wei={bal})")
+
+    if derived and legacy_portfolio and legacy_portfolio.lower() != derived.lower():
+        d_bal = erc20_balance_wei(USDC_POLYGON, derived)
+        l_bal = erc20_balance_wei(USDC_POLYGON, legacy_portfolio)
+        if (
+            d_bal is not None
+            and l_bal is not None
+            and d_bal == 0
+            and l_bal > 0
+        ):
+            print()
+            print(
+                "ACTION: On-chain USDC is on the legacy portfolio address, not on the CLOB signing wallet. "
+                "Either deposit to Polymarket / send USDC to the signing address above, or set "
+                "POLYMARKET_RELAYER_KEY to the private key of the wallet that holds your Polymarket funds."
+            )
 
     print()
     print("Done.")
