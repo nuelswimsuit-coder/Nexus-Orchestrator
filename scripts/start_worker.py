@@ -31,14 +31,23 @@ import sys
 import warnings
 from pathlib import Path
 
-# Windows: force SelectorEventLoop — ProactorEventLoop is unstable with
-# long-lived Redis connections and causes WinError 121 / WinError 64.
-# Python 3.14+ deprecates the policy API (removal in 3.16); keep behaviour until
-# a stable loop_factory migration exists for ARQ/run_worker.
-if sys.platform == "win32":
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+def _apply_windows_selector_event_loop_policy() -> None:
+    """ProactorEventLoop is unstable with long-lived Redis on Windows (WinError 121/64)."""
+    if sys.platform != "win32":
+        return
+    # Python 3.14+ deprecates the policy API (removed in 3.16). catch_warnings()
+    # does not always suppress warnings emitted from inside asyncio; filter here.
+    if sys.version_info >= (3, 14):
+        for _pat in (
+            r".*WindowsSelectorEventLoopPolicy.*",
+            r".*set_event_loop_policy.*",
+        ):
+            warnings.filterwarnings("ignore", message=_pat, category=DeprecationWarning)
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+_apply_windows_selector_event_loop_policy()
 
 # Linux production: optional uvloop.
 if sys.platform != "win32" and os.environ.get("ENVIRONMENT", "PRODUCTION").upper() == "PRODUCTION":
