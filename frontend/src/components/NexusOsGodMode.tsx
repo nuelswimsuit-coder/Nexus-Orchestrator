@@ -67,6 +67,7 @@ export interface GodModeDashboard {
     amount: number;
     price: string;
   }[];
+  signer_address?: string;
 }
 
 interface TelefixGroup {
@@ -178,7 +179,10 @@ const DECISION_DOT: Record<string, string> = {
 // ── Root ────────────────────────────────────────────────────────────────────
 
 export default function NexusOsGodMode() {
-  const [activeTab, setActiveTab] = useState("master-hub");
+  const _initialTab = typeof window !== "undefined"
+    ? (new URLSearchParams(window.location.search).get("tab") ?? "master-hub")
+    : "master-hub";
+  const [activeTab, setActiveTab] = useState(_initialTab);
   const [currentTime, setCurrentTime] = useState("");
   const [marketData, setMarketData] = useState<GodModeDashboard | null>(null);
   const [loading, setLoading] = useState(true);
@@ -2339,7 +2343,11 @@ function PolymarketTradingView({
             </div>
             <div className={`text-sm font-mono font-bold ${isPnlPositive ? "text-emerald-400" : "text-rose-400"}`}>
               {isPnlPositive ? <ArrowUpRight size={14} className="inline" /> : <ArrowDownRight size={14} className="inline" />}
-              {fmtUsd(totalPnl)} ({fmtPct(portfolioValue > 0 ? (totalPnl / portfolioValue) * 100 : 0)}) bot session
+              {fmtUsd(totalPnl)} ({fmtPct(portfolioValue > 0 ? (totalPnl / portfolioValue) * 100 : 0)})
+              {data?.signer_address
+                ? <span className="text-slate-500 font-mono text-xs ml-1">{data.signer_address.slice(0,6)}…{data.signer_address.slice(-4)}</span>
+                : <span className="text-slate-600 text-xs ml-1">live</span>
+              }
             </div>
           </div>
 

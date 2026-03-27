@@ -131,6 +131,8 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
             }
         )
 
+    signer = os.getenv("POLYMARKET_SIGNER_ADDRESS", "")
+
     return {
         "collateral_usdc": collateral,
         "btc_up_pct": round(buy_pct, 2),
@@ -141,6 +143,7 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
         "trading_history": trading_history,
         "cross_exchange_status": cx.status,
         "fetched_at": cx.fetched_at,
+        "signer_address": signer,
     }
 
 

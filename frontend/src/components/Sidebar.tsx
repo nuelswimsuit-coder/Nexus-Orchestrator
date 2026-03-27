@@ -37,7 +37,7 @@ const NAV_GROUPS: NavGroup[] = [
     groupLabel: "TRADING",
     items: [
       { href: "/wallet-ops",      icon: "📈", labelKey: "wallet_ops",      descKey: "nav_desc_wallet_ops" },
-      { href: "/polymarket-deck", icon: "🎲", labelKey: "polymarket_deck", descKey: "nav_desc_polymarket_deck" },
+      { href: "/nexus-os?tab=poly-trading", icon: "🎲", labelKey: "polymarket_deck", descKey: "nav_desc_polymarket_deck" },
       { href: "/market-intel",    icon: "🔭", labelKey: "market_intel",    descKey: "nav_desc_market_intel" },
     ],
   },

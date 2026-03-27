@@ -1,7 +1,10 @@
 "use client";
 
-import PolymarketCommandDeck from "@/components/PolymarketCommandDeck";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 
 export default function PolymarketDeckPage() {
-  return <PolymarketCommandDeck />;
+  const router = useRouter();
+  useEffect(() => { router.replace("/nexus-os?tab=poly-trading"); }, [router]);
+  return null;
 }
