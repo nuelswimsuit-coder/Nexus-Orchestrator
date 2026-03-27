@@ -152,23 +152,50 @@ def get_main_menu():
 
 def get_start_menu() -> InlineKeyboardMarkup:
     """
-    Primary 2×2 inline keyboard shown on /start.
+    Full command-center inline keyboard — all features accessible from /start.
 
-    Designed as a professional trading terminal control panel — each button
-    maps directly to an orchestrator action via its callback_data.
+    Layout (8 rows):
+      Row 1 — Monitoring: System Status | Live Ops
+      Row 2 — Monitoring: Cluster Health | Sentinel Check
+      Row 3 — Trading:    Polymarket Panel | Moltbot Scrape
+      Row 4 — Finance:    Stats & DB | Wallet / Profit
+      Row 5 — Automation: Incubator Engine | God Mode
+      Row 6 — Emergency:  PANIC Stop | Kill Switch
+      Row 7 — System:     System Recovery | Terminate Nexus
+      Row 8 — Info:       Dashboard Link | Help & Commands
     """
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📊 סטטוס מערכת",          callback_data="status"),
-            InlineKeyboardButton(text="⚡ LIVE OPS - REAL-TIME EXECUTION", callback_data="live_ops"),
+            InlineKeyboardButton(text="📊 סטטוס מערכת",           callback_data="status"),
+            InlineKeyboardButton(text="⚡ Live Ops",               callback_data="live_ops"),
         ],
         [
-            InlineKeyboardButton(text="🛡️ בדיקת חוסן (Sentinel)", callback_data="check_sentinel"),
-            InlineKeyboardButton(text="🛑 עצירת חירום (PANIC)",   callback_data="panic_stop"),
+            InlineKeyboardButton(text="🖥️ בריאות קלאסטר",         callback_data="menu_cluster"),
+            InlineKeyboardButton(text="🛡️ Sentinel",              callback_data="check_sentinel"),
         ],
         [
-            InlineKeyboardButton(text="🎯 Polymarket / פולימרקט", callback_data="poly_menu"),
-            InlineKeyboardButton(text="🚀 Launch Moltbot Scrape", callback_data="launch_moltbot"),
+            InlineKeyboardButton(text="🎯 Polymarket",             callback_data="poly_menu"),
+            InlineKeyboardButton(text="🚀 Moltbot Scrape",         callback_data="launch_moltbot"),
+        ],
+        [
+            InlineKeyboardButton(text="📈 סטטיסטיקות DB",          callback_data="menu_stats"),
+            InlineKeyboardButton(text="💰 ארנק / רווח",            callback_data="menu_wallet"),
+        ],
+        [
+            InlineKeyboardButton(text="🧬 Incubator Engine",       callback_data="incubator_menu"),
+            InlineKeyboardButton(text="⚙️ God Mode",               callback_data="godmode_menu"),
+        ],
+        [
+            InlineKeyboardButton(text="🛑 PANIC — עצירת חירום",    callback_data="panic_stop"),
+            InlineKeyboardButton(text="🚨 Kill Switch",            callback_data="killswitch_btn"),
+        ],
+        [
+            InlineKeyboardButton(text="🔄 System Recovery",        callback_data="system_recovery"),
+            InlineKeyboardButton(text="🔒 Terminate Nexus",        callback_data="terminate_btn"),
+        ],
+        [
+            InlineKeyboardButton(text="🔗 Dashboard",              callback_data="dashboard_btn"),
+            InlineKeyboardButton(text="❓ Help & Commands",         callback_data="help_btn"),
         ],
     ])
 
@@ -1715,6 +1742,243 @@ async def handle_main_menu(callback: CallbackQuery) -> None:
     )
 
 
+# ── Full-menu new button handlers ─────────────────────────────────────────────
+
+async def handle_incubator_menu(callback: CallbackQuery) -> None:
+    """Show Incubator Engine status via inline button."""
+    await callback.answer("טוען נתוני Incubator...")
+    data = await _api_get("/api/incubator/projects")
+    if not data:
+        await callback.message.edit_text(
+            "❌ *Incubator* — לא ניתן להתחבר ל\\-API\\.",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=get_start_menu(),
+        )
+        return
+
+    projects = data.get("projects", [])
+    god_mode = "✅ פעיל" if data.get("god_mode") else "❌ כבוי"
+    live = [p for p in projects if p.get("status") == "live"]
+    pending = [p for p in projects if p.get("status") == "pending_review"]
+
+    lines = [
+        "🧬 *INCUBATOR ENGINE*",
+        "",
+        f"⚙️ God Mode: {god_mode}",
+        f"📦 פרויקטים פעילים: `{len(live)}`",
+        f"🔍 ממתינים לאישור: `{len(pending)}`",
+        f"📊 סה\"כ פרויקטים: `{len(projects)}`",
+    ]
+    if live:
+        lines += ["", "🟢 *פעילים:*"]
+        for p in live[:5]:
+            lines.append(f"  • `{_esc(p.get('project_id', '?'))}` — {_esc(p.get('niche', ''))}")
+    if pending:
+        lines += ["", "🟡 *ממתינים:*"]
+        for p in pending[:3]:
+            lines.append(f"  • `{_esc(p.get('project_id', '?'))}`")
+
+    await callback.message.edit_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 חזרה לתפריט", callback_data="start_menu")],
+        ]),
+    )
+
+
+async def handle_godmode_menu(callback: CallbackQuery) -> None:
+    """Show God Mode toggle panel."""
+    await callback.answer()
+    data = await _api_get("/api/incubator/projects")
+    god_mode_on = bool(data and data.get("god_mode"))
+    status_line = "✅ *GOD MODE פעיל*" if god_mode_on else "❌ *GOD MODE כבוי*"
+    await callback.message.edit_text(
+        f"⚙️ *GOD MODE — שליטה אוטומטית*\n\n"
+        f"סטטוס נוכחי: {status_line}\n\n"
+        f"כאשר פעיל, המערכת פורסת פרויקטים חדשים אוטומטית ללא אישור ידני\\.",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ הפעל God Mode",  callback_data="godmode_on_btn"),
+                InlineKeyboardButton(text="❌ כבה God Mode",   callback_data="godmode_off_btn"),
+            ],
+            [InlineKeyboardButton(text="🔙 חזרה לתפריט",      callback_data="start_menu")],
+        ]),
+    )
+
+
+async def handle_godmode_on_btn(callback: CallbackQuery) -> None:
+    """Enable God Mode via inline button."""
+    await callback.answer("מפעיל God Mode...")
+    data = await _api_post("/api/incubator/god-mode", {"enabled": True})
+    if data:
+        await callback.message.edit_text(
+            "✅ *GOD MODE הופעל\\!*\n\nהמערכת תפרוס פרויקטים חדשים אוטומטית\\.",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 חזרה לתפריט", callback_data="start_menu")],
+            ]),
+        )
+    else:
+        await callback.answer("❌ שגיאה — לא ניתן להפעיל God Mode", show_alert=True)
+
+
+async def handle_godmode_off_btn(callback: CallbackQuery) -> None:
+    """Disable God Mode via inline button."""
+    await callback.answer("מכבה God Mode...")
+    data = await _api_post("/api/incubator/god-mode", {"enabled": False})
+    if data:
+        await callback.message.edit_text(
+            "❌ *GOD MODE כובה\\.*\n\nהמערכת תדרוש אישור ידני לפני פריסת פרויקטים\\.",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 חזרה לתפריט", callback_data="start_menu")],
+            ]),
+        )
+    else:
+        await callback.answer("❌ שגיאה — לא ניתן לכבות God Mode", show_alert=True)
+
+
+async def handle_killswitch_btn(callback: CallbackQuery) -> None:
+    """Kill Switch confirmation panel via inline button."""
+    await callback.answer()
+    await callback.message.edit_text(
+        "🚨 *KILL SWITCH*\n\n"
+        "פעולה זו תעצור את כל הפרויקטים האוטונומיים הפעילים מיידית\\.\n\n"
+        "⚠️ האם אתה בטוח?",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🚨 כן, הפעל Kill Switch", callback_data="killswitch_confirm"),
+                InlineKeyboardButton(text="❌ ביטול",                callback_data="start_menu"),
+            ],
+        ]),
+    )
+
+
+async def handle_killswitch_confirm(callback: CallbackQuery) -> None:
+    """Execute Kill Switch after confirmation."""
+    await callback.answer("מפעיל Kill Switch...", show_alert=False)
+    data = await _api_get("/api/incubator/projects")
+    projects = (data or {}).get("projects", [])
+    killed = 0
+    for p in projects:
+        if p.get("status") in ("live", "pending_review"):
+            res = await _api_post(f"/api/incubator/kill/{p['project_id']}")
+            if res:
+                killed += 1
+    await _api_post("/api/incubator/god-mode", {"enabled": False})
+    await callback.message.edit_text(
+        f"🚨 *KILL SWITCH הופעל*\n\n"
+        f"✅ {killed} פרויקטים הופסקו\\.\n"
+        f"❌ God Mode כובה\\.",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 חזרה לתפריט", callback_data="start_menu")],
+        ]),
+    )
+
+
+async def handle_terminate_btn(callback: CallbackQuery) -> None:
+    """Terminate Nexus confirmation panel via inline button."""
+    await callback.answer()
+    await callback.message.edit_text(
+        "🔒 *TERMINATE NEXUS*\n\n"
+        "פעולה זו תבצע כיבוי מלא של כל מערכת Nexus:\n"
+        "• עצירת Workers\n"
+        "• שטיחת חשיפות\n"
+        "• ניתוק Redis\n\n"
+        "⚠️ *פעולה בלתי הפיכה\\!* האם להמשיך?",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔒 כן, סיים הכל", callback_data="terminate_confirm"),
+                InlineKeyboardButton(text="❌ ביטול",         callback_data="start_menu"),
+            ],
+        ]),
+    )
+
+
+async def handle_terminate_confirm(callback: CallbackQuery) -> None:
+    """Execute full Nexus termination after confirmation."""
+    await callback.answer("מבצע כיבוי מלא...", show_alert=False)
+    extra: dict[str, str] = {}
+    tok = (os.environ.get("NEXUS_KILL_SWITCH_API_TOKEN") or "").strip()
+    if tok:
+        extra["X-Nexus-Kill-Auth"] = tok
+    data = await _api_post(
+        "/api/system/kill-switch",
+        {"confirm": "TERMINATE_NEXUS_NOW", "evacuate": False},
+        extra_headers=extra or None,
+    )
+    status = _esc(data.get("status", "unknown")) if data else "לא זמין"
+    await callback.message.edit_text(
+        f"🔒 *NEXUS TERMINATED*\n\n`status`: {status}",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 חזרה לתפריט", callback_data="start_menu")],
+        ]),
+    )
+
+
+async def handle_dashboard_btn(callback: CallbackQuery) -> None:
+    """Send dashboard link via inline button."""
+    await callback.answer()
+    await callback.message.edit_text(
+        f"🔗 *Nexus Dashboard*\n\n"
+        f"פתח את מרכז השליטה:\n"
+        f"{_esc(DASHBOARD_URL)}\n\n"
+        f"_טיפ: השתמש ב\\-Tailscale VPN לגישה מכל מקום\\._",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 חזרה לתפריט", callback_data="start_menu")],
+        ]),
+    )
+
+
+async def handle_help_btn(callback: CallbackQuery) -> None:
+    """Show help & commands list via inline button."""
+    await callback.answer()
+    await callback.message.edit_text(
+        "❓ *פקודות זמינות*\n\n"
+        "/start — תפריט ראשי\n"
+        "/dashboard — קישור לדשבורד\n"
+        "/polymarket — לוח שליטה Polymarket\n"
+        "/poly\\_buy \\<id\\> \\<amount\\> — קנה YES\n"
+        "/poly\\_sell \\<id\\> \\<amount\\> — מכור\n"
+        "/set\\_deposit \\<amount\\> — הגדר הפקדה\n"
+        "/set\\_withdrawn \\<amount\\> — הגדר משיכה\n"
+        "/killswitch — עצור פרויקטים אוטונומיים\n"
+        "/terminate\\_nexus\\_now — כיבוי מלא\n"
+        "/godmode\\_on — הפעל God Mode\n"
+        "/godmode\\_off — כבה God Mode\n"
+        "/incubator — סטטוס Incubator\n"
+        "/help — הצג עזרה\n\n"
+        "_כפתורי HITL מופיעים אוטומטית כשמשימה ממתינה לאישור\\._",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 חזרה לתפריט", callback_data="start_menu")],
+        ]),
+    )
+
+
+async def handle_start_menu(callback: CallbackQuery) -> None:
+    """Return to the full /start inline menu."""
+    await callback.answer()
+    name = callback.from_user.first_name if callback.from_user else "מפעיל"
+    welcome = (
+        "🎯 *Nexus Orchestrator — מרכז פיקוד*\n\n"
+        f"ברוך הבא, {_esc(name)}\\!\n\n"
+        "המערכת פעילה — בחר פעולה:"
+    )
+    await callback.message.edit_text(
+        welcome,
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=get_start_menu(),
+    )
+
+
 async def cmd_dashboard(message: Message) -> None:
     """Send a direct link to the dashboard."""
     await message.answer(
@@ -2277,44 +2541,6 @@ async def handle_system_recovery_callback(callback: CallbackQuery) -> None:
     await callback.answer("✅ System Recovery activated!", show_alert=True)
 
 
-# ── Remote Prompt Bridge ──────────────────────────────────────────────────────
-
-# Jacob Hatan's Telegram user ID — replace with the actual user ID if it differs
-# from the admin chat ID. Used to gate the remote prompt bridge.
-_JACOB_USER_ID: int = int(os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "0") or "0")
-
-_PROMPTS_FILE = Path(__file__).resolve().parent.parent / "INCOMING_PROMPTS.md"
-
-
-async def handle_remote_prompt(message: Message) -> None:
-    """Intercept plain-text messages from Jacob and write them to INCOMING_PROMPTS.md."""
-    if not message.from_user or message.from_user.id != _JACOB_USER_ID:
-        return
-
-    text = (message.text or "").strip()
-    if not text:
-        return
-
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    entry = (
-        f"\n### [{timestamp}] - FROM IPHONE\n"
-        f"**PROMPT**: {text}\n"
-        f"**STATUS**: PENDING\n"
-        f"---\n"
-    )
-
-    try:
-        with _PROMPTS_FILE.open("a", encoding="utf-8") as fh:
-            fh.write(entry)
-    except Exception as exc:
-        log.error("remote_bridge_write_error", error=str(exc))
-        await message.answer("❌ Failed to record prompt on Master.")
-        return
-
-    log.info("[REMOTE BRIDGE] New prompt received from Jacob Hatan", prompt=text[:120])
-    await message.answer("✅ Prompt recorded in Master\\. Cursor is now analyzing\\.")
-
-
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 
 def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
@@ -2359,6 +2585,19 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     dp.callback_query.register(handle_menu_cluster, F.data == "menu_cluster")
     dp.callback_query.register(handle_menu_wallet, F.data == "menu_wallet")
     dp.callback_query.register(handle_main_menu,   F.data == "main_menu")
+
+    # Full-menu new button handlers
+    dp.callback_query.register(handle_incubator_menu,    F.data == "incubator_menu")
+    dp.callback_query.register(handle_godmode_menu,      F.data == "godmode_menu")
+    dp.callback_query.register(handle_godmode_on_btn,    F.data == "godmode_on_btn")
+    dp.callback_query.register(handle_godmode_off_btn,   F.data == "godmode_off_btn")
+    dp.callback_query.register(handle_killswitch_btn,    F.data == "killswitch_btn")
+    dp.callback_query.register(handle_killswitch_confirm, F.data == "killswitch_confirm")
+    dp.callback_query.register(handle_terminate_btn,     F.data == "terminate_btn")
+    dp.callback_query.register(handle_terminate_confirm, F.data == "terminate_confirm")
+    dp.callback_query.register(handle_dashboard_btn,     F.data == "dashboard_btn")
+    dp.callback_query.register(handle_help_btn,          F.data == "help_btn")
+    dp.callback_query.register(handle_start_menu,        F.data == "start_menu")
 
     # Polymarket control panel callbacks
     dp.callback_query.register(handle_poly_menu,         F.data == "poly_menu")
@@ -2484,6 +2723,19 @@ async def run() -> None:
     dp.callback_query.register(handle_menu_wallet, F.data == "menu_wallet")
     dp.callback_query.register(handle_main_menu,   F.data == "main_menu")
 
+    # Full-menu new button handlers
+    dp.callback_query.register(handle_incubator_menu,    F.data == "incubator_menu")
+    dp.callback_query.register(handle_godmode_menu,      F.data == "godmode_menu")
+    dp.callback_query.register(handle_godmode_on_btn,    F.data == "godmode_on_btn")
+    dp.callback_query.register(handle_godmode_off_btn,   F.data == "godmode_off_btn")
+    dp.callback_query.register(handle_killswitch_btn,    F.data == "killswitch_btn")
+    dp.callback_query.register(handle_killswitch_confirm, F.data == "killswitch_confirm")
+    dp.callback_query.register(handle_terminate_btn,     F.data == "terminate_btn")
+    dp.callback_query.register(handle_terminate_confirm, F.data == "terminate_confirm")
+    dp.callback_query.register(handle_dashboard_btn,     F.data == "dashboard_btn")
+    dp.callback_query.register(handle_help_btn,          F.data == "help_btn")
+    dp.callback_query.register(handle_start_menu,        F.data == "start_menu")
+
     # Polymarket control panel callbacks
     dp.callback_query.register(handle_poly_menu,          F.data == "poly_menu")
     dp.callback_query.register(handle_poly_portfolio,     F.data == "poly_portfolio")
@@ -2521,8 +2773,12 @@ async def run() -> None:
         F.data == "system_recovery",
     )
 
-    # Remote Prompt Bridge — must be last so it only catches unhandled plain text
-    dp.message.register(handle_remote_prompt, F.text)
+    # Remote Prompt Bridge — registered last so all Command filters take priority
+    dp.message.register(
+        handle_remote_prompt,
+        F.from_user.id == _JACOB_USER_ID,
+        ~F.text.startswith("/"),
+    )
 
     log.info(
         "telegram_bot_starting",
