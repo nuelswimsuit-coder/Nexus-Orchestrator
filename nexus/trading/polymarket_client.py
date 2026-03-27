@@ -332,11 +332,14 @@ class PolymarketClient:
                         _agent_debug_ndjson_45(
                             "H4",
                             "polymarket_client.py:get_balance_usdc",
-                            "sdk_zero_dict_fallback",
-                            {"raw_balance": raw},
+                            "sdk_collateral_zero_definitive",
+                            {
+                                "raw_balance": raw,
+                                "allowance": resp.get("allowance"),
+                            },
                         )
-                        # SDK returned 0 — relayer wallet may be unfunded; fall through
-                        # to portfolio address REST check below
+                        # Definitive CLOB reading: do not substitute data-api portfolio value.
+                        return 0.0
                     elif isinstance(resp, (int, float)):
                         val = float(resp)
                         if val > 1_000_000:
@@ -349,6 +352,7 @@ class PolymarketClient:
                                 {"sdk_balance_usd": val},
                             )
                             return val
+                        return 0.0
                 except asyncio.TimeoutError:
                     log.error("polymarket.get_balance_timeout", method="get_balance_allowance")
                     raise
@@ -373,51 +377,16 @@ class PolymarketClient:
                         val = float(resp.get("balance", resp.get("USDC", 0.0)))
                         if val > 0:
                             return val
+                        return 0.0
                 except asyncio.TimeoutError:
                     log.error("polymarket.get_balance_timeout", method="get_balance")
                     raise
                 except Exception as exc:
                     log.debug("polymarket.get_balance_sdk_miss", method="get_balance", error=str(exc))
 
-        # REST fallback: Polymarket data-api for the *signing / funder* wallet only.
-        # Do not use POLYMARKET_PORTFOLIO_ADDRESS here — the UI may track a different
-        # funded account; CLOB orders spend collateral on the relayer key / funder only.
-        portfolio_addr = (self._funder or "").strip()
-        if portfolio_addr:
-            try:
-                async with httpx.AsyncClient(timeout=8.0) as hclient:
-                    r = await hclient.get(
-                        f"https://data-api.polymarket.com/value?user={portfolio_addr.lower()}"
-                    )
-                if r.status_code == 200:
-                    data = r.json()
-                    if isinstance(data, list):
-                        if not data:
-                            return 0.0
-                        total_val = float(data[0].get("value", 0) or 0)
-                        log.info(
-                            "polymarket.balance_from_data_api",
-                            address=portfolio_addr[:10] + "…",
-                            balance_usd=total_val,
-                        )
-                        _agent_debug_ndjson_45(
-                            "H2",
-                            "polymarket_client.py:get_balance_usdc",
-                            "data_api_balance_used_for_kill_switch",
-                            {
-                                "returned_usd": total_val,
-                                "query_addr_short": f"{portfolio_addr[:6]}…{portfolio_addr[-4:]}"
-                                if len(portfolio_addr) >= 10
-                                else portfolio_addr,
-                                "data_api_fallback": True,
-                            },
-                        )
-                        return total_val
-            except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
-                log.error("polymarket.get_balance_data_api_timeout", error=str(exc))
-                raise
-            except Exception as exc:
-                log.debug("polymarket.get_balance_data_api_error", error=str(exc))
+        # No REST fallback to data-api /value: that endpoint is *total portfolio value*
+        # (positions + cash), not CLOB collateral. Using it made the UI show hundreds of
+        # "tradable" USDC while post_order failed with balance 0.
 
         log.warning("polymarket.get_balance_unavailable", default=100.0)
         _agent_debug_ndjson_45(
