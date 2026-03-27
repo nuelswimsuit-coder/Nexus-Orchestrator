@@ -2235,6 +2235,9 @@ function PolymarketTradingView({
       : killSwitchBalance > 0
         ? killSwitchBalance
         : Math.max(bot?.total_pnl_usd ?? 0, 0);
+  // #region agent log
+  fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',location:'NexusOsGodMode.tsx:portfolioValue',message:'portfolio_computed',data:{collateralRaw,killSwitchBalance,portfolioValue,botPnl:bot?.total_pnl_usd,collateral_usdc:data?.collateral_usdc,tradeLogKsb:tradeLog?.kill_switch_balance_usd},timestamp:Date.now(),hypothesisId:'H-D'})}).catch(()=>{});
+  // #endregion
 
   const totalPnl = bot?.total_pnl_usd ?? 0;
   const realizedPnl = bot?.realized_pnl_usd ?? 0;

@@ -51,10 +51,29 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
     """Aggregate several prediction/redis sources into one payload for the God Mode UI."""
 
     async def _balance() -> float | None:
+        # #region agent log
+        import json as _json, time as _time
+        _log_path = "debug-c21539.log"
+        def _dbg(msg, data):
+            try:
+                with open(_log_path, "a") as _f:
+                    _f.write(_json.dumps({"sessionId":"c21539","timestamp":int(_time.time()*1000),"location":"polymarket.py:_balance","message":msg,"data":data}) + "\n")
+            except Exception: pass
+        # #endregion
         try:
             c = PolymarketClient()
-            return await asyncio.wait_for(c.get_balance_usdc(), timeout=4.0)
+            # #region agent log
+            _dbg("balance_client_init", {"private_key_set": bool(c._private_key), "funder": c._funder, "clob_none": c._clob is None, "hypothesisId": "H-A"})
+            # #endregion
+            result = await asyncio.wait_for(c.get_balance_usdc(), timeout=4.0)
+            # #region agent log
+            _dbg("balance_result", {"result": result, "hypothesisId": "H-A"})
+            # #endregion
+            return result
         except Exception as exc:
+            # #region agent log
+            _dbg("balance_exception", {"error": str(exc), "type": type(exc).__name__, "hypothesisId": "H-B"})
+            # #endregion
             log.debug("polymarket_dashboard_balance_skip", error=str(exc))
             return None
 
@@ -115,6 +134,13 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
         collateral = f"{bal:.2f}"
     elif poly_bot.available:
         collateral = f"{max(poly_bot.total_pnl_usd, 0.0):.2f}"
+    # #region agent log
+    try:
+        import json as _j2, time as _t2
+        with open("debug-c21539.log", "a") as _f2:
+            _f2.write(_j2.dumps({"sessionId":"c21539","timestamp":int(_t2.time()*1000),"location":"polymarket.py:collateral","message":"collateral_computed","data":{"bal":bal,"collateral":collateral,"poly_bot_available":poly_bot.available,"poly_bot_pnl":float(poly_bot.total_pnl_usd),"hypothesisId":"H-C"}}) + "\n")
+    except Exception: pass
+    # #endregion
 
     trading_history: list[dict[str, Any]] = []
     for e in trades.entries[:25]:
