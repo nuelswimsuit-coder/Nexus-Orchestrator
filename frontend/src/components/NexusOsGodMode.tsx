@@ -2282,6 +2282,13 @@ function PolymarketTradingView({
   const unrealizedPnl = bot?.unrealized_pnl_usd ?? 0;
   const isPnlPositive = totalPnl >= 0;
 
+  /** POLYMARKET_PORTFOLIO_ADDRESS (dashboard) vs POLYMARKET_SIGNER_ADDRESS (CLOB orders) */
+  const polyWalletMismatch = useMemo(() => {
+    const p = (data?.portfolio_address ?? "").trim().toLowerCase();
+    const s = (data?.signer_address ?? "").trim().toLowerCase();
+    return Boolean(p && s && p !== s);
+  }, [data?.portfolio_address, data?.signer_address]);
+
   const positions = useMemo(() => {
     // Prefer real Polymarket positions from the portfolio API
     const apiPositions = data?.portfolio_positions_list;
@@ -2468,6 +2475,24 @@ function PolymarketTradingView({
 
   return (
     <div className="space-y-6" style={{ background: "transparent" }}>
+
+      {polyWalletMismatch && data?.portfolio_address && data?.signer_address && (
+        <div className="rounded-xl border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm">
+          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-amber-400 mb-2">
+            <AlertTriangle size={14} />
+            Trading wallet ≠ portfolio view / ארנק מסחר שונה מתצוגת התיק
+          </div>
+          <p className="text-amber-100/95 leading-relaxed text-[13px]">
+            Positions and balances are loaded for{" "}
+            <span className="font-mono text-white">{data.portfolio_address.slice(0, 6)}…{data.portfolio_address.slice(-4)}</span>
+            {" "}(<code className="text-amber-200/90">POLYMARKET_PORTFOLIO_ADDRESS</code>). Orders are signed by{" "}
+            <span className="font-mono text-white">{data.signer_address.slice(0, 6)}…{data.signer_address.slice(-4)}</span>
+            {" "}— that wallet must hold USDC on Polymarket. Either fund that address, set{" "}
+            <code className="text-amber-200/90">POLYMARKET_RELAYER_KEY</code> to the <strong className="text-white">funded</strong> account&apos;s key and matching{" "}
+            <code className="text-amber-200/90">POLYMARKET_SIGNER_ADDRESS</code>, or remove <code className="text-amber-200/90">POLYMARKET_PORTFOLIO_ADDRESS</code> so the UI matches the signing wallet.
+          </p>
+        </div>
+      )}
 
       {/* ══ PORTFOLIO HEADER (Polymarket clone) ══════════════════════════════ */}
       <HackerCard className="p-6" glow="cyan">

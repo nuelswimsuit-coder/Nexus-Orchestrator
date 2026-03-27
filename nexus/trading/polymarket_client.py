@@ -235,12 +235,13 @@ class PolymarketClient:
     # ── Balance & kill-switch ─────────────────────────────────────────────────
 
     async def get_balance_usdc(self) -> float:
-        """Return the USDC balance for the configured funder address.
+        """Return spendable USDC (collateral) for the CLOB signing / funder wallet.
 
-        Tries the SDK first (several method-name variants), then falls back
-        to a direct CLOB REST call.  Returns ``100.0`` when every method fails
-        so callers can distinguish a genuine low balance from a connectivity
-        issue.
+        Tries the SDK first, then the Polymarket data API for ``POLYMARKET_SIGNER_ADDRESS``
+        only — not ``POLYMARKET_PORTFOLIO_ADDRESS`` (UI may point at another account).
+
+        Returns ``100.0`` when every method fails so callers can distinguish a genuine
+        low balance from a connectivity issue.
 
         Raises:
             httpx.TimeoutException: if the REST fallback request times out.
@@ -337,14 +338,10 @@ class PolymarketClient:
                 except Exception as exc:
                     log.debug("polymarket.get_balance_sdk_miss", method="get_balance", error=str(exc))
 
-        # REST fallback: query POLYMARKET_PORTFOLIO_ADDRESS (personal funded wallet)
-        # then POLYMARKET_SIGNER_ADDRESS via the Polymarket data API.
-        # The SDK's get_balance_allowance is scoped to the relayer/signing key address
-        # which may hold $0 USDC even when the portfolio wallet is funded.
-        portfolio_addr = (
-            os.getenv("POLYMARKET_PORTFOLIO_ADDRESS", "").strip()
-            or self._funder
-        )
+        # REST fallback: Polymarket data-api for the *signing / funder* wallet only.
+        # Do not use POLYMARKET_PORTFOLIO_ADDRESS here — the UI may track a different
+        # funded account; CLOB orders spend collateral on the relayer key / funder only.
+        portfolio_addr = (self._funder or "").strip()
         if portfolio_addr:
             try:
                 async with httpx.AsyncClient(timeout=8.0) as hclient:
@@ -353,7 +350,9 @@ class PolymarketClient:
                     )
                 if r.status_code == 200:
                     data = r.json()
-                    if isinstance(data, list) and data:
+                    if isinstance(data, list):
+                        if not data:
+                            return 0.0
                         total_val = float(data[0].get("value", 0) or 0)
                         log.info(
                             "polymarket.balance_from_data_api",
