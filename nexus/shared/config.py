@@ -16,6 +16,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from nexus.shared.redis_util import (
     apply_redis_url_to_environment,
+    apply_remote_worker_env_overrides,
+    apply_worker_cli_redis_host_override,
     coerce_redis_url_for_platform,
     default_redis_url_string,
 )
@@ -24,6 +26,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ENV_FILE = _REPO_ROOT / ".env"
 if _ENV_FILE.is_file():
     load_dotenv(_ENV_FILE, override=False)
+apply_remote_worker_env_overrides()
+apply_worker_cli_redis_host_override()
 apply_redis_url_to_environment()
 
 

@@ -36,6 +36,7 @@ from typing import Any, Literal
 import httpx
 import structlog
 
+from nexus.ndjson_debug_log import ndjson_debug_log_path
 from nexus.trading.config import (
     PAPER_TRADING,
     PAPER_TRADING_AMOUNT_USD,
@@ -225,7 +226,7 @@ class PolymarketClient:
                     # #region agent log
                     import json as _json, time as _time
                     try:
-                        with open("debug-020f7b.log", "a") as _f:
+                        with open(ndjson_debug_log_path(), "a") as _f:
                             _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:get_balance_usdc","message":"balance_allowance_raw_response","data":{"resp_type":type(resp).__name__,"resp_repr":str(resp)[:300]},"hypothesisId":"H-C"}) + "\n")
                     except Exception: pass
                     # #endregion
@@ -254,7 +255,7 @@ class PolymarketClient:
                     # #region agent log
                     import json as _json, time as _time
                     try:
-                        with open("debug-020f7b.log", "a") as _f:
+                        with open(ndjson_debug_log_path(), "a") as _f:
                             _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:get_balance_usdc","message":"balance_allowance_exception","data":{"error":str(exc),"error_type":type(exc).__name__},"hypothesisId":"H-C"}) + "\n")
                     except Exception: pass
                     # #endregion
@@ -271,7 +272,7 @@ class PolymarketClient:
                     # #region agent log
                     import json as _json, time as _time
                     try:
-                        with open("debug-020f7b.log", "a") as _f:
+                        with open(ndjson_debug_log_path(), "a") as _f:
                             _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:get_balance_usdc","message":"legacy_balance_raw_response","data":{"resp_type":type(resp).__name__,"resp_repr":str(resp)[:300]},"hypothesisId":"H-C"}) + "\n")
                     except Exception: pass
                     # #endregion
@@ -315,7 +316,7 @@ class PolymarketClient:
                         # #region agent log
                         import json as _json, time as _time
                         try:
-                            with open("debug-020f7b.log", "a") as _f:
+                            with open(ndjson_debug_log_path(), "a") as _f:
                                 _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:get_balance_usdc","message":"data_api_balance_result","data":{"address":portfolio_addr[:12],"total_val":total_val},"hypothesisId":"H-C-fix"}) + "\n")
                         except Exception: pass
                         # #endregion
@@ -341,7 +342,7 @@ class PolymarketClient:
             # #region agent log
             import json as _json, time as _time
             try:
-                with open("debug-020f7b.log", "a") as _f:
+                with open(ndjson_debug_log_path(), "a") as _f:
                     _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:check_kill_switch","message":"kill_switch_balance_timeout","data":{"error":str(exc)},"hypothesisId":"H-C"}) + "\n")
             except Exception: pass
             # #endregion
@@ -352,7 +353,7 @@ class PolymarketClient:
         # #region agent log
         import json as _json, time as _time
         try:
-            with open("debug-020f7b.log", "a") as _f:
+            with open(ndjson_debug_log_path(), "a") as _f:
                 _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:check_kill_switch","message":"kill_switch_balance_result","data":{"balance_usd":balance,"threshold":KILL_SWITCH_BALANCE_USD,"will_halt":balance < KILL_SWITCH_BALANCE_USD},"hypothesisId":"H-C"}) + "\n")
         except Exception: pass
         # #endregion
@@ -409,7 +410,7 @@ class PolymarketClient:
         import json as _json, time as _time
         def _dbg_client(msg, data, hyp="H-B"):
             try:
-                with open("debug-020f7b.log", "a") as _f:
+                with open(ndjson_debug_log_path(), "a") as _f:
                     _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:place_order_async","message":msg,"data":data,"hypothesisId":hyp}) + "\n")
             except Exception: pass
         _dbg_client("place_order_entry", {"token_id": token_id[:20], "side": side, "price": price, "budget_usd": budget_usd, "clob_is_none": self._clob is None, "private_key_set": bool(self._private_key), "funder_set": bool(self._funder)}, "H-B/H-C")
@@ -486,7 +487,7 @@ class PolymarketClient:
             raise
         except Exception as exc:
             log.error("polymarket.place_order_error", error=str(exc), token_id=token_id)
-            base.error = str(exc)[:200]
+            base.error = str(exc)[:500]
             return base
 
     async def place_sell_async(
@@ -570,7 +571,7 @@ class PolymarketClient:
             raise
         except Exception as exc:
             log.error("polymarket.place_sell_error", error=str(exc), token_id=token_id)
-            base.error = str(exc)[:200]
+            base.error = str(exc)[:500]
             return base
 
     def _place_limit_order_sync(

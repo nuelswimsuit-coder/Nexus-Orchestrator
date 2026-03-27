@@ -27,8 +27,8 @@ import asyncio
 import json
 import os
 import runpy
-import socket
 import signal
+import socket
 import sys
 from multiprocessing import Process
 from pathlib import Path
@@ -38,7 +38,9 @@ from typing import Any
 # Windows: force SelectorEventLoop — ProactorEventLoop is unstable with
 # long-lived Redis connections and causes WinError 121 / WinError 64.
 if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    from asyncio.windows_events import WindowsSelectorEventLoopPolicy
+
+    asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
 
 from nexus.utils.resources import GlobalResourceManager, load_node_config
 

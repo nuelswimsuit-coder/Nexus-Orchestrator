@@ -25,12 +25,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import os
 import sys
 from pathlib import Path
 
 # Windows: force SelectorEventLoop — ProactorEventLoop is unstable with
 # long-lived Redis connections and causes WinError 121 / WinError 64.
+# Use asyncio.WindowsSelectorEventLoopPolicy() (Python 3.11+) — avoids deprecated
+# import from asyncio.windows_events (Python 3.14+).
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -49,10 +52,93 @@ from arq import run_worker
 
 from nexus.shared.config import settings
 from nexus.shared.logging_config import configure_logging
-from nexus.shared.redis_util import default_redis_host
+from nexus.shared.redis_util import (
+    LINUX_FLEET_REDIS_HOST,
+    default_redis_host,
+    is_remote_worker_process,
+    redis_host_is_loopback,
+)
 from nexus.shared.system_settings import read_system_settings
 
 log = structlog.get_logger(__name__)
+
+
+def _worker_redis_broker_check(redis_url: str) -> bool:
+    """Ping Redis once; on ``ConnectionRefusedError`` print a large banner with target IP."""
+    from urllib.parse import urlparse  # noqa: PLC0415
+
+    try:
+        import redis as redis_sync  # type: ignore[import-not-found]
+        from redis.exceptions import (  # type: ignore[import-not-found]
+            ConnectionError as RedisConnectionError,
+        )
+    except ImportError:
+        print("❌ redis package not installed — cannot verify broker.")
+        return False
+
+    if not (redis_url or "").strip():
+        print("❌ REDIS_URL is empty — cannot verify broker.")
+        return False
+
+    u = urlparse(redis_url)
+    host = (u.hostname or "?").strip("[]")
+    port = u.port or 6379
+    print(f"[NETWORK] Attempting to reach Master Redis at {host}:{port}...")
+
+    def _refusal_banner() -> None:
+        print(
+            "\n"
+            + "#" * 72
+            + "\n"
+            + "#  NEXUS WORKER — REDIS CONNECTION REFUSED\n"
+            + "#" * 72
+            + f"\n#  TRIED IP / HOST:  {host}\n"
+            + f"#  TRIED PORT:       {port}\n"
+            + "#\n"
+            + "#  Nothing accepted the connection on that address (wrong IP, Redis\n"
+            + "#  not listening on LAN, protected-mode, or firewall blocking 6379).\n"
+            + "#" * 72
+            + "\n",
+            flush=True,
+        )
+
+    def _is_connection_refused(exc: BaseException) -> bool:
+        if isinstance(exc, ConnectionRefusedError):
+            return True
+        en = getattr(exc, "errno", None)
+        if en == errno.ECONNREFUSED:
+            return True
+        if getattr(exc, "winerror", None) == 10061:
+            return True
+        return isinstance(exc, RedisConnectionError) and "refused" in str(exc).lower()
+
+    try:
+        client = redis_sync.from_url(
+            redis_url,
+            socket_connect_timeout=20.0,
+            socket_timeout=20.0,
+            socket_keepalive=True,
+            health_check_interval=30,
+        )
+        try:
+            ok = bool(client.ping())
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+        if not ok:
+            print("❌ Redis PING returned false.")
+            return False
+        return True
+    except (ConnectionRefusedError, RedisConnectionError, OSError, ConnectionError) as exc:
+        if _is_connection_refused(exc):
+            _refusal_banner()
+            return False
+        print(
+            f"❌ Master Redis not found at {host}. Verify Master IP and Firewall! ({exc})"
+        )
+        return False
 
 # Force-load .env before reading Telegram credentials so that values are
 # available regardless of the working directory from which this script runs.
@@ -71,11 +157,15 @@ if _ENV_FILE.exists():
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Start Nexus ARQ worker node")
-    _default_host = (
-        os.getenv("MASTER_IP")
-        or os.getenv("REDIS_HOST")
-        or default_redis_host()
-    ).strip() or default_redis_host()
+    _env_master = (os.getenv("MASTER_IP") or "").strip()
+    _env_redis = (os.getenv("REDIS_HOST") or "").strip()
+    _env_host = _env_master or _env_redis
+    if _env_host and not redis_host_is_loopback(_env_host):
+        _default_host = _env_host
+    elif is_remote_worker_process() and sys.platform == "win32":
+        _default_host = LINUX_FLEET_REDIS_HOST
+    else:
+        _default_host = (default_redis_host() or "").strip() or LINUX_FLEET_REDIS_HOST
     parser.add_argument(
         "--master-host",
         "--master-ip",
@@ -95,7 +185,13 @@ def _parse_args() -> argparse.Namespace:
 
 def _apply_master_redis(master_host: str) -> None:
     from nexus.shared.redis_util import coerce_redis_url_for_platform  # noqa: PLC0415
-    host = (master_host or "127.0.0.1").strip() or "127.0.0.1"
+    raw = (master_host or "").strip()
+    if raw:
+        host = raw
+    elif is_remote_worker_process() and sys.platform == "win32":
+        host = LINUX_FLEET_REDIS_HOST
+    else:
+        host = "127.0.0.1"
     port = os.getenv("REDIS_PORT", "6379")
     db = os.getenv("REDIS_DB", "0")
     url = coerce_redis_url_for_platform(f"redis://{host}:{port}/{db}")
@@ -106,18 +202,28 @@ def _apply_master_redis(master_host: str) -> None:
 
 def main() -> None:
     args = _parse_args()
-    master_host = (args.master_host or "127.0.0.1").strip() or "127.0.0.1"
+    master_host = (args.master_host or "").strip()
+    if not master_host:
+        master_host = (
+            LINUX_FLEET_REDIS_HOST
+            if (is_remote_worker_process() and sys.platform == "win32")
+            else "127.0.0.1"
+        )
     _apply_master_redis(master_host)
+
+    if not _worker_redis_broker_check(os.environ.get("REDIS_URL", "")):
+        raise SystemExit(1)
+
+    from urllib.parse import urlparse as _urlparse  # noqa: PLC0415
+
+    from nexus.worker.listener import WorkerSettings  # noqa: PLC0415
 
     # WorkerSettings reads env at import time, so import it only after
     # --master-host / env overrides have been applied.
-    from nexus.worker.listener import WorkerSettings  # noqa: PLC0415
-
     # CLI wins over any stale class-level redis_settings built from prior imports
     # or DSN edge cases: ARQ uses this object when the worker starts.
-    # Derive the arq host from the already-coerced REDIS_URL so we always
-    # connect via [::1] on Windows. arq expects a bare hostname (no brackets).
-    from urllib.parse import urlparse as _urlparse  # noqa: PLC0415
+    # Derive the arq host from the already-coerced REDIS_URL (local [::1] on
+    # Windows master, LAN fleet IP on remote workers). arq expects a bare hostname.
     _coerced_url = os.environ.get("REDIS_URL", "")
     _parsed_host = (_urlparse(_coerced_url).hostname or master_host).strip("[]")
     WorkerSettings.redis_settings.host = _parsed_host

@@ -24,6 +24,8 @@ from nexus.api.dependencies import RedisDep
 from nexus.api.routers import prediction as prediction_routes
 from nexus.trading.poly_bot_state import POLY_BOT_PNL_KEY
 from nexus.trading.polymarket_client import PolymarketClient, TradingHalted, _CLOB_HOST
+from nexus.ndjson_debug_log import ndjson_debug_log_path
+from nexus.trading.wallet_manager import get_polymarket_funder_address
 
 _http_client: httpx.AsyncClient | None = None
 
@@ -425,6 +427,37 @@ async def polymarket_live_orderbook(
     }
 
 
+def _enrich_manual_order_error(err: str | None) -> tuple[str, bool]:
+    """
+    When CLOB returns zero balance, append operator guidance (signing wallet vs portfolio UI).
+    Returns (detail_string, was_enriched).
+    """
+    if not err:
+        return "Order rejected", False
+    low = err.lower()
+    if "not enough balance" not in low and "balance: 0" not in low:
+        return err, False
+    funder = (get_polymarket_funder_address() or "").strip()
+    portfolio = (os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()
+    addr_hint = ""
+    if funder and len(funder) >= 10:
+        addr_hint = f" Signing wallet: {funder[:6]}…{funder[-4]}."
+    mismatch = ""
+    if portfolio and funder and portfolio.lower() != funder.lower():
+        mismatch = (
+            " POLYMARKET_PORTFOLIO_ADDRESS (UI) differs from the API signing address — "
+            "funds must be on the signing wallet for CLOB orders."
+        )
+    detail = (
+        f"{err}\n\n"
+        "CLOB has no USDC (or allowance) for the wallet that signs orders "
+        "(POLYMARKET_RELAYER_KEY must derive POLYMARKET_SIGNER_ADDRESS; that address must hold USDC on Polymarket)."
+        f"{addr_hint}{mismatch}\n\n"
+        "אין USDC בכתובת החתימה — הפקד ל־Polymarket על אותה כתובת או עדכן מפתח/כתובת לחשבון הממומן."
+    )
+    return detail, True
+
+
 class ManualOrderBody(BaseModel):
     token_id: str = Field(min_length=8, max_length=256)
     side: Literal["BUY", "SELL"]
@@ -439,7 +472,7 @@ async def polymarket_manual_order(body: ManualOrderBody, redis: RedisDep) -> dic
     import json as _json, time as _time
     def _dbg(msg, data, hyp="H-B"):
         try:
-            with open("debug-020f7b.log", "a") as _f:
+            with open(ndjson_debug_log_path(), "a") as _f:
                 _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket.py:manual_order","message":msg,"data":data,"hypothesisId":hyp}) + "\n")
         except Exception: pass
     _dbg("manual_order_entry", {"token_id": body.token_id[:20], "side": body.side, "amount": body.amount, "price": body.price}, "H-A/H-B")
@@ -487,10 +520,16 @@ async def polymarket_manual_order(body: ManualOrderBody, redis: RedisDep) -> dic
         raise HTTPException(status_code=504, detail="Order request timed out") from None
 
     if not result.success:
-        raise HTTPException(
-            status_code=400,
-            detail=result.error or "Order rejected",
+        raw_err = result.error or "Order rejected"
+        detail, enriched = _enrich_manual_order_error(raw_err)
+        # #region agent log
+        _dbg(
+            "manual_order_fail",
+            {"enriched": enriched, "err_prefix": raw_err[:120]},
+            "H-Balance",
         )
+        # #endregion
+        raise HTTPException(status_code=400, detail=detail)
 
     return {
         "ok": True,
