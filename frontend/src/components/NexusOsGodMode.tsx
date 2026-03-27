@@ -201,7 +201,13 @@ const DECISION_DOT: Record<string, string> = {
 // ── Root ────────────────────────────────────────────────────────────────────
 
 export default function NexusOsGodMode() {
-  const [activeTab, setActiveTab] = useState("master-hub");
+  const [activeTab, setActiveTabRaw] = useState("master-hub");
+  // #region agent log
+  const setActiveTab = (tab: string) => {
+    fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',location:'NexusOsGodMode.tsx:SET_ACTIVE_TAB',message:'setActiveTab called',data:{tab,prev:activeTab},timestamp:Date.now(),hypothesisId:'G'})}).catch(()=>{});
+    setActiveTabRaw(tab);
+  };
+  // #endregion
   const [currentTime, setCurrentTime] = useState("");
   const [marketData, setMarketData] = useState<GodModeDashboard | null>(null);
 
@@ -2186,6 +2192,9 @@ function PolymarketTradingView({
   const [batchType, setBatchType] = useState("LIMIT");
   const [batchOrderSel, setBatchOrderSel] = useState("ALL");
   const [batchPrice, setBatchPrice] = useState("0.21");
+  const [depositModal, setDepositModal] = useState<"deposit" | "withdraw" | null>(null);
+  const [depositInput, setDepositInput] = useState("");
+  const [depositStatus, setDepositStatus] = useState<{ msg: string; ok: boolean } | null>(null);
   const [batchSize, setBatchSize] = useState("100");
   const [batchStatus, setBatchStatus] = useState<string | null>(null);
   const [positionBatchCmds, setPositionBatchCmds] = useState<Record<string, string>>({});
