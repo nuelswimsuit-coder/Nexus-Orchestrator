@@ -97,7 +97,6 @@ from aiogram.types import (  # noqa: E402
     ReplyKeyboardMarkup,
 )
 
-from nexus.ndjson_debug_log import ndjson_debug_log_path  # noqa: E402
 from nexus.shared.config import settings  # noqa: E402
 from nexus.shared.logging_config import configure_logging  # noqa: E402
 
@@ -323,27 +322,13 @@ async def _api_post(
     extra_headers: dict[str, str] | None = None,
 ) -> dict | None:
     """POST JSON to the FastAPI server. Returns None on error."""
-    # #region agent log
-    import json as _json, time as _time
-    def _dbg_log(msg, data):
-        try:
-            with open(ndjson_debug_log_path(), "a") as _f:
-                _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"start_telegram_bot.py:_api_post","message":msg,"data":data,"hypothesisId":"H-D"}) + "\n")
-        except Exception: pass
-    # #endregion
     try:
         hdrs = {"Content-Type": "application/json", **(extra_headers or {})}
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(f"{API_BASE}{path}", json=payload or {}, headers=hdrs)
-            # #region agent log
-            _dbg_log("api_post_response", {"path": path, "status_code": resp.status_code, "body_preview": resp.text[:300], "hypothesisId": "H-A/H-B/H-C/H-D/H-E"})
-            # #endregion
             resp.raise_for_status()
             return resp.json()
     except Exception as exc:
-        # #region agent log
-        _dbg_log("api_post_exception", {"path": path, "error": str(exc), "error_type": type(exc).__name__})
-        # #endregion
         log.warning("telegram_bot_api_post_error", path=path, error=str(exc))
         return None
 

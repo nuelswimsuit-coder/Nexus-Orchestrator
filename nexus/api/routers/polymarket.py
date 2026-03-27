@@ -24,7 +24,6 @@ from nexus.api.dependencies import RedisDep
 from nexus.api.routers import prediction as prediction_routes
 from nexus.trading.poly_bot_state import POLY_BOT_PNL_KEY
 from nexus.trading.polymarket_client import PolymarketClient, TradingHalted, _CLOB_HOST
-from nexus.ndjson_debug_log import ndjson_debug_log_path
 from nexus.trading.wallet_manager import get_polymarket_funder_address
 
 _http_client: httpx.AsyncClient | None = None
@@ -293,16 +292,6 @@ async def polymarket_live_orderbook(
     token_id: str | None = Query(default=None, description="CLOB outcome token ID; defaults to active bot token"),
 ) -> dict[str, Any]:
     """Fetch live orderbook from the real Polymarket CLOB API using the Relayer Key."""
-    # #region agent log
-    import time as _time, json as _json_dbg
-    _DBG_LOG = "debug-651181.log"
-    def _dbg(msg: str, data: dict, hyp: str) -> None:
-        try:
-            entry = _json_dbg.dumps({"sessionId": "651181", "timestamp": int(_time.time() * 1000), "location": "polymarket.py:orderbook", "message": msg, "data": data, "hypothesisId": hyp}) + "\n"
-            with open(_DBG_LOG, "a", encoding="utf-8") as _f: _f.write(entry)
-        except Exception: pass
-    # #endregion
-
     market_question: str = ""
     if not token_id:
         try:
@@ -320,16 +309,10 @@ async def polymarket_live_orderbook(
                     or (p.get("open_position") or {}).get("market_question")
                     or ""
                 )
-                # #region agent log
-                _dbg("redis_pnl_loaded", {"token_id": token_id, "market_question": market_question[:80], "has_open_position": bool(p.get("open_position")), "pnl_keys": list(p.keys())}, "H-A")
-                # #endregion
         except Exception:
             pass
 
     if not token_id:
-        # #region agent log
-        _dbg("no_token_id_found", {"redis_had_data": raw is not None if 'raw' in dir() else False}, "H-A")
-        # #endregion
         return {
             "no_position": True,
             "source": "NO_ACTIVE_POSITION",
@@ -341,10 +324,6 @@ async def polymarket_live_orderbook(
             "price_series": [],
             "token_id": None,
         }
-
-    # #region agent log
-    _dbg("clob_request_start", {"token_id": token_id, "market_question": market_question[:80], "clob_host": _CLOB_HOST}, "H-C")
-    # #endregion
 
     relayer_key = os.getenv("POLYMARKET_RELAYER_KEY", "")
     headers: dict[str, str] = {}
@@ -363,16 +342,10 @@ async def polymarket_live_orderbook(
         )
         resp.raise_for_status()
         book: dict[str, Any] = resp.json()
-        # #region agent log
-        _dbg("clob_success", {"status": resp.status_code, "bids_count": len(book.get("bids") or []), "asks_count": len(book.get("asks") or [])}, "H-B")
-        # #endregion
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="CLOB orderbook request timed out") from None
     except httpx.HTTPStatusError as exc:
         err_body = exc.response.text
-        # #region agent log
-        _dbg("clob_http_error", {"status_code": exc.response.status_code, "err_body": err_body[:300], "token_id": token_id, "is_404": exc.response.status_code == 404, "has_no_orderbook_msg": "No orderbook exists" in err_body}, "H-B,H-E")
-        # #endregion
         # Market expired / resolved — CLOB returns 404 with "No orderbook exists"
         if exc.response.status_code == 404 or "No orderbook exists" in err_body:
             log.warning(
@@ -395,9 +368,6 @@ async def polymarket_live_orderbook(
             }
         raise HTTPException(status_code=exc.response.status_code, detail=f"CLOB API error: {err_body[:200]}") from exc
     except Exception as exc:
-        # #region agent log
-        _dbg("clob_other_error", {"error": str(exc), "error_type": type(exc).__name__}, "H-B")
-        # #endregion
         raise HTTPException(status_code=502, detail=f"CLOB fetch failed: {exc}") from exc
 
     bids: list[dict[str, Any]] = book.get("bids") or []
@@ -427,16 +397,15 @@ async def polymarket_live_orderbook(
     }
 
 
-def _enrich_manual_order_error(err: str | None) -> tuple[str, bool]:
+def _enrich_manual_order_error(err: str | None) -> str:
     """
     When CLOB returns zero balance, append operator guidance (signing wallet vs portfolio UI).
-    Returns (detail_string, was_enriched).
     """
     if not err:
-        return "Order rejected", False
+        return "Order rejected"
     low = err.lower()
     if "not enough balance" not in low and "balance: 0" not in low:
-        return err, False
+        return err
     funder = (get_polymarket_funder_address() or "").strip()
     portfolio = (os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()
     addr_hint = ""
@@ -455,7 +424,7 @@ def _enrich_manual_order_error(err: str | None) -> tuple[str, bool]:
         f"{addr_hint}{mismatch}\n\n"
         "אין USDC בכתובת החתימה — הפקד ל־Polymarket על אותה כתובת או עדכן מפתח/כתובת לחשבון הממומן."
     )
-    return detail, True
+    return detail
 
 
 class ManualOrderBody(BaseModel):
@@ -468,16 +437,6 @@ class ManualOrderBody(BaseModel):
 @router.post("/manual-order")
 async def polymarket_manual_order(body: ManualOrderBody, redis: RedisDep) -> dict[str, Any]:
     """Map UI BUY/SELL to YES buy or outcome sell; price defaults from bot snapshot or 0.5."""
-    # #region agent log
-    import json as _json, time as _time
-    def _dbg(msg, data, hyp="H-B"):
-        try:
-            with open(ndjson_debug_log_path(), "a") as _f:
-                _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket.py:manual_order","message":msg,"data":data,"hypothesisId":hyp}) + "\n")
-        except Exception: pass
-    _dbg("manual_order_entry", {"token_id": body.token_id[:20], "side": body.side, "amount": body.amount, "price": body.price}, "H-A/H-B")
-    # #endregion
-
     price = body.price
     market_question = ""
     if price is None:
@@ -521,15 +480,7 @@ async def polymarket_manual_order(body: ManualOrderBody, redis: RedisDep) -> dic
 
     if not result.success:
         raw_err = result.error or "Order rejected"
-        detail, enriched = _enrich_manual_order_error(raw_err)
-        # #region agent log
-        _dbg(
-            "manual_order_fail",
-            {"enriched": enriched, "err_prefix": raw_err[:120]},
-            "H-Balance",
-        )
-        # #endregion
-        raise HTTPException(status_code=400, detail=detail)
+        raise HTTPException(status_code=400, detail=_enrich_manual_order_error(raw_err))
 
     return {
         "ok": True,
