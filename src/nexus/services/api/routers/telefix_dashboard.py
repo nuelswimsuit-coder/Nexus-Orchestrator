@@ -485,6 +485,93 @@ async def get_telefix_groups() -> TelefixGroupsResponse:
     )
 
 
+def _ids_match_row(want: str, raw_id: Any) -> bool:
+    if raw_id is None or want is None:
+        return False
+    a = str(raw_id).strip()
+    b = str(want).strip()
+    if a == b:
+        return True
+    try:
+        return int(a) == int(float(b))
+    except (ValueError, TypeError):
+        return False
+
+
+def lookup_telefix_group_by_id(group_id: str) -> tuple[str, str | None] | None:
+    """
+    Resolve (title, invite_link) from telefix.db for a group row id.
+    Used when force-search targets a DB id not yet present in vault JSON.
+    """
+    want = str(group_id).strip()
+    db_path = _find_telefix_db_path()
+    if db_path is None:
+        return None
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=5, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        try:
+            cur = conn.cursor()
+            for table, id_col, title_col, invite_col, username_col, members_col in [
+                ("groups", "id", "title", "invite_link", "username", "member_count"),
+                ("telefix_groups", "id", "title", "invite_link", "username", "members"),
+                ("telegram_groups", "group_id", "name", "invite_link", "username", "members_count"),
+                ("telefix", "id", "title", "invite_link", "username", "user_count"),
+            ]:
+                try:
+                    cur.execute(f"SELECT * FROM {table} LIMIT 1")
+                    cols = [d[0] for d in cur.description]
+                    _id = id_col if id_col in cols else cols[0]
+                    _title = title_col if title_col in cols else (cols[1] if len(cols) > 1 else cols[0])
+                    _invite = invite_col if invite_col in cols else None
+                    _uname = username_col if username_col in cols else None
+                    select_cols = [f"{_id}", f"{_title}"]
+                    if _invite:
+                        select_cols.append(_invite)
+                    if _uname:
+                        select_cols.append(_uname)
+                    cur.execute(f"SELECT {', '.join(select_cols)} FROM {table}")
+                    for row in cur.fetchall():
+                        row_dict = dict(zip(select_cols, row))
+                        rid = row_dict.get(_id)
+                        if not _ids_match_row(want, rid):
+                            continue
+                        title = str(row_dict.get(_title) or "")
+                        raw_invite = row_dict.get(_invite) if _invite else None
+                        raw_uname = row_dict.get(_uname) if _uname else None
+                        invite: str | None = None
+                        if raw_invite:
+                            invite = str(raw_invite)
+                        elif raw_uname:
+                            invite = f"https://t.me/{str(raw_uname).lstrip('@')}"
+                        return (title, invite)
+                except sqlite3.OperationalError:
+                    continue
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("lookup_telefix_group_by_id_failed", error=str(exc))
+    return None
+
+
+_GROUP_FACTORY_ACTIVITY = _VAULT_DATA / "group_factory_activity.json"
+_MAX_FACTORY_ACTIVITY = 200
+
+
+def append_group_factory_activity(level: str, message: str) -> None:
+    """Append one line to durable UI activity log (trimmed)."""
+    _ensure_dirs()
+    raw = _read_json(_GROUP_FACTORY_ACTIVITY, {})
+    entries = raw.get("entries") if isinstance(raw.get("entries"), list) else []
+    entries.append({"ts": _utc_now_iso(), "level": level, "message": message})
+    if len(entries) > _MAX_FACTORY_ACTIVITY:
+        entries = entries[-_MAX_FACTORY_ACTIVITY:]
+    _write_json(
+        _GROUP_FACTORY_ACTIVITY,
+        {"entries": entries, "updated_at": _utc_now_iso()},
+    )
+
+
 # ── DB status — real row counts (drives Verified / Written UI badges) ──────────
 
 
@@ -554,6 +641,7 @@ _DEFAULT_FACTORY_SETTINGS = {
     "warmup_days": 14,
     "cooldown_hours": 24,
     "groups_per_day": 2,
+    "automation_armed": False,
 }
 
 
@@ -649,7 +737,39 @@ async def patch_group_factory_schedule(body: GroupFactorySettingsPatch) -> dict[
     current["updated_at"] = _utc_now_iso()
     _write_json(_GROUP_FACTORY_SETTINGS, current)
     log.info("group_factory_settings_updated", settings=current)
+    append_group_factory_activity("info", "הגדרות מפעל קבוצות עודכנו.")
     return {"ok": True, "settings": current}
+
+
+class GroupFactoryActivityResponse(BaseModel):
+    entries: list[dict[str, Any]]
+    updated_at: str | None
+
+
+@router.get("/group-factory/activity", response_model=GroupFactoryActivityResponse)
+async def get_group_factory_activity() -> GroupFactoryActivityResponse:
+    raw = _read_json(_GROUP_FACTORY_ACTIVITY, {})
+    entries = raw.get("entries") if isinstance(raw.get("entries"), list) else []
+    return GroupFactoryActivityResponse(
+        entries=[e for e in entries if isinstance(e, dict)],
+        updated_at=raw.get("updated_at"),
+    )
+
+
+@router.post("/group-factory/start", summary="Arm group factory automation (UI + settings flag)")
+async def post_group_factory_start() -> dict[str, Any]:
+    current = _load_factory_settings()
+    current["automation_armed"] = True
+    current["armed_at"] = _utc_now_iso()
+    current["updated_at"] = _utc_now_iso()
+    _write_json(_GROUP_FACTORY_SETTINGS, current)
+    msg = (
+        "מפעל הקבוצות הופעל: דגל automation_armed=true נשמר. "
+        "לולאת GroupFactory ברקע רצה בתהליך המאסטר (אם פעיל)."
+    )
+    append_group_factory_activity("info", msg)
+    log.info("group_factory_armed")
+    return {"ok": True, "settings": current, "detail": msg}
 
 
 # ── Operations config ──────────────────────────────────────────────────────────

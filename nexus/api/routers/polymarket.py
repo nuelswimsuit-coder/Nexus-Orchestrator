@@ -403,9 +403,12 @@ async def polymarket_live_orderbook(
     }
 
 
-def _enrich_manual_order_error(err: str | None) -> str:
+def _enrich_manual_order_error(err: str | None, side: Literal["BUY", "SELL"]) -> str:
     """
     When CLOB returns zero balance, append operator guidance (signing wallet vs portfolio UI).
+
+    BUY: collateral is USDC on the signing wallet. SELL: CLOB checks outcome-token (shares)
+    balance for this token_id on the signing wallet — not USDC.
     """
     if not err:
         return "Order rejected"
@@ -421,8 +424,18 @@ def _enrich_manual_order_error(err: str | None) -> str:
     if portfolio and funder and portfolio.lower() != funder.lower():
         mismatch = (
             " POLYMARKET_PORTFOLIO_ADDRESS (UI) differs from the API signing address — "
-            "funds must be on the signing wallet for CLOB orders."
+            "the bot/API only sees positions and collateral on the signing wallet."
         )
+    if side == "SELL":
+        detail = (
+            f"{err}\n\n"
+            "מכירה (SELL): CLOB דורש יתרת מניות (outcome tokens) של אותו token על כתובת החתימה — לא USDC. "
+            "אם הפוזיציה מוצגת בחשבון אחר (UI), המפתח הנוכחי לא מחזיק את אותן המניות ולכן המכירה נכשלת."
+            f"{addr_hint}{mismatch}\n\n"
+            "SELL: Use the same Polymarket account as POLYMARKET_RELAYER_KEY / POLYMARKET_SIGNER_ADDRESS, "
+            "or export/switch keys so the signing wallet holds those shares."
+        )
+        return detail
     detail = (
         f"{err}\n\n"
         "CLOB has no USDC (or allowance) for the wallet that signs orders "
@@ -501,7 +514,7 @@ async def polymarket_manual_order(body: ManualOrderBody, redis: RedisDep) -> dic
 
     if not result.success:
         raw_err = result.error or "Order rejected"
-        raise HTTPException(status_code=400, detail=_enrich_manual_order_error(raw_err))
+        raise HTTPException(status_code=400, detail=_enrich_manual_order_error(raw_err, body.side))
 
     return {
         "ok": True,
