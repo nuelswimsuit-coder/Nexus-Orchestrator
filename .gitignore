@@ -1,5 +1,18 @@
 .env
 config/night_watch_manifest.json
+
+# Runtime / local — do not commit (GitHub 100 MB limit on blobs)
+logs/
+.cursor/debug*.log
+debug-*.log
+launcher_debug.txt
+dump.rdb
+watchdog_api.log
+src/logs/
+Nexus_Launcher.exe
+Nexus_Master.exe
+redis-local/redis-server.exe
+
 __pycache__/
 *.py[cod]
 *.egg-info/
