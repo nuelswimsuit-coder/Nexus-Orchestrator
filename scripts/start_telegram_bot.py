@@ -834,29 +834,51 @@ def get_polymarket_menu() -> InlineKeyboardMarkup:
 
 def _fmt_poly_portfolio(dash: dict) -> str:
     """Format Polymarket dashboard data into a Hebrew+English Telegram message."""
-    portfolio_val  = dash.get("portfolio_value") or 0.0
-    portfolio_cash = dash.get("portfolio_cash") or 0.0
-    portfolio_pos  = dash.get("portfolio_positions") or 0.0
-    clob_bal       = dash.get("clob_balance") or 0.0
-    collateral     = dash.get("collateral_usdc") or "0"
-    signer         = dash.get("signer_address") or dash.get("portfolio_address") or "—"
-    short_addr     = f"{signer[:6]}…{signer[-4:]}" if len(signer) > 10 else signer
+    portfolio_val    = float(dash.get("portfolio_value") or 0)
+    portfolio_cash   = float(dash.get("portfolio_cash") or 0)
+    portfolio_pos    = float(dash.get("portfolio_positions") or 0)
+    clob_bal         = float(dash.get("clob_balance") or 0)
+    signer           = str(dash.get("signer_address") or dash.get("portfolio_address") or "—")
+    short_addr       = f"{signer[:6]}…{signer[-4:]}" if len(signer) > 10 else signer
+    realized_pnl     = float(dash.get("realized_pnl") or 0)
+    total_deposited  = float(dash.get("total_deposited") or 0)
+    total_withdrawn  = float(dash.get("total_withdrawn") or 0)
+    break_even_delta = float(dash.get("break_even_delta") or 0)
 
-    pnl_series = dash.get("pnl_series") or []
-    total_pnl  = sum(p.get("pnl", 0) for p in pnl_series[-1:]) if pnl_series else 0.0
-    pnl_icon   = "📈" if total_pnl >= 0 else "📉"
-    pnl_sign   = "+" if total_pnl >= 0 else ""
+    pnl_icon = "📈" if realized_pnl >= 0 else "📉"
+    pnl_sign = "+" if realized_pnl >= 0 else ""
+    be_icon  = "🟢" if break_even_delta >= 0 else "🔴"
+    be_sign  = "+" if break_even_delta >= 0 else ""
 
     lines = [
         "📊 *Polymarket Portfolio / תיק פולימרקט*",
         "",
         f"  👛 ארנק / Wallet: `{_esc(short_addr)}`",
-        f"  💼 שווי תיק / Total: `${portfolio_val:,.2f}`",
-        f"  💵 מזומן / Cash: `${portfolio_cash:,.2f}`",
-        f"  📦 פוזיציות / Positions: `${portfolio_pos:,.2f}`",
-        f"  🏦 CLOB Balance: `${clob_bal:,.2f}`",
-        f"  {pnl_icon} PnL: `{pnl_sign}${total_pnl:,.2f}`",
         "",
+        "💼 *שווי נוכחי / Current Value*",
+        f"  📦 סה\"כ תיק / Total: `${portfolio_val:,.2f}`",
+        f"  💵 מזומן / Cash: `${portfolio_cash:,.2f}`",
+        f"  📈 פוזיציות / Positions: `${portfolio_pos:,.2f}`",
+        f"  🏦 CLOB Balance: `${clob_bal:,.2f}`",
+        "",
+        "💰 *הפקדות ומשיכות / Deposits & Withdrawals*",
+        f"  ⬇️ סה\"כ הפקדות / Total Deposited: `${total_deposited:,.2f}`",
+        f"  ⬆️ סה\"כ משיכות / Total Withdrawn: `${total_withdrawn:,.2f}`",
+        "",
+        "📊 *ביצועים / Performance*",
+        f"  {pnl_icon} רווח ממומש / Realized PnL: `{pnl_sign}${realized_pnl:,.2f}`",
+        f"  {be_icon} Break\\-Even: `{be_sign}${break_even_delta:,.2f}`",
+    ]
+
+    if total_deposited > 0:
+        roi = (break_even_delta / total_deposited) * 100
+        roi_icon = "🟢" if roi >= 0 else "🔴"
+        roi_sign = "+" if roi >= 0 else ""
+        lines.append(f"  {roi_icon} ROI: `{roi_sign}{roi:.1f}%`")
+
+    lines += [
+        "",
+        "_להגדיר סכום הפקדה: /set\\_deposit <amount>_",
         f"🔄 _עודכן / Updated: {_esc(_now_utc())}_",
     ]
     return "\n".join(lines)
@@ -870,8 +892,8 @@ def _fmt_poly_positions(dash: dict) -> str:
     if not positions:
         lines.append("_אין פוזיציות פתוחות / No open positions_")
     else:
-        for i, p in enumerate(positions[:8], 1):
-            title    = str(p.get("title") or "?")[:45]
+        for i, p in enumerate(positions[:6], 1):
+            title    = _esc(str(p.get("title") or "?")[:38])
             outcome  = str(p.get("outcome") or "YES")
             size     = float(p.get("size") or 0)
             avg_p    = float(p.get("avg_price") or 0)
@@ -881,22 +903,22 @@ def _fmt_poly_positions(dash: dict) -> str:
             pct_pnl  = float(p.get("percent_pnl") or 0)
             end_date = str(p.get("end_date") or "")[:10]
 
-            pnl_icon = "🟢" if cash_pnl >= 0 else "🔴"
-            pnl_sign = "+" if cash_pnl >= 0 else ""
+            pnl_icon     = "🟢" if cash_pnl >= 0 else "🔴"
+            pnl_sign     = "+" if cash_pnl >= 0 else ""
             outcome_icon = "✅" if outcome == "YES" else "❌"
 
             lines += [
-                f"*{i}\\. {_esc(title[:40])}*",
-                f"  {outcome_icon} {_esc(outcome)} · {size:.1f} מניות / shares",
-                f"  💰 ממוצע→עכשיו / Avg→Now: `{avg_p*100:.1f}¢ → {cur_p*100:.1f}¢`",
-                f"  💼 שווי / Value: `${cur_val:.2f}`",
+                f"*{i}\\. {title}*",
+                f"  {outcome_icon} `{_esc(outcome)}` · `{size:.1f}` shares",
+                f"  💰 Avg→Now: `{avg_p*100:.1f}c -> {cur_p*100:.1f}c`",
+                f"  💼 Value: `${cur_val:.2f}`",
                 f"  {pnl_icon} PnL: `{pnl_sign}${cash_pnl:.2f}` \\(`{pnl_sign}{pct_pnl:.1f}%`\\)",
             ]
             if end_date:
-                lines.append(f"  📅 פקיעה / Exp: `{_esc(end_date)}`")
+                lines.append(f"  📅 Exp: `{_esc(end_date)}`")
             lines.append("")
 
-    lines.append(f"🔄 _עודכן / Updated: {_esc(_now_utc())}_")
+    lines.append(f"🔄 _Updated: {_esc(_now_utc())}_")
     return "\n".join(lines)
 
 
@@ -951,57 +973,89 @@ def _fmt_poly_orderbook(ob: dict) -> str:
     return "\n".join(lines)
 
 
+def _compute_ai_recs(positions: list[dict], portfolio_val: float) -> list[dict]:
+    """Compute AI recommendations for a list of positions. Returns list of rec dicts."""
+    recs = []
+    for p in positions:
+        cur_p   = float(p.get("cur_price") or 0)
+        avg_p   = float(p.get("avg_price") or 0)
+        pct_pnl = float(p.get("percent_pnl") or 0)
+        cur_val = float(p.get("current_value") or 0)
+        title   = str(p.get("title") or "?")
+
+        implied   = cur_p
+        real_prob = min(0.99, max(0.01, implied + (0.08 if pct_pnl > 0 else -0.06)))
+        edge      = (real_prob - implied) * 100
+        confidence = min(95.0, 60 + abs(edge) * 2)
+
+        if edge > 5:
+            action_he = f"קנה מתחת ל-{implied*100-2:.0f}c"
+            action_en = f"BUY below {implied*100-2:.0f}c"
+            action_type = "BUY"
+        elif edge < -5:
+            action_he = f"מכור מעל {implied*100+2:.0f}c"
+            action_en = f"SELL above {implied*100+2:.0f}c"
+            action_type = "SELL"
+        else:
+            action_he = "המתן"
+            action_en = "HOLD"
+            action_type = "HOLD"
+
+        pct_of_portfolio = min(15.0, abs(edge) * 1.5) if portfolio_val > 0 else 0.0
+        rec_amount = round(portfolio_val * pct_of_portfolio / 100, 2)
+
+        recs.append({
+            "title": title,
+            "action_type": action_type,
+            "action_he": action_he,
+            "action_en": action_en,
+            "edge": edge,
+            "confidence": confidence,
+            "cur_val": cur_val,
+            "cur_price": cur_p,
+            "avg_price": avg_p,
+            "pct_of_portfolio": pct_of_portfolio,
+            "rec_amount": rec_amount,
+        })
+    return recs
+
+
 def _fmt_poly_ai_recs(dash: dict, cx_data: dict | None) -> str:
     """Format AI recommendations from cross-exchange + positions into Telegram."""
-    positions = dash.get("portfolio_positions_list") or []
-    cx_signal = (cx_data or {}).get("signal_label") or (cx_data or {}).get("signal") or "—"
-    cx_conf   = (cx_data or {}).get("high_confidence", False)
-    arb_gap   = (cx_data or {}).get("arbitrage_gap") or 0.0
+    positions    = dash.get("portfolio_positions_list") or []
+    portfolio_val = float(dash.get("portfolio_value") or 0)
+    cx_signal    = str((cx_data or {}).get("signal_label") or (cx_data or {}).get("signal") or "—")
+    cx_conf      = bool((cx_data or {}).get("high_confidence", False))
+    arb_gap      = float((cx_data or {}).get("arbitrage_gap") or 0.0)
 
     lines = [
-        "🤖 *המלצות AI / AI Recommendations*",
+        "🤖 *AI Recommendations / המלצות AI*",
         "",
-        "📡 *Cross-Exchange Signal / אות בין-בורסות:*",
-        f"  {'⚡' if cx_conf else '📊'} {_esc(cx_signal)}",
-        f"  ARB Gap / פער ארביטראז׳: `{arb_gap*100:.3f}%`",
+        "📡 *Cross\\-Exchange Signal:*",
+        f"  {'⚡' if cx_conf else '📊'} `{_esc(cx_signal)}`",
+        f"  ARB Gap: `{arb_gap*100:.3f}%`",
     ]
     if cx_conf:
-        lines.append("  🔥 *HIGH CONFIDENCE / ביטחון גבוה* — שקול כניסה!")
+        lines.append("  🔥 *HIGH CONFIDENCE* — שקול כניסה")
     lines.append("")
 
     if not positions:
-        lines.append("_אין פוזיציות לניתוח / No positions to analyze_")
+        lines.append("_No positions to analyze / אין פוזיציות לניתוח_")
     else:
-        lines.append("*ניתוח פוזיציות / Position Analysis:*")
-        for p in positions[:6]:
-            title   = str(p.get("title") or "?")[:40]
-            cur_p   = float(p.get("cur_price") or 0)
-            avg_p   = float(p.get("avg_price") or 0)
-            pct_pnl = float(p.get("percent_pnl") or 0)
-            cur_val = float(p.get("current_value") or 0)
-
-            implied = cur_p
-            real_prob = min(0.99, max(0.01, implied + (0.08 if pct_pnl > 0 else -0.06)))
-            edge = (real_prob - implied) * 100
-
-            if edge > 5:
-                action = f"🟢 קנה מתחת ל-{implied*100-2:.0f}¢ / BUY below {implied*100-2:.0f}¢"
-                confidence = min(95, 60 + edge * 2)
-            elif edge < -5:
-                action = f"🔴 מכור מעל {implied*100+2:.0f}¢ / SELL above {implied*100+2:.0f}¢"
-                confidence = min(95, 60 + abs(edge) * 2)
-            else:
-                action = "🟡 המתן / HOLD — monitor"
-                confidence = 50.0
-
+        recs = _compute_ai_recs(positions, portfolio_val)
+        lines.append("*Position Analysis:*")
+        for rec in recs[:5]:
+            title = _esc(rec["title"][:35])
+            icon  = "🟢" if rec["action_type"] == "BUY" else ("🔴" if rec["action_type"] == "SELL" else "🟡")
             lines += [
-                f"• *{_esc(title[:35])}*",
-                f"  {action}",
-                f"  Edge: `{edge:+.1f}%` · Conf: `{confidence:.0f}%` · Val: `${cur_val:.2f}`",
+                f"{icon} *{title}*",
+                f"  {_esc(rec['action_he'])} / {_esc(rec['action_en'])}",
+                f"  Edge: `{rec['edge']:+.1f}%` Conf: `{rec['confidence']:.0f}%` Val: `${rec['cur_val']:.2f}`",
+                f"  Rec size: `${rec['rec_amount']:.2f}` \\({rec['pct_of_portfolio']:.0f}% of portfolio\\)",
                 "",
             ]
 
-    lines.append(f"🔄 _עודכן / Updated: {_esc(_now_utc())}_")
+    lines.append(f"🔄 _Updated: {_esc(_now_utc())}_")
     return "\n".join(lines)
 
 
@@ -1235,6 +1289,59 @@ async def handle_poly_sell_prompt(callback: CallbackQuery) -> None:
     )
 
 
+async def cmd_set_deposit(message: Message) -> None:
+    """Set total deposited amount: /set_deposit <amount>"""
+    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    if admin_id and str(message.chat.id) != str(admin_id):
+        await message.answer("⛔ גישה נדחתה\\.")
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        await message.answer("⚠️ Usage: `/set\\_deposit <amount>`\nExample: `/set\\_deposit 500`", parse_mode=ParseMode.MARKDOWN_V2)
+        return
+    try:
+        amount = float(parts[1])
+    except ValueError:
+        await message.answer("❌ Invalid amount\\.")
+        return
+    data = await _api_post("/api/polymarket/set-deposit", {"amount": amount})
+    if data:
+        await message.answer(
+            f"✅ *סכום הפקדה עודכן / Deposit amount set*\n\n"
+            f"  Total Deposited: `${amount:,.2f}`\n\n"
+            f"_Use /polymarket to see break\\-even_",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+    else:
+        await message.answer("❌ Failed to update\\. Is the API running?", parse_mode=ParseMode.MARKDOWN_V2)
+
+
+async def cmd_set_withdrawn(message: Message) -> None:
+    """Set total withdrawn amount: /set_withdrawn <amount>"""
+    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    if admin_id and str(message.chat.id) != str(admin_id):
+        await message.answer("⛔ גישה נדחתה\\.")
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        await message.answer("⚠️ Usage: `/set\\_withdrawn <amount>`", parse_mode=ParseMode.MARKDOWN_V2)
+        return
+    try:
+        amount = float(parts[1])
+    except ValueError:
+        await message.answer("❌ Invalid amount\\.")
+        return
+    data = await _api_post("/api/polymarket/set-withdrawn", {"amount": amount})
+    if data:
+        await message.answer(
+            f"✅ *סכום משיכות עודכן / Withdrawn amount set*\n\n"
+            f"  Total Withdrawn: `${amount:,.2f}`",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+    else:
+        await message.answer("❌ Failed to update\\.", parse_mode=ParseMode.MARKDOWN_V2)
+
+
 async def cmd_polymarket(message: Message) -> None:
     """Show the Polymarket control panel via /polymarket command."""
     admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
@@ -1276,13 +1383,22 @@ async def cmd_poly_buy(message: Message) -> None:
     data = await _api_post("/api/polymarket/manual-order", {
         "token_id": token_id,
         "side": "BUY",
-        "amount_usdc": amount,
+        "amount": amount,
     })
     if data:
-        status = _esc(str(data.get("status") or data.get("message") or "OK"))
-        await message.answer(f"✅ *פקודת קנייה בוצעה / BUY executed*\n\n`{status}`", parse_mode=ParseMode.MARKDOWN_V2)
+        order_id = _esc(str(data.get("order_id") or ""))
+        paper    = data.get("paper", False)
+        spent    = float(data.get("spent_usd") or 0)
+        mode     = "PAPER" if paper else "LIVE"
+        await message.answer(
+            f"✅ *BUY executed / פקודת קנייה בוצעה*\n\n"
+            f"  Mode: `{mode}`\n"
+            f"  Spent: `${spent:.2f}`\n"
+            f"  Order ID: `{order_id}`",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
     else:
-        await message.answer("❌ *שגיאה בביצוע / Execution failed*\n\nבדוק את חיבור ה\\-API\\.", parse_mode=ParseMode.MARKDOWN_V2)
+        await message.answer("❌ *Execution failed / שגיאה בביצוע*\n\nבדוק את חיבור ה\\-API\\.", parse_mode=ParseMode.MARKDOWN_V2)
 
 
 async def cmd_poly_sell(message: Message) -> None:
@@ -1312,19 +1428,28 @@ async def cmd_poly_sell(message: Message) -> None:
     data = await _api_post("/api/polymarket/manual-order", {
         "token_id": token_id,
         "side": "SELL",
-        "amount_usdc": amount,
+        "amount": amount,
     })
     if data:
-        status = _esc(str(data.get("status") or data.get("message") or "OK"))
-        await message.answer(f"✅ *פקודת מכירה בוצעה / SELL executed*\n\n`{status}`", parse_mode=ParseMode.MARKDOWN_V2)
+        order_id = _esc(str(data.get("order_id") or ""))
+        paper    = data.get("paper", False)
+        spent    = float(data.get("spent_usd") or 0)
+        mode     = "PAPER" if paper else "LIVE"
+        await message.answer(
+            f"✅ *SELL executed / פקודת מכירה בוצעה*\n\n"
+            f"  Mode: `{mode}`\n"
+            f"  Spent: `${spent:.2f}`\n"
+            f"  Order ID: `{order_id}`",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
     else:
-        await message.answer("❌ *שגיאה בביצוע / Execution failed*\n\nבדוק את חיבור ה\\-API\\.", parse_mode=ParseMode.MARKDOWN_V2)
+        await message.answer("❌ *Execution failed / שגיאה בביצוע*\n\nבדוק את חיבור ה\\-API\\.", parse_mode=ParseMode.MARKDOWN_V2)
 
 
 async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
     """
-    Proactive AI alert: fetch Polymarket data and send a high-confidence
-    trade recommendation if one exists.  Called periodically by the alert loop.
+    Proactive AI alert: fetch Polymarket data and send high-confidence
+    trade recommendations with BUY/SELL/DISMISS approve buttons.
     """
     try:
         dash, cx = await asyncio.gather(
@@ -1334,90 +1459,147 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
         if not dash:
             return
 
-        positions = dash.get("portfolio_positions_list") or []
-        cx_conf   = bool((cx or {}).get("high_confidence"))
-        cx_signal = str((cx or {}).get("signal_label") or (cx or {}).get("signal") or "")
-        arb_gap   = float((cx or {}).get("arbitrage_gap") or 0.0)
+        positions     = dash.get("portfolio_positions_list") or []
+        cx_conf       = bool((cx or {}).get("high_confidence"))
+        cx_signal     = str((cx or {}).get("signal_label") or (cx or {}).get("signal") or "")
+        arb_gap       = float((cx or {}).get("arbitrage_gap") or 0.0)
         portfolio_val = float(dash.get("portfolio_value") or 0.0)
 
-        alerts: list[str] = []
+        recs = _compute_ai_recs(positions, portfolio_val)
+        # Only alert on high-confidence recs (>= 75%)
+        high_conf_recs = [r for r in recs if r["confidence"] >= 75 and r["action_type"] != "HOLD"]
 
-        # Cross-exchange high-confidence alert
+        # Also include cross-exchange high-conf signal
+        cx_alert_lines: list[str] = []
         if cx_conf and cx_signal:
-            pct_of_portfolio = 10.0  # recommend 10% of portfolio for high-conf cross-exchange
-            rec_amount = round(portfolio_val * pct_of_portfolio / 100, 2) if portfolio_val > 0 else 0.0
-            alerts.append(
-                f"⚡ *HIGH CONFIDENCE SIGNAL / אות בביטחון גבוה*\n"
-                f"  📡 Signal: `{_esc(cx_signal)}`\n"
-                f"  ARB Gap: `{arb_gap*100:.3f}%`\n"
-                f"  💡 המלצה / Rec: הכנס `${rec_amount:.2f}` \\({pct_of_portfolio:.0f}% מהתיק\\)\n"
-                f"  _Use /poly\\_buy to execute_"
-            )
+            pct = 10.0
+            rec_amt = round(portfolio_val * pct / 100, 2)
+            cx_alert_lines = [
+                f"⚡ *HIGH CONFIDENCE SIGNAL*",
+                f"  Signal: `{_esc(cx_signal)}`",
+                f"  ARB Gap: `{arb_gap*100:.3f}%`",
+                f"  Rec: `${rec_amt:.2f}` \\({pct:.0f}% of portfolio\\)",
+                "",
+            ]
 
-        # Per-position edge alerts
-        for p in positions[:5]:
-            cur_p   = float(p.get("cur_price") or 0)
-            avg_p   = float(p.get("avg_price") or 0)
-            pct_pnl = float(p.get("percent_pnl") or 0)
-            cur_val = float(p.get("current_value") or 0)
-            title   = str(p.get("title") or "?")[:40]
-
-            implied   = cur_p
-            real_prob = min(0.99, max(0.01, implied + (0.08 if pct_pnl > 0 else -0.06)))
-            edge      = (real_prob - implied) * 100
-            confidence = min(95, 60 + abs(edge) * 2)
-
-            # Only alert on high-confidence edges (>= 75%)
-            if confidence >= 75 and abs(edge) > 5:
-                pct_of_portfolio = min(15.0, abs(edge) * 1.5)
-                rec_amount = round(portfolio_val * pct_of_portfolio / 100, 2) if portfolio_val > 0 else 0.0
-
-                if edge > 5:
-                    action_he = f"קנה מתחת ל-{implied*100-2:.0f}¢"
-                    action_en = f"BUY below {implied*100-2:.0f}¢"
-                    icon = "🟢"
-                else:
-                    action_he = f"מכור מעל {implied*100+2:.0f}¢"
-                    action_en = f"SELL above {implied*100+2:.0f}¢"
-                    icon = "🔴"
-
-                alerts.append(
-                    f"{icon} *AI ALERT — {_esc(title[:35])}*\n"
-                    f"  📊 {_esc(action_he)} / {_esc(action_en)}\n"
-                    f"  Edge: `{edge:+.1f}%` · Conf: `{confidence:.0f}%`\n"
-                    f"  💼 שווי נוכחי / Current Value: `${cur_val:.2f}`\n"
-                    f"  💡 המלצת גודל / Rec Size: `${rec_amount:.2f}` \\({pct_of_portfolio:.0f}% מהתיק\\)"
-                )
-
-        if not alerts:
+        if not high_conf_recs and not cx_alert_lines:
             return
 
-        alert_text = (
-            "🚨 *Polymarket AI Alert / התראת AI פולימרקט*\n\n"
-            + "\n\n".join(alerts)
-            + f"\n\n🔄 _{_esc(_now_utc())}_"
-        )
+        # Build one alert message per high-conf rec (with approve/reject buttons)
+        for rec in high_conf_recs[:3]:
+            title_short = rec["title"][:40]
+            icon = "🟢" if rec["action_type"] == "BUY" else "🔴"
 
-        alert_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="📊 פוזיציות / Positions", callback_data="poly_positions"),
-                InlineKeyboardButton(text="🤖 המלצות AI / AI Recs",  callback_data="poly_ai_recs"),
-            ],
-            [
-                InlineKeyboardButton(text="🎯 Polymarket Panel",      callback_data="poly_menu"),
-            ],
-        ])
+            alert_text = (
+                f"🚨 *AI ALERT — Polymarket*\n\n"
+                f"{icon} *{_esc(title_short)}*\n\n"
+                f"  Action: `{_esc(rec['action_en'])}`\n"
+                f"  Edge: `{rec['edge']:+.1f}%`\n"
+                f"  Confidence: `{rec['confidence']:.0f}%`\n"
+                f"  Current Value: `${rec['cur_val']:.2f}`\n"
+                f"  Avg Price: `{rec['avg_price']*100:.1f}c` → Now: `{rec['cur_price']*100:.1f}c`\n\n"
+                f"  💡 Recommended size: `${rec['rec_amount']:.2f}` \\({rec['pct_of_portfolio']:.0f}% of portfolio\\)\n\n"
+                f"_האם לבצע? / Execute?_\n"
+                f"🔄 _{_esc(_now_utc())}_"
+            )
 
-        await bot.send_message(
-            chat_id=chat_id,
-            text=alert_text,
-            parse_mode=ParseMode.MARKDOWN_V2,
-            reply_markup=alert_keyboard,
-        )
-        log.info("poly_ai_alert_sent", alerts_count=len(alerts))
+            # Encode token_id + amount into callback for direct execution
+            # Format: poly_exec_approve:<side>:<rec_amount>
+            side = rec["action_type"]
+            amt  = rec["rec_amount"]
+
+            alert_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=f"✅ בצע {side} ${amt:.0f} / Execute",
+                        callback_data=f"poly_alert_approve:{side}:{amt:.2f}",
+                    ),
+                    InlineKeyboardButton(
+                        text="❌ דחה / Dismiss",
+                        callback_data="poly_alert_dismiss",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(text="📊 Positions", callback_data="poly_positions"),
+                    InlineKeyboardButton(text="🎯 Panel",     callback_data="poly_menu"),
+                ],
+            ])
+
+            await bot.send_message(
+                chat_id=chat_id,
+                text=alert_text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=alert_keyboard,
+            )
+
+        # Send cross-exchange alert if present (no approve button — no specific token)
+        if cx_alert_lines:
+            cx_text = (
+                "🚨 *Cross\\-Exchange AI Alert*\n\n"
+                + "\n".join(cx_alert_lines)
+                + f"🔄 _{_esc(_now_utc())}_"
+            )
+            cx_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="🤖 AI Recs",    callback_data="poly_ai_recs"),
+                    InlineKeyboardButton(text="🎯 Panel",      callback_data="poly_menu"),
+                ],
+                [
+                    InlineKeyboardButton(text="❌ Dismiss",    callback_data="poly_alert_dismiss"),
+                ],
+            ])
+            await bot.send_message(
+                chat_id=chat_id,
+                text=cx_text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=cx_keyboard,
+            )
+
+        log.info("poly_ai_alert_sent", high_conf_count=len(high_conf_recs), cx_alert=bool(cx_alert_lines))
 
     except Exception as exc:
         log.warning("poly_ai_alert_error", error=str(exc))
+
+
+async def handle_poly_alert_approve(callback: CallbackQuery) -> None:
+    """Handle approve button on AI alert — show prompt to execute with token_id."""
+    if callback.data is None:
+        await callback.answer("Invalid.")
+        return
+
+    # callback_data format: poly_alert_approve:<side>:<amount>
+    parts = callback.data.split(":")
+    if len(parts) < 3:
+        await callback.answer("Invalid format.")
+        return
+
+    side   = parts[1].upper()
+    amount = parts[2]
+
+    await callback.answer("אישור התקבל / Approved")
+    await callback.message.edit_text(
+        f"✅ *Approved / אושר*\n\n"
+        f"To execute, send:\n"
+        f"`/poly\\_{'buy' if side == 'BUY' else 'sell'} <token\\_id> {_esc(amount)}`\n\n"
+        f"_Get token\\_id from /polymarket → Positions_",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📈 Positions", callback_data="poly_positions")],
+        ]),
+    )
+
+
+async def handle_poly_alert_dismiss(callback: CallbackQuery) -> None:
+    """Dismiss an AI alert."""
+    await callback.answer("נדחה / Dismissed")
+    try:
+        original = callback.message.text or ""
+        await callback.message.edit_text(
+            original + "\n\n_❌ Dismissed / נדחה_",
+            reply_markup=None,
+        )
+    except Exception:
+        pass
 
 
 async def _poly_alert_loop(bot: "Bot", chat_id: str, interval_s: int = 300) -> None:
@@ -1531,6 +1713,8 @@ async def cmd_help(message: Message) -> None:
         "/polymarket — 🎯 Polymarket control panel / לוח שליטה פולימרקט\n"
         "/poly\\_buy \\<token\\_id\\> \\<amount\\> — 🟢 BUY YES order / קנה\n"
         "/poly\\_sell \\<token\\_id\\> \\<amount\\> — 🔴 SELL order / מכור\n"
+        "/set\\_deposit \\<amount\\> — 💰 Set total deposited \\(break\\-even tracking\\)\n"
+        "/set\\_withdrawn \\<amount\\> — 💸 Set total withdrawn\n"
         "/killswitch — 🚨 KILL all autonomous projects instantly\n"
         "/terminate\\_nexus\\_now — 🔒 *Full* emergency kill\\-switch \\(user ID + API/Redis\\)\n"
         "/godmode\\_on — Enable GOD MODE \\(auto\\-deploy\\)\n"
@@ -2096,9 +2280,11 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     dp.message.register(cmd_godmode_on, Command("godmode_on"))
     dp.message.register(cmd_godmode_off, Command("godmode_off"))
     dp.message.register(cmd_incubator, Command("incubator"))
-    dp.message.register(cmd_polymarket, Command("polymarket"))
-    dp.message.register(cmd_poly_buy,  Command("poly_buy"))
-    dp.message.register(cmd_poly_sell, Command("poly_sell"))
+    dp.message.register(cmd_polymarket,    Command("polymarket"))
+    dp.message.register(cmd_poly_buy,      Command("poly_buy"))
+    dp.message.register(cmd_poly_sell,     Command("poly_sell"))
+    dp.message.register(cmd_set_deposit,   Command("set_deposit"))
+    dp.message.register(cmd_set_withdrawn, Command("set_withdrawn"))
 
     # /start control-panel callbacks (4-button 2×2 grid)
     dp.callback_query.register(handle_status,             F.data == "status")
@@ -2116,15 +2302,17 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     dp.callback_query.register(handle_main_menu,   F.data == "main_menu")
 
     # Polymarket control panel callbacks
-    dp.callback_query.register(handle_poly_menu,       F.data == "poly_menu")
-    dp.callback_query.register(handle_poly_portfolio,  F.data == "poly_portfolio")
-    dp.callback_query.register(handle_poly_positions,  F.data == "poly_positions")
-    dp.callback_query.register(handle_poly_orderbook,  F.data == "poly_orderbook")
-    dp.callback_query.register(handle_poly_ai_recs,    F.data == "poly_ai_recs")
-    dp.callback_query.register(handle_poly_scalper,    F.data == "poly_scalper")
-    dp.callback_query.register(handle_poly_trade_log,  F.data == "poly_trade_log")
-    dp.callback_query.register(handle_poly_buy_prompt, F.data == "poly_buy_prompt")
-    dp.callback_query.register(handle_poly_sell_prompt, F.data == "poly_sell_prompt")
+    dp.callback_query.register(handle_poly_menu,         F.data == "poly_menu")
+    dp.callback_query.register(handle_poly_portfolio,    F.data == "poly_portfolio")
+    dp.callback_query.register(handle_poly_positions,    F.data == "poly_positions")
+    dp.callback_query.register(handle_poly_orderbook,    F.data == "poly_orderbook")
+    dp.callback_query.register(handle_poly_ai_recs,      F.data == "poly_ai_recs")
+    dp.callback_query.register(handle_poly_scalper,      F.data == "poly_scalper")
+    dp.callback_query.register(handle_poly_trade_log,    F.data == "poly_trade_log")
+    dp.callback_query.register(handle_poly_buy_prompt,   F.data == "poly_buy_prompt")
+    dp.callback_query.register(handle_poly_sell_prompt,  F.data == "poly_sell_prompt")
+    dp.callback_query.register(handle_poly_alert_approve, F.data.startswith("poly_alert_approve:"))
+    dp.callback_query.register(handle_poly_alert_dismiss, F.data == "poly_alert_dismiss")
 
     # HITL and control handlers
     dp.callback_query.register(
@@ -2203,9 +2391,11 @@ async def run() -> None:
     dp.message.register(cmd_godmode_on, Command("godmode_on"))
     dp.message.register(cmd_godmode_off, Command("godmode_off"))
     dp.message.register(cmd_incubator, Command("incubator"))
-    dp.message.register(cmd_polymarket, Command("polymarket"))
-    dp.message.register(cmd_poly_buy,   Command("poly_buy"))
-    dp.message.register(cmd_poly_sell,  Command("poly_sell"))
+    dp.message.register(cmd_polymarket,    Command("polymarket"))
+    dp.message.register(cmd_poly_buy,      Command("poly_buy"))
+    dp.message.register(cmd_poly_sell,     Command("poly_sell"))
+    dp.message.register(cmd_set_deposit,   Command("set_deposit"))
+    dp.message.register(cmd_set_withdrawn, Command("set_withdrawn"))
 
     # Legacy text menu support (kept for backwards compatibility)
     dp.message.register(
@@ -2229,15 +2419,17 @@ async def run() -> None:
     dp.callback_query.register(handle_main_menu,   F.data == "main_menu")
 
     # Polymarket control panel callbacks
-    dp.callback_query.register(handle_poly_menu,        F.data == "poly_menu")
-    dp.callback_query.register(handle_poly_portfolio,   F.data == "poly_portfolio")
-    dp.callback_query.register(handle_poly_positions,   F.data == "poly_positions")
-    dp.callback_query.register(handle_poly_orderbook,   F.data == "poly_orderbook")
-    dp.callback_query.register(handle_poly_ai_recs,     F.data == "poly_ai_recs")
-    dp.callback_query.register(handle_poly_scalper,     F.data == "poly_scalper")
-    dp.callback_query.register(handle_poly_trade_log,   F.data == "poly_trade_log")
-    dp.callback_query.register(handle_poly_buy_prompt,  F.data == "poly_buy_prompt")
-    dp.callback_query.register(handle_poly_sell_prompt, F.data == "poly_sell_prompt")
+    dp.callback_query.register(handle_poly_menu,          F.data == "poly_menu")
+    dp.callback_query.register(handle_poly_portfolio,     F.data == "poly_portfolio")
+    dp.callback_query.register(handle_poly_positions,     F.data == "poly_positions")
+    dp.callback_query.register(handle_poly_orderbook,     F.data == "poly_orderbook")
+    dp.callback_query.register(handle_poly_ai_recs,       F.data == "poly_ai_recs")
+    dp.callback_query.register(handle_poly_scalper,       F.data == "poly_scalper")
+    dp.callback_query.register(handle_poly_trade_log,     F.data == "poly_trade_log")
+    dp.callback_query.register(handle_poly_buy_prompt,    F.data == "poly_buy_prompt")
+    dp.callback_query.register(handle_poly_sell_prompt,   F.data == "poly_sell_prompt")
+    dp.callback_query.register(handle_poly_alert_approve, F.data.startswith("poly_alert_approve:"))
+    dp.callback_query.register(handle_poly_alert_dismiss, F.data == "poly_alert_dismiss")
 
     # HITL inline keyboard callbacks
     dp.callback_query.register(

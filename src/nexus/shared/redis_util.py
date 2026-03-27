@@ -5,6 +5,10 @@ Uses ::1 (IPv6 loopback) on Windows — the bundled redis-server binds [::] whic
 covers IPv6. Avoid 127.0.0.1 on Windows as port-proxy rules (WSL2/Hyper-V) can
 hijack that address and cause WinError 64/10054 connection drops.
 Retries up to 5 times with exponential back-off before raising.
+
+Remote-worker resilience parameters (socket_keepalive, health_check_interval,
+socket_timeout, retry_on_timeout, and Retry on broken-pipe) are applied to all
+pools so that workers on the Windows laptop survive WinError 64 / broken pipes.
 """
 
 from __future__ import annotations
@@ -57,11 +61,23 @@ async def create_redis_pool(
 
     Retries up to _MAX_RETRIES times to handle transient 'Error 22' (WSAEINVAL)
     on Windows caused by IPv6 resolution of 'localhost'.
+
+    Resilience parameters (keepalive, health-check, timeout, retry-on-timeout,
+    and Retry on broken-pipe / WinError 64) are applied unconditionally so that
+    remote Windows workers survive long-lived connection drops.
     """
     import redis.asyncio as aioredis  # type: ignore[import]
+    from redis.asyncio.retry import Retry as AioRetry  # type: ignore[import]
+    from redis.exceptions import BusyLoadingError, ConnectionError as RedisConnError, TimeoutError as RedisTimeoutError  # type: ignore[import]
 
     dsn = url or get_redis_url()
     last_exc: Exception | None = None
+
+    _retry_policy = AioRetry(
+        backoff=None,  # uses default exponential back-off
+        retries=3,
+        supported_errors=(RedisConnError, RedisTimeoutError, BusyLoadingError, ConnectionResetError, BrokenPipeError),
+    )
 
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
@@ -69,6 +85,11 @@ async def create_redis_pool(
                 dsn,
                 max_connections=max_connections,
                 decode_responses=decode_responses,
+                socket_keepalive=True,
+                health_check_interval=30,
+                socket_timeout=20,
+                retry_on_timeout=True,
+                retry=_retry_policy,
             )
             client = aioredis.Redis(connection_pool=pool)
             await client.ping()
@@ -94,11 +115,21 @@ def create_redis_pool_sync(
     Create a synchronous Redis connection pool with retry logic.
 
     Same retry semantics as create_redis_pool but for sync contexts.
+    Resilience parameters mirror the async pool.
     """
     import redis  # type: ignore[import]
+    from redis.backoff import ExponentialBackoff  # type: ignore[import]
+    from redis.exceptions import BusyLoadingError, ConnectionError as RedisConnError, TimeoutError as RedisTimeoutError  # type: ignore[import]
+    from redis.retry import Retry as SyncRetry  # type: ignore[import]
 
     dsn = url or get_redis_url()
     last_exc: Exception | None = None
+
+    _retry_policy = SyncRetry(
+        backoff=ExponentialBackoff(),
+        retries=3,
+        supported_errors=(RedisConnError, RedisTimeoutError, BusyLoadingError, ConnectionResetError, BrokenPipeError),
+    )
 
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
@@ -106,6 +137,11 @@ def create_redis_pool_sync(
                 dsn,
                 max_connections=max_connections,
                 decode_responses=decode_responses,
+                socket_keepalive=True,
+                health_check_interval=30,
+                socket_timeout=20,
+                retry_on_timeout=True,
+                retry=_retry_policy,
             )
             client.ping()
             return client

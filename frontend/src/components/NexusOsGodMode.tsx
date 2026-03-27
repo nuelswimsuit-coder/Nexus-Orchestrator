@@ -86,6 +86,10 @@ export interface GodModeDashboard {
     price: string;
   }[];
   signer_address?: string;
+  total_deposited?: number;
+  total_withdrawn?: number;
+  break_even_delta?: number;
+  realized_pnl?: number;
 }
 
 interface TelefixGroup {
@@ -2413,6 +2417,29 @@ function PolymarketTradingView({
             <StatBadge label="Win Rate / אחוז ניצחון" value={`${(perf?.win_rate ?? 0).toFixed(1)}%`} sub={`${perf?.total_trades ?? 0} trades / עסקאות`} icon={Percent} color="amber" />
           </div>
 
+          {/* Break-even row */}
+          {(data?.total_deposited ?? 0) > 0 && (() => {
+            const deposited = data?.total_deposited ?? 0;
+            const withdrawn = data?.total_withdrawn ?? 0;
+            const beDelta   = data?.break_even_delta ?? 0;
+            const roi       = deposited > 0 ? (beDelta / deposited) * 100 : 0;
+            const bePositive = beDelta >= 0;
+            return (
+              <div className="w-full mt-3 pt-3 border-t border-slate-800/60 flex flex-wrap gap-6 items-center">
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                  Break-Even / <span className="text-slate-600 normal-case font-normal">נקודת איזון</span>
+                </div>
+                <div className="flex gap-6 text-xs font-mono flex-wrap">
+                  <span className="text-slate-500">הפקדות / Deposited: <span className="text-slate-300 font-black">{fmtUsd(deposited)}</span></span>
+                  {withdrawn > 0 && <span className="text-slate-500">משיכות / Withdrawn: <span className="text-emerald-400 font-black">{fmtUsd(withdrawn)}</span></span>}
+                  <span className={`font-black ${bePositive ? "text-emerald-400" : "text-rose-400"}`}>
+                    {bePositive ? "▲" : "▼"} {bePositive ? "+" : ""}{fmtUsd(beDelta)} ({roi >= 0 ? "+" : ""}{roi.toFixed(1)}% ROI)
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Right: action buttons */}
           <div className="flex gap-3">
             <button type="button" className="px-5 py-2 bg-cyan-500 hover:bg-cyan-400 text-black font-black text-xs rounded-xl transition shadow-lg shadow-cyan-500/20 uppercase tracking-widest">
@@ -2694,7 +2721,7 @@ function PolymarketTradingView({
                     const edgePct = ((realProb - impliedOdds) * 100);
                     const edgePositive = edgePct > 0;
                     const daysToRes = Math.max(1, Math.round(30 - (pos.count * 2)));
-                    const nexusAction = edgePct > 5 ? `BUY below ${(impliedOdds * 100 - 2).toFixed(0)}c` : edgePct < -5 ? `SELL above ${(impliedOdds * 100 + 2).toFixed(0)}c` : "HOLD — monitor";
+                    const nexusAction = edgePct > 5 ? `קנה / BUY below ${(impliedOdds * 100 - 2).toFixed(0)}c` : edgePct < -5 ? `מכור / SELL above ${(impliedOdds * 100 + 2).toFixed(0)}c` : "המתן / HOLD";
                     const whaleAlert = pos.totalSpent > 200;
                     const batchCmd = positionBatchCmds[pos.asset] ?? String(8100 + i);
                     return (
@@ -2715,7 +2742,7 @@ function PolymarketTradingView({
                                 <span className="text-[8px] font-black px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30">{(pos as {outcome?: string}).outcome}</span>
                               )}
                               {whaleAlert && (
-                                <span className="text-[8px] font-black px-1 py-0.5 rounded animate-pulse" style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" }} title="Whale activity detected">🐋</span>
+                                <span className="text-[8px] font-black px-1 py-0.5 rounded animate-pulse" style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" }} title="Whale activity detected / פעילות לווייתן">🐋</span>
                               )}
                             </div>
                             <div className="text-[10px] text-slate-500 font-mono">
@@ -2745,10 +2772,10 @@ function PolymarketTradingView({
                       {/* PHASE 2: Real Probability vs Odds (AUDITED) */}
                       <td className="px-3 py-3 text-center">
                         <div className="rounded-lg px-2 py-1.5 inline-block" style={{ background: "rgba(34,211,238,0.05)", border: "1px solid rgba(34,211,238,0.18)" }}>
-                          <div className="text-[9px] font-black text-cyan-300">{(realProb * 100).toFixed(0)}% real</div>
-                          <div className="text-[9px] text-slate-500">{(impliedOdds * 100).toFixed(0)}% implied</div>
+                          <div className="text-[9px] font-black text-cyan-300">{(realProb * 100).toFixed(0)}% <span className="text-cyan-400/60">אמיתי</span></div>
+                          <div className="text-[9px] text-slate-500">{(impliedOdds * 100).toFixed(0)}% <span className="text-slate-600">משתמע</span></div>
                           <div className={`text-[9px] font-black ${edgePositive ? "text-emerald-400" : "text-rose-400"}`}>
-                            EDGE: {edgePositive ? "+" : ""}{edgePct.toFixed(1)}%
+                            יתרון: {edgePositive ? "+" : ""}{edgePct.toFixed(1)}%
                           </div>
                         </div>
                       </td>
@@ -2756,7 +2783,7 @@ function PolymarketTradingView({
                       <td className="px-3 py-3 text-center">
                         <div className="rounded-lg px-2 py-1.5 inline-block" style={{ background: "rgba(168,85,247,0.05)", border: "1px solid rgba(168,85,247,0.18)" }}>
                           <div className="flex items-center gap-1 text-[9px] font-black text-purple-300">
-                            <Clock size={9} />{daysToRes}d est.
+                            <Clock size={9} />{daysToRes}י׳ <span className="text-purple-400/50 font-normal">משוער</span>
                           </div>
                           <div className="text-[8px] text-slate-600 font-mono">NEXUS CORE</div>
                         </div>
@@ -2764,7 +2791,7 @@ function PolymarketTradingView({
                       {/* PHASE 2: NEXUS REC floating tooltip */}
                       <td className="px-3 py-3 text-center">
                         <div className="rounded-lg px-2 py-1.5 inline-block" style={{ background: "rgba(34,211,238,0.06)", border: "1px solid rgba(34,211,238,0.25)", boxShadow: "0 0 8px rgba(34,211,238,0.08)" }}>
-                          <div className="text-[8px] font-black text-cyan-400/60 uppercase">⬡ NEXUS REC</div>
+                          <div className="text-[8px] font-black text-cyan-400/60 uppercase">⬡ המלצה / REC</div>
                           <div className="text-[9px] font-black text-cyan-300 whitespace-nowrap">{nexusAction}</div>
                         </div>
                       </td>
@@ -2931,7 +2958,7 @@ function PolymarketTradingView({
           <Crosshair size={16} className="text-violet-400" />
           <span className="text-sm font-black uppercase tracking-widest text-white">AI Recommendations <span className="text-slate-500 normal-case font-normal text-xs">/ המלצות AI</span></span>
           <span className={`ml-auto text-[10px] font-black px-2 py-0.5 rounded border uppercase tracking-widest ${signalBg} ${signalColor}`}>
-            {cx?.signal_label ?? "NEUTRAL"} · {cx?.high_confidence ? "HIGH CONF / ביטחון גבוה" : "LOW CONF / ביטחון נמוך"}
+            {cx?.signal_label ?? "NEUTRAL / ניטרלי"} · {cx?.high_confidence ? "HIGH CONF / ביטחון גבוה" : "LOW CONF / ביטחון נמוך"}
           </span>
         </div>
 
@@ -2943,6 +2970,7 @@ function PolymarketTradingView({
           <div className="space-y-3">
             {aiRecs.map((rec, i) => {
               const actionColor = rec.action === "BUY MORE" ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/30" : rec.action === "REDUCE" ? "text-rose-400 bg-rose-500/10 border-rose-500/30" : "text-amber-400 bg-amber-500/10 border-amber-500/30";
+              const actionLabel = rec.action === "BUY MORE" ? "קנה עוד / BUY MORE" : rec.action === "REDUCE" ? "הפחת / REDUCE" : "המתן / HOLD";
               return (
                 <div key={i} className="flex items-center gap-4 p-3 bg-slate-900/40 rounded-xl border border-slate-800/40 hover:border-violet-500/20 transition">
                   <div className="flex-1 min-w-0">
@@ -2962,7 +2990,7 @@ function PolymarketTradingView({
                       </div>
                     </div>
                     <span className={`text-[10px] font-black px-2.5 py-1 rounded-lg border uppercase tracking-widest ${actionColor}`}>
-                      {rec.action}
+                      {actionLabel}
                     </span>
                     <button type="button"
                       onClick={() => { setTokenId(rec.asset); setSelectedPosition(rec.asset); }}
@@ -3116,14 +3144,14 @@ function PolymarketTradingView({
                       <td className="px-4 py-2 text-slate-300 max-w-[200px] truncate">{e.market_question || e.log_text || "—"}</td>
                       <td className="px-4 py-2 text-center">
                         <span className={`text-[9px] font-black px-2 py-0.5 rounded uppercase ${e.side === "BUY" ? "text-emerald-400 bg-emerald-500/10" : "text-rose-400 bg-rose-500/10"}`}>
-                          {e.side}
+                          {e.side === "BUY" ? "קנה / BUY" : "מכור / SELL"}
                         </span>
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-slate-300">{e.price.toFixed(4)}</td>
                       <td className="px-4 py-2 text-right font-mono text-slate-300">{fmtUsd(e.spent_usd)}</td>
                       <td className="px-4 py-2 text-center">
                         <span className={`text-[9px] font-black px-2 py-0.5 rounded uppercase ${e.status === "filled" ? "text-emerald-400" : e.status === "paper" ? "text-amber-400" : "text-slate-500"}`}>
-                          {e.paper ? "PAPER" : e.status}
+                          {e.paper ? "נייר / PAPER" : e.status === "filled" ? "בוצע / FILLED" : e.status === "failed" ? "נכשל / FAILED" : e.status}
                         </span>
                       </td>
                     </tr>
@@ -3135,13 +3163,13 @@ function PolymarketTradingView({
                       <td className="px-4 py-2 text-slate-300 max-w-[200px] truncate">{t.asset}</td>
                       <td className="px-4 py-2 text-center">
                         <span className={`text-[9px] font-black px-2 py-0.5 rounded uppercase ${t.side === "BUY" ? "text-emerald-400 bg-emerald-500/10" : "text-rose-400 bg-rose-500/10"}`}>
-                          {t.side}
+                          {t.side === "BUY" ? "קנה / BUY" : "מכור / SELL"}
                         </span>
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-slate-300">${t.price}</td>
                       <td className="px-4 py-2 text-right font-mono text-slate-300">{fmtUsd(t.amount)}</td>
                       <td className="px-4 py-2 text-center">
-                        <span className="text-[9px] font-black px-2 py-0.5 rounded uppercase text-cyan-400">CLOB</span>
+                        <span className="text-[9px] font-black px-2 py-0.5 rounded uppercase text-cyan-400">CLOB / חי</span>
                       </td>
                     </tr>
                   ))}
@@ -3174,11 +3202,11 @@ function PolymarketTradingView({
             <select value={batchType} onChange={(e) => setBatchType(e.target.value)}
               className="w-full text-[11px] font-black outline-none cursor-pointer"
               style={{ background: "rgba(34,211,238,0.06)", border: "1px solid rgba(34,211,238,0.25)", borderRadius: "8px", padding: "7px 10px", color: "#67e8f9", fontFamily: "monospace" }}>
-              <option value="LIMIT">LIMIT</option>
-              <option value="MARKET">MARKET</option>
-              <option value="STOP">STOP</option>
-              <option value="FOK">FOK</option>
-              <option value="IOC">IOC</option>
+              <option value="LIMIT">מוגבל / LIMIT</option>
+              <option value="MARKET">שוק / MARKET</option>
+              <option value="STOP">עצור / STOP</option>
+              <option value="FOK">FOK — מלא או בטל</option>
+              <option value="IOC">IOC — מיידי או בטל</option>
             </select>
           </div>
           <div>
@@ -3186,11 +3214,11 @@ function PolymarketTradingView({
             <select value={batchOrderSel} onChange={(e) => setBatchOrderSel(e.target.value)}
               className="w-full text-[11px] font-black outline-none cursor-pointer"
               style={{ background: "rgba(34,211,238,0.06)", border: "1px solid rgba(34,211,238,0.25)", borderRadius: "8px", padding: "7px 10px", color: "#67e8f9", fontFamily: "monospace" }}>
-              <option value="ALL">ALL POSITIONS</option>
-              <option value="YES_ONLY">YES ONLY</option>
-              <option value="NO_ONLY">NO ONLY</option>
-              <option value="PROFITABLE">PROFITABLE ONLY</option>
-              <option value="LOSING">LOSING ONLY</option>
+              <option value="ALL">כל הפוזיציות / ALL POSITIONS</option>
+              <option value="YES_ONLY">YES בלבד / YES ONLY</option>
+              <option value="NO_ONLY">NO בלבד / NO ONLY</option>
+              <option value="PROFITABLE">רווחיות / PROFITABLE ONLY</option>
+              <option value="LOSING">הפסדיות / LOSING ONLY</option>
             </select>
           </div>
           <div>
@@ -3232,7 +3260,7 @@ function PolymarketTradingView({
           <button type="button" onClick={() => { setBatchType("LIMIT"); setBatchOrderSel("ALL"); setBatchPrice("0.21"); setBatchSize("100"); setBatchStatus(null); }}
             className="px-4 py-2.5 text-[10px] font-black uppercase tracking-widest"
             style={{ background: "transparent", border: "1px solid rgba(100,116,139,0.25)", borderRadius: "9px", color: "#64748b", fontFamily: "monospace" }}>
-            [RESET]
+            [RESET / אפס]
           </button>
           {batchStatus && (
             <span className="text-[10px] font-black uppercase tracking-widest animate-pulse font-mono"
@@ -3287,7 +3315,7 @@ function PolymarketTradingView({
                   </div>
                   <div className="mb-2">
                     <div className="flex justify-between text-[8px] font-black uppercase tracking-widest mb-1">
-                      <span style={{ color: cpuColor }}>CPU</span>
+                      <span style={{ color: cpuColor }}>CPU <span className="text-slate-600 normal-case font-normal">מעבד</span></span>
                       <span style={{ color: cpuColor }}>{cpuPct.toFixed(1)}%</span>
                     </div>
                     <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.05)" }}>
@@ -3296,7 +3324,7 @@ function PolymarketTradingView({
                   </div>
                   <div className="mb-2">
                     <div className="flex justify-between text-[8px] font-black uppercase tracking-widest mb-1">
-                      <span style={{ color: ramColor }}>RAM</span>
+                      <span style={{ color: ramColor }}>RAM <span className="text-slate-600 normal-case font-normal">זיכרון</span></span>
                       <span style={{ color: ramColor }}>{ramPct > 0 ? `${ramPct.toFixed(1)}%` : "—"}</span>
                     </div>
                     <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.05)" }}>

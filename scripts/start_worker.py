@@ -196,11 +196,12 @@ def main() -> None:
         try:
             run_worker(WorkerSettings)
             break  # clean exit — do not restart
-        except OSError as exc:
+        except (ConnectionError, OSError) as exc:
             winerror = getattr(exc, "winerror", None)
-            if winerror in _WIN_TRANSIENT_ERRORS:
+            if isinstance(exc, ConnectionError) or winerror in _WIN_TRANSIENT_ERRORS:
                 log.warning(
-                    "nexus_worker_win_transient_error",
+                    "nexus_worker_transient_error",
+                    error=str(exc),
                     winerror=winerror,
                     attempt=_attempt,
                     max_attempts=_MAX_RESTART_ATTEMPTS,

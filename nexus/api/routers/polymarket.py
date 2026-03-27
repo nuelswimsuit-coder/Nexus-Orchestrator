@@ -71,7 +71,7 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
             or os.getenv("POLYMARKET_SIGNER_ADDRESS", "").strip()
         )
         if not address:
-            return (0.0, 0.0, 0.0)
+            return (0.0, 0.0, 0.0, [])
         addr = address.lower()
         try:
             client = _get_http_client()
@@ -207,6 +207,30 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
         or signer
     )
 
+    # ── Break-even / total deposited tracker ──────────────────────────────────
+    # Stored in Redis as a float so it persists across restarts.
+    # The frontend/bot can POST /api/polymarket/set-deposit to update it.
+    _DEPOSIT_KEY = "nexus:poly:total_deposited"
+    try:
+        dep_raw = await redis.get(_DEPOSIT_KEY)
+        total_deposited = float((dep_raw or b"0").decode() if isinstance(dep_raw, (bytes, bytearray)) else (dep_raw or "0"))
+    except Exception:
+        total_deposited = 0.0
+
+    # Realized P&L = sum of cashPnl across all positions
+    realized_pnl = sum(p.get("cash_pnl", 0) for p in portfolio_positions_list)
+    # Withdrawn amount stored in Redis
+    _WITHDRAWN_KEY = "nexus:poly:total_withdrawn"
+    try:
+        wd_raw = await redis.get(_WITHDRAWN_KEY)
+        total_withdrawn = float((wd_raw or b"0").decode() if isinstance(wd_raw, (bytes, bytearray)) else (wd_raw or "0"))
+    except Exception:
+        total_withdrawn = 0.0
+
+    # Break-even: current_value + withdrawn - deposited
+    current_effective = portfolio_val if portfolio_val > 0 else (bal or 0.0)
+    break_even_delta = current_effective + total_withdrawn - total_deposited
+
     return {
         "collateral_usdc": collateral,
         "portfolio_value": portfolio_val,
@@ -224,6 +248,10 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
         "cross_exchange_status": cx.status,
         "fetched_at": cx.fetched_at,
         "signer_address": signer,
+        "total_deposited": total_deposited,
+        "total_withdrawn": total_withdrawn,
+        "break_even_delta": round(break_even_delta, 2),
+        "realized_pnl": round(realized_pnl, 2),
     }
 
 
@@ -403,6 +431,24 @@ async def polymarket_manual_order(body: ManualOrderBody, redis: RedisDep) -> dic
         "side": body.side,
         "spent_usd": result.spent_usd,
     }
+
+
+class DepositBody(BaseModel):
+    amount: float = Field(gt=0, le=10_000_000)
+
+
+@router.post("/set-deposit")
+async def polymarket_set_deposit(body: DepositBody, redis: RedisDep) -> dict[str, Any]:
+    """Set the total amount deposited to Polymarket (for break-even tracking)."""
+    await redis.set("nexus:poly:total_deposited", str(body.amount))
+    return {"ok": True, "total_deposited": body.amount}
+
+
+@router.post("/set-withdrawn")
+async def polymarket_set_withdrawn(body: DepositBody, redis: RedisDep) -> dict[str, Any]:
+    """Set the total amount withdrawn from Polymarket (for break-even tracking)."""
+    await redis.set("nexus:poly:total_withdrawn", str(body.amount))
+    return {"ok": True, "total_withdrawn": body.amount}
 
 
 @router.delete("/clear-position")
