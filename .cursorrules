@@ -39,3 +39,18 @@
 - Crypto: C:\Users\Yarin\Desktop\CryptoSellsBot
 - Sentinel/Reporter: C:\Users\Yarin\Desktop\Reporter
 - Archivist Data: C:\Users\Yarin\Desktop\Work\TeleFix_Archivist
+
+[REMOTE PROMPT BRIDGE - CURSOR AUTONOMY]
+- You must continuously monitor the file 'INCOMING_PROMPTS.md' at the project root.
+- Whenever a new section with 'STATUS: PENDING' appears, you are authorized to:
+  1. Read the instruction.
+  2. Execute the necessary code changes or analysis.
+  3. Update the status in the file to 'STATUS: COMPLETED' and add a brief summary of what you did.
+
+[REMOTE PROMPT BRIDGE]
+- Always monitor 'INCOMING_PROMPTS.md' in the project root.
+- When a new section with 'STATUS: PENDING' appears, you are authorized to:
+  1. Read the instruction.
+  2. Execute the necessary code changes or analysis.
+  3. Update the status in the file to 'STATUS: COMPLETED' and add a brief summary of what you did.
+- Treat PENDING prompts as priority instructions above all other tasks.

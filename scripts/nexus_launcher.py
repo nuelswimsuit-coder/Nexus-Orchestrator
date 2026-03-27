@@ -743,6 +743,12 @@ def main() -> int:
                 str(ROOT),
                 child_env,
             ),
+            (
+                "telegram-bot",
+                [py, _subprocess_resource_path("scripts", "start_telegram_bot.py")],
+                str(ROOT),
+                child_env,
+            ),
         ]
 
         # Frontend via npm

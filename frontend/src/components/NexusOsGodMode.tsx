@@ -424,7 +424,7 @@ export default function NexusOsGodMode() {
         </div>
       </aside>
 
-      <main className="flex-grow flex flex-col min-h-[calc(100vh-56px)] overflow-hidden bg-[radial-gradient(circle_at_20%_20%,#0f172a_0%,#020617_100%)]" style={{ contain: "layout" }}>
+      <main className="flex-grow flex flex-col min-h-[calc(100vh-56px)] overflow-hidden bg-[radial-gradient(circle_at_20%_20%,#0f172a_0%,#020617_100%)]">
         <header className="h-24 border-b border-slate-800/50 backdrop-blur-xl bg-slate-900/20 flex items-center justify-between px-10 z-10 shrink-0">
           <div className="flex gap-10 flex-wrap">
             <GlobalMetric
@@ -2726,7 +2726,12 @@ function PolymarketTradingView({
                     const batchCmd = positionBatchCmds[pos.asset] ?? String(8100 + i);
                     return (
                     <tr key={i}
-                      onClick={() => { setTokenId(pos.asset); setSelectedPosition(pos.asset); void fetchOrderbook(pos.asset); }}
+                      onClick={() => {
+                        // #region agent log
+                        fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',location:'NexusOsGodMode.tsx:POS_ROW_CLICK',message:'Position row clicked',data:{asset:pos.asset},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+                        // #endregion
+                        setTokenId(pos.asset); setSelectedPosition(pos.asset); void fetchOrderbook(pos.asset);
+                      }}
                       className={`border-b border-slate-800/40 hover:bg-cyan-500/5 cursor-pointer transition ${selectedPosition === pos.asset ? "bg-cyan-500/5 border-l-2 border-l-cyan-500" : ""}`}>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
@@ -2993,7 +2998,12 @@ function PolymarketTradingView({
                       {actionLabel}
                     </span>
                     <button type="button"
-                      onClick={() => { setTokenId(rec.asset); setSelectedPosition(rec.asset); }}
+                      onClick={() => {
+                        // #region agent log
+                        fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',location:'NexusOsGodMode.tsx:AI_REC_CLICK',message:'AI rec chevron clicked',data:{asset:rec.asset},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+                        // #endregion
+                        setTokenId(rec.asset); setSelectedPosition(rec.asset);
+                      }}
                       className="text-slate-600 hover:text-cyan-400 transition">
                       <ChevronRight size={14} />
                     </button>
@@ -4877,7 +4887,12 @@ function MenuItem({
   return (
     <button
       type="button"
-      onClick={() => setActive(id)}
+      onClick={() => {
+        // #region agent log
+        fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',location:'NexusOsGodMode.tsx:MENU_CLICK',message:'MenuItem clicked',data:{id},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
+        setActive(id);
+      }}
       className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
         active === id
           ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shadow-[0_0_15px_rgba(6,182,212,0.1)]"

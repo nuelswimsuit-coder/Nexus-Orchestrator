@@ -123,6 +123,27 @@ BTN_PROFIT    = "💰 Profit Report"
 BTN_TASKS     = "🛠️ Active Tasks"
 BTN_INCUBATOR = "🧬 Evolution Engine"
 
+# ── Remote Prompt Bridge ──────────────────────────────────────────────────────
+_PROMPTS_FILE = Path(__file__).resolve().parent.parent / "INCOMING_PROMPTS.md"
+_JACOB_USER_ID = int(os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "7849455058"))
+
+
+async def handle_remote_prompt(message: Message) -> None:
+    """Intercept plain-text messages from Jacob and append them to INCOMING_PROMPTS.md."""
+    if not message.text or not message.from_user:
+        return
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    entry = (
+        f"\n### [{ts}] - FROM IPHONE\n"
+        f"**PROMPT**: {message.text}\n"
+        f"**STATUS**: PENDING\n"
+        f"---\n"
+    )
+    with _PROMPTS_FILE.open("a", encoding="utf-8") as f:
+        f.write(entry)
+    await message.answer("✅ Prompt recorded in Master\\. Cursor is now analyzing\\.")
+
+
 # ── Inline Keyboard Menu (replaces old Reply Keyboard) ────────────────────────
 def get_main_menu():
     """Get the main inline keyboard menu in the current language."""
@@ -2256,6 +2277,44 @@ async def handle_system_recovery_callback(callback: CallbackQuery) -> None:
     await callback.answer("✅ System Recovery activated!", show_alert=True)
 
 
+# ── Remote Prompt Bridge ──────────────────────────────────────────────────────
+
+# Jacob Hatan's Telegram user ID — replace with the actual user ID if it differs
+# from the admin chat ID. Used to gate the remote prompt bridge.
+_JACOB_USER_ID: int = int(os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "0") or "0")
+
+_PROMPTS_FILE = Path(__file__).resolve().parent.parent / "INCOMING_PROMPTS.md"
+
+
+async def handle_remote_prompt(message: Message) -> None:
+    """Intercept plain-text messages from Jacob and write them to INCOMING_PROMPTS.md."""
+    if not message.from_user or message.from_user.id != _JACOB_USER_ID:
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        return
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    entry = (
+        f"\n### [{timestamp}] - FROM IPHONE\n"
+        f"**PROMPT**: {text}\n"
+        f"**STATUS**: PENDING\n"
+        f"---\n"
+    )
+
+    try:
+        with _PROMPTS_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(entry)
+    except Exception as exc:
+        log.error("remote_bridge_write_error", error=str(exc))
+        await message.answer("❌ Failed to record prompt on Master.")
+        return
+
+    log.info("[REMOTE BRIDGE] New prompt received from Jacob Hatan", prompt=text[:120])
+    await message.answer("✅ Prompt recorded in Master\\. Cursor is now analyzing\\.")
+
+
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 
 def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
@@ -2330,6 +2389,13 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     dp.callback_query.register(
         handle_system_recovery_callback,
         F.data == "system_recovery",
+    )
+
+    # Remote Prompt Bridge — registered last so all Command filters take priority
+    dp.message.register(
+        handle_remote_prompt,
+        F.from_user.id == _JACOB_USER_ID,
+        ~F.text.startswith("/"),
     )
 
     return bot, dp
@@ -2454,6 +2520,9 @@ async def run() -> None:
         handle_system_recovery_callback,
         F.data == "system_recovery",
     )
+
+    # Remote Prompt Bridge — must be last so it only catches unhandled plain text
+    dp.message.register(handle_remote_prompt, F.text)
 
     log.info(
         "telegram_bot_starting",
