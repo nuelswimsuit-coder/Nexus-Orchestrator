@@ -416,10 +416,10 @@ class ManualOrderBody(BaseModel):
     price: float | None = Field(default=None, gt=0, lt=1)
 
 
-@router.post("/manual-order")
+@router.post("/manual-order", response_model=None)
 async def polymarket_manual_order(
     body: ManualOrderBody, redis: RedisDep
-) -> JSONResponse | dict[str, Any]:
+) -> JSONResponse:
     """Map UI BUY/SELL to YES buy or outcome sell; price defaults from bot snapshot or 0.5.
 
     Every response includes header ``X-Nexus-Manual-Order-Enrich`` so DevTools can prove which
