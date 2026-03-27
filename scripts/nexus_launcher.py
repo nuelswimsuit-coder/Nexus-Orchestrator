@@ -270,6 +270,7 @@ def _child_env(base: dict[str, str]) -> dict[str, str]:
         prev = (out.get("PYTHONPATH") or "").strip()
         out["PYTHONPATH"] = pr if not prev else f"{pr}{os.pathsep}{prev}"
     out["PYTHONIOENCODING"] = "utf-8"
+    out["PYTHONUTF8"] = "1"
     return out
 
 

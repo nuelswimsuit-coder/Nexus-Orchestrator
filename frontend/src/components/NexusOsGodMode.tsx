@@ -2183,6 +2183,7 @@ function PolymarketTradingView({
   const [orderStatus, setOrderStatus] = useState<{ msg: string; ok: boolean } | null>(null);
   const [selectedPosition, setSelectedPosition] = useState<string | null>(null);
   const [nodes, setNodes] = useState<ClusterHealthNode[]>([]);
+  const [expandedRecIdx, setExpandedRecIdx] = useState<number | null>(null);
   const [batchType, setBatchType] = useState("LIMIT");
   const [batchOrderSel, setBatchOrderSel] = useState("ALL");
   const [batchPrice, setBatchPrice] = useState("0.21");
@@ -2325,17 +2326,24 @@ function PolymarketTradingView({
 
   const aiRecs = useMemo(() => {
     const signal = cx?.signal ?? "NEUTRAL";
+    const totalVal = portfolioValue > 0 ? portfolioValue : 100;
     return positions.map((p) => {
       const edge = p.pnlPct;
       const isBullish = signal === "BULLISH" || signal === "BUY";
       const arbGap = Math.abs(cx?.arbitrage_gap ?? 0);
-      const confidence = Math.min(100, arbGap * 1000 + 20);
+      // Per-position confidence: blend arb gap + edge magnitude
+      const edgeConf = Math.min(40, Math.abs(edge) * 0.8);
+      const confidence = Math.min(100, arbGap * 1000 + 20 + edgeConf);
       let action: "BUY MORE" | "HOLD" | "REDUCE" = "HOLD";
       if (isBullish && edge > 5) action = "BUY MORE";
       else if (!isBullish && edge < -5) action = "REDUCE";
-      return { ...p, action, confidence, signal };
-    });
-  }, [positions, cx]);
+      // Recommended bet: Kelly-lite — size proportional to confidence × edge
+      const kellySizing = (confidence / 100) * (Math.abs(edge) / 100) * totalVal;
+      const recBet = Math.max(10, Math.min(kellySizing, totalVal * 0.2));
+      const recSide: "BUY" | "SELL" = action === "REDUCE" ? "SELL" : "BUY";
+      return { ...p, action, confidence, signal, recBet, recSide };
+    }).sort((a, b) => b.confidence - a.confidence);
+  }, [positions, cx, portfolioValue]);
 
   // ── Order handler ────────────────────────────────────────────────────────
   const handleOrder = async (side: "BUY" | "SELL") => {
@@ -2358,6 +2366,30 @@ function PolymarketTradingView({
       await fetchDashboardData();
     } catch {
       setOrderStatus({ msg: "Execution error — check master connection", ok: false });
+    }
+  };
+
+  // ── Direct rec order handler (fires from expanded panel) ─────────────────
+  const [recOrderStatus, setRecOrderStatus] = useState<Record<number, { msg: string; ok: boolean; loading?: boolean }>>({});
+  const handleRecOrder = async (recIdx: number, tokenAsset: string, side: "BUY" | "SELL", betAmount: number) => {
+    setRecOrderStatus((prev) => ({ ...prev, [recIdx]: { msg: "שולח פקודה...", ok: true, loading: true } }));
+    try {
+      const res = await fetch(`${API_BASE}/api/polymarket/manual-order`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token_id: tokenAsset.trim(), side, amount: betAmount }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = (j as { detail?: string | { msg?: string }[] }).detail;
+        const msg = typeof detail === "string" ? detail : Array.isArray(detail) ? detail.map((x) => x.msg).join(", ") : "הפקודה נדחתה";
+        setRecOrderStatus((prev) => ({ ...prev, [recIdx]: { msg, ok: false } }));
+        return;
+      }
+      setRecOrderStatus((prev) => ({ ...prev, [recIdx]: { msg: `✅ בוצע ${side} — $${betAmount.toFixed(0)}`, ok: true } }));
+      await fetchDashboardData();
+    } catch {
+      setRecOrderStatus((prev) => ({ ...prev, [recIdx]: { msg: "שגיאת חיבור — בדוק Nexus Master", ok: false } }));
     }
   };
 
@@ -3022,9 +3054,11 @@ function PolymarketTradingView({
       <HackerCard className="p-6" glow="violet">
         <div className="flex items-center gap-2 mb-5">
           <Crosshair size={16} className="text-violet-400" />
-          <span className="text-sm font-black uppercase tracking-widest text-white">AI Recommendations <span className="text-slate-500 normal-case font-normal text-xs">/ המלצות AI</span></span>
-          <span className={`ml-auto text-[10px] font-black px-2 py-0.5 rounded border uppercase tracking-widest ${signalBg} ${signalColor}`}>
-            {cx?.signal_label ?? "NEUTRAL / ניטרלי"} · {cx?.high_confidence ? "HIGH CONF / ביטחון גבוה" : "LOW CONF / ביטחון נמוך"}
+          <span className="text-sm font-black uppercase tracking-widest text-white">AI Recommendations <span className="text-violet-300 normal-case font-bold text-sm">/ המלצות AI</span></span>
+          <span className={`ml-auto text-xs font-black px-3 py-1 rounded border uppercase tracking-widest ${signalBg} ${signalColor}`}>
+            <span className="text-sm font-black">{cx?.signal_label ?? "ניטרלי"}</span> <span className="opacity-70 text-[10px]">/ {cx?.signal_label ?? "NEUTRAL"}</span>
+            {" · "}
+            <span className="text-sm font-black">{cx?.high_confidence ? "ביטחון גבוה" : "ביטחון נמוך"}</span>
           </span>
         </div>
 
@@ -3033,41 +3067,160 @@ function PolymarketTradingView({
             No open positions to analyze — place trades to see AI recommendations / אין פוזיציות לניתוח — בצע עסקאות לקבלת המלצות AI
           </div>
         ) : (
-          <div className="space-y-3">
-            {aiRecs.map((rec, i) => {
-              const actionColor = rec.action === "BUY MORE" ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/30" : rec.action === "REDUCE" ? "text-rose-400 bg-rose-500/10 border-rose-500/30" : "text-amber-400 bg-amber-500/10 border-amber-500/30";
-              const actionLabel = rec.action === "BUY MORE" ? "קנה עוד / BUY MORE" : rec.action === "REDUCE" ? "הפחת / REDUCE" : "המתן / HOLD";
-              return (
-                <div key={i} className="flex items-center gap-4 p-3 bg-slate-900/40 rounded-xl border border-slate-800/40 hover:border-violet-500/20 transition">
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs font-bold text-white truncate">{rec.asset}</div>
-                    <div className="text-[10px] text-slate-500 font-mono">
-                      Edge / יתרון: <span className={rec.pnlPct >= 0 ? "text-emerald-400" : "text-rose-400"}>{fmtPct(rec.pnlPct)}</span>
-                      {" · "}Mid / אמצע: {(rec.nowPrice * 100).toFixed(1)}¢
-                      {" · "}Avg / ממוצע: {(rec.avgPrice * 100).toFixed(1)}¢
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    {/* Confidence bar */}
-                    <div className="hidden sm:block w-20">
-                      <div className="text-[9px] text-slate-600 font-mono mb-1 text-right">{rec.confidence.toFixed(0)}% conf / ביטחון</div>
-                      <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
-                        <div className="h-full bg-violet-500 rounded-full" style={{ width: `${rec.confidence}%` }} />
+          <>
+            {/* Sort indicator */}
+            <div className="flex items-center gap-2 mb-3 text-[11px] font-bold text-slate-500 uppercase tracking-widest">
+              <span className="text-violet-400">↓</span>
+              <span>ממוין לפי ביטחון / Sorted by Confidence</span>
+            </div>
+            <div className="space-y-2">
+              {aiRecs.map((rec, i) => {
+                const isExpanded = expandedRecIdx === i;
+                const actionColor = rec.action === "BUY MORE" ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/30" : rec.action === "REDUCE" ? "text-rose-400 bg-rose-500/10 border-rose-500/30" : "text-amber-400 bg-amber-500/10 border-amber-500/30";
+                const actionLabelHe = rec.action === "BUY MORE" ? "קנה עוד" : rec.action === "REDUCE" ? "הפחת" : "המתן";
+                const actionLabelEn = rec.action === "BUY MORE" ? "BUY MORE" : rec.action === "REDUCE" ? "REDUCE" : "HOLD";
+                const pnlColor = rec.pnlPct >= 0 ? "text-emerald-400" : "text-rose-400";
+                const recStatus = recOrderStatus[i];
+                // Confidence tier badge
+                const confTier = rec.confidence >= 70 ? { label: "גבוה", color: "text-emerald-400 border-emerald-500/40 bg-emerald-500/10" } : rec.confidence >= 45 ? { label: "בינוני", color: "text-amber-400 border-amber-500/40 bg-amber-500/10" } : { label: "נמוך", color: "text-rose-400 border-rose-500/40 bg-rose-500/10" };
+                return (
+                  <div key={i} className={`rounded-xl border transition-all duration-200 overflow-hidden ${isExpanded ? "border-violet-500/40 bg-slate-900/60" : "border-slate-800/40 bg-slate-900/40 hover:border-violet-500/20"}`}>
+                    {/* Row header — clickable */}
+                    <button
+                      type="button"
+                      className="w-full flex items-center gap-3 p-3 text-left"
+                      onClick={() => {
+                        setExpandedRecIdx(isExpanded ? null : i);
+                        setTokenId(rec.asset);
+                        setSelectedPosition(rec.asset);
+                      }}
+                    >
+                      {/* Rank badge */}
+                      <div className="shrink-0 w-6 h-6 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-[10px] font-black text-slate-400">
+                        {i + 1}
                       </div>
-                    </div>
-                    <span className={`text-[10px] font-black px-2.5 py-1 rounded-lg border uppercase tracking-widest ${actionColor}`}>
-                      {actionLabel}
-                    </span>
-                    <button type="button"
-                      onClick={() => { setTokenId(rec.asset); setSelectedPosition(rec.asset); }}
-                      className="text-slate-600 hover:text-cyan-400 transition">
-                      <ChevronRight size={14} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-bold text-white truncate leading-snug">{rec.asset}</div>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-0.5">
+                          <span className="text-xs font-bold text-slate-300">יתרון: <span className={`font-black ${pnlColor}`}>{fmtPct(rec.pnlPct)}</span></span>
+                          <span className="text-[10px] text-slate-600">·</span>
+                          <span className="text-xs text-slate-400">אמצע: <span className="text-slate-200 font-semibold">{(rec.nowPrice * 100).toFixed(1)}¢</span></span>
+                          <span className="text-[10px] text-slate-600">·</span>
+                          <span className="text-xs text-slate-400">ממוצע: <span className="text-slate-200 font-semibold">{(rec.avgPrice * 100).toFixed(1)}¢</span></span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {/* Confidence bar + tier */}
+                        <div className="hidden sm:flex flex-col items-end gap-1 w-24">
+                          <div className="flex items-center gap-1.5">
+                            <span className={`text-[10px] font-black px-1.5 py-0.5 rounded border ${confTier.color}`}>{confTier.label}</span>
+                            <span className="text-xs font-black text-violet-300">{rec.confidence.toFixed(0)}%</span>
+                          </div>
+                          <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                            <div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${rec.confidence}%` }} />
+                          </div>
+                        </div>
+                        <span className={`text-xs font-black px-2.5 py-1.5 rounded-lg border ${actionColor}`}>
+                          <span className="text-sm">{actionLabelHe}</span>
+                          <span className="text-[10px] opacity-60 ml-1">/ {actionLabelEn}</span>
+                        </span>
+                        <ChevronRight size={16} className={`text-slate-500 transition-transform duration-200 ${isExpanded ? "rotate-90 text-violet-400" : ""}`} />
+                      </div>
                     </button>
+
+                    {/* ── Expanded detail panel ── */}
+                    {isExpanded && (
+                      <div className="px-4 pb-5 border-t border-slate-800/60 space-y-4 mt-0">
+
+                        {/* Stats grid */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+                          <div className="bg-slate-800/50 rounded-lg p-3 text-center">
+                            <div className="text-[11px] font-bold text-slate-400 mb-1">יתרון / Edge</div>
+                            <div className={`text-xl font-black ${pnlColor}`}>{fmtPct(rec.pnlPct)}</div>
+                          </div>
+                          <div className="bg-slate-800/50 rounded-lg p-3 text-center">
+                            <div className="text-[11px] font-bold text-slate-400 mb-1">מחיר נוכחי</div>
+                            <div className="text-xl font-black text-white">{(rec.nowPrice * 100).toFixed(2)}¢</div>
+                          </div>
+                          <div className="bg-slate-800/50 rounded-lg p-3 text-center">
+                            <div className="text-[11px] font-bold text-slate-400 mb-1">רווח/הפסד</div>
+                            <div className={`text-xl font-black ${rec.pnlDelta >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                              {rec.pnlDelta >= 0 ? "+" : ""}{fmtUsd(rec.pnlDelta)}
+                            </div>
+                          </div>
+                          <div className="bg-slate-800/50 rounded-lg p-3 text-center">
+                            <div className="text-[11px] font-bold text-slate-400 mb-1">שווי / Value</div>
+                            <div className="text-xl font-black text-cyan-400">{fmtUsd(rec.value)}</div>
+                          </div>
+                        </div>
+
+                        {/* Recommended bet box */}
+                        <div className="bg-violet-500/5 border border-violet-500/25 rounded-xl p-4">
+                          <div className="text-xs font-black text-violet-300 uppercase tracking-widest mb-3">
+                            🎯 הימור מומלץ / Recommended Bet
+                          </div>
+                          <div className="grid grid-cols-3 gap-3 mb-4">
+                            <div className="text-center">
+                              <div className="text-[11px] font-bold text-slate-400 mb-1">פוזיציה מומלצת</div>
+                              <div className={`text-lg font-black ${rec.recSide === "BUY" ? "text-emerald-400" : "text-rose-400"}`}>
+                                {rec.recSide === "BUY" ? "קנה YES ↑" : "מכור SELL ↓"}
+                              </div>
+                            </div>
+                            <div className="text-center">
+                              <div className="text-[11px] font-bold text-slate-400 mb-1">סכום מומלץ</div>
+                              <div className="text-lg font-black text-white">{fmtUsd(rec.recBet)}</div>
+                            </div>
+                            <div className="text-center">
+                              <div className="text-[11px] font-bold text-slate-400 mb-1">ביטחון AI</div>
+                              <div className="text-lg font-black text-violet-300">{rec.confidence.toFixed(0)}%</div>
+                            </div>
+                          </div>
+
+                          {/* Execute buttons */}
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={recStatus?.loading}
+                              onClick={() => void handleRecOrder(i, rec.asset, rec.recSide, rec.recBet)}
+                              className={`flex-1 py-3 rounded-xl font-black text-sm uppercase tracking-widest transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg ${
+                                rec.recSide === "BUY"
+                                  ? "bg-emerald-500 hover:bg-emerald-400 text-black shadow-emerald-500/20"
+                                  : "bg-rose-500 hover:bg-rose-400 text-white shadow-rose-500/20"
+                              }`}
+                            >
+                              {recStatus?.loading ? "⏳ שולח..." : rec.recSide === "BUY" ? `✅ בצע קנייה — ${fmtUsd(rec.recBet)}` : `🔴 בצע מכירה — ${fmtUsd(rec.recBet)}`}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setTokenId(rec.asset); setAmount(rec.recBet.toFixed(0)); setSelectedPosition(rec.asset); setExpandedRecIdx(null); }}
+                              className="px-4 py-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-black rounded-xl transition uppercase tracking-widest"
+                            >
+                              ✏️ ערוך
+                            </button>
+                          </div>
+
+                          {/* Order status */}
+                          {recStatus && !recStatus.loading && (
+                            <div className={`mt-2 flex items-center gap-2 p-2.5 rounded-lg text-xs font-black border ${recStatus.ok ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "bg-rose-500/10 border-rose-500/30 text-rose-400"}`}>
+                              {recStatus.msg}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Extra info row */}
+                        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                          <span>כמות: <span className="text-slate-300 font-semibold">{rec.netShares.toFixed(1)} shares</span></span>
+                          <span>·</span>
+                          <span>ממוצע: <span className="text-slate-300 font-semibold">{(rec.avgPrice * 100).toFixed(2)}¢</span></span>
+                          {rec.endDate && <><span>·</span><span>סיום: <span className="text-slate-300 font-semibold">{rec.endDate}</span></span></>}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          </>
         )}
       </HackerCard>
 

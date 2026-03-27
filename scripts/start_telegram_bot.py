@@ -48,6 +48,11 @@ from urllib.parse import unquote, urlparse
 if sys.platform == "win32":
     # Required for Windows + Python 3.8+ compatibility with aiohttp/arq
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    # Fix Unicode output on Windows terminals (Hebrew/emoji support)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 elif os.environ.get("ENVIRONMENT", "PRODUCTION").upper() == "PRODUCTION":
     try:
         import uvloop  # type: ignore[import-not-found]
