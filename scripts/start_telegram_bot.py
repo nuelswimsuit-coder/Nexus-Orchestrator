@@ -132,11 +132,37 @@ BTN_INCUBATOR = "🧬 Evolution Engine"
 _PROMPTS_FILE = Path(__file__).resolve().parent.parent / "INCOMING_PROMPTS.md"
 _JACOB_USER_ID = int(os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "7849455058"))
 
+# Users currently in "cursor prompt input" mode (waiting for next message as prompt)
+_cursor_prompt_mode: set[int] = set()
+
 
 async def handle_remote_prompt(message: Message) -> None:
     """Intercept plain-text messages from Jacob and append them to INCOMING_PROMPTS.md."""
     if not message.text or not message.from_user:
         return
+
+    user_id = message.from_user.id
+
+    # If user pressed the Cursor Prompt button, treat next message as the prompt
+    if user_id in _cursor_prompt_mode:
+        _cursor_prompt_mode.discard(user_id)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        entry = (
+            f"\n### [{ts}] - FROM IPHONE\n"
+            f"**PROMPT**: {message.text}\n"
+            f"**STATUS**: PENDING\n"
+            f"---\n"
+        )
+        with _PROMPTS_FILE.open("a", encoding="utf-8") as f:
+            f.write(entry)
+        await message.answer(
+            "✅ *פרומפט נשלח ל\\-Cursor\\!*\n\n"
+            f"```\n{message.text[:300]}\n```\n\n"
+            "_Cursor יטפל בו בהקדם\\._",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        return
+
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     entry = (
         f"\n### [{ts}] - FROM IPHONE\n"
@@ -147,6 +173,71 @@ async def handle_remote_prompt(message: Message) -> None:
     with _PROMPTS_FILE.open("a", encoding="utf-8") as f:
         f.write(entry)
     await message.answer("✅ Prompt recorded in Master\\. Cursor is now analyzing\\.")
+
+
+async def handle_cursor_prompt_btn(callback: CallbackQuery) -> None:
+    """Enter Cursor prompt input mode — next message will be sent as a Cursor prompt."""
+    await callback.answer()
+    if callback.from_user:
+        _cursor_prompt_mode.add(callback.from_user.id)
+    await callback.message.edit_text(
+        "🤖 *Cursor Prompt*\n\n"
+        "✍️ שלח עכשיו את הפרומפט שלך\\.\n"
+        "ההודעה הבאה שתשלח תירשם ב\\-`INCOMING_PROMPTS\\.md` עם סטטוס `PENDING`\\.\n\n"
+        "_לביטול — שלח /start_",
+        parse_mode=ParseMode.MARKDOWN_V2,
+    )
+
+
+async def handle_cursor_read_prompts(callback: CallbackQuery) -> None:
+    """Show last 5 prompts from INCOMING_PROMPTS.md."""
+    await callback.answer()
+    if not _PROMPTS_FILE.exists():
+        await callback.message.edit_text(
+            "📋 *פרומפטים ל\\-Cursor*\n\n_הקובץ ריק — עדיין לא נשלחו פרומפטים\\._",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🏠 תפריט ראשי", callback_data="start_menu"),
+            ]]),
+        )
+        return
+
+    content = _PROMPTS_FILE.read_text(encoding="utf-8")
+    # Split into sections by "###"
+    sections = [s.strip() for s in content.split("###") if s.strip()]
+    last_5 = sections[-5:] if len(sections) >= 5 else sections
+    last_5.reverse()  # newest first
+
+    lines = ["📋 *פרומפטים אחרונים ל\\-Cursor* \\(5 אחרונים\\)\n"]
+    for sec in last_5:
+        first_line = sec.splitlines()[0] if sec.splitlines() else ""
+        status = "✅ COMPLETED" if "COMPLETED" in sec else "⏳ PENDING"
+        prompt_line = ""
+        for l in sec.splitlines():
+            if l.startswith("**PROMPT**"):
+                prompt_line = l.replace("**PROMPT**: ", "").strip()
+                break
+        # Escape markdown special chars
+        def esc(t: str) -> str:
+            for ch in r"_*[]()~`>#+-=|{}.!":
+                t = t.replace(ch, f"\\{ch}")
+            return t
+        lines.append(f"*{esc(first_line[:60])}*\n{status}\n_{esc(prompt_line[:120])}_\n")
+
+    text = "\n".join(lines)
+    if len(text) > 3800:
+        text = text[:3800] + "\n\\.\\.\\."
+
+    await callback.message.edit_text(
+        text,
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🤖 שלח פרומפט חדש", callback_data="cursor_prompt_btn"),
+                InlineKeyboardButton(text="🏠 תפריט ראשי",     callback_data="start_menu"),
+            ],
+        ]),
+    )
 
 
 # ── Inline Keyboard Menu (replaces old Reply Keyboard) ────────────────────────
@@ -197,6 +288,10 @@ def get_start_menu() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="🔄 System Recovery",        callback_data="system_recovery"),
             InlineKeyboardButton(text="🔒 Terminate Nexus",        callback_data="terminate_btn"),
+        ],
+        [
+            InlineKeyboardButton(text="🤖 Cursor Prompt",          callback_data="cursor_prompt_btn"),
+            InlineKeyboardButton(text="📋 קרא פרומפטים",           callback_data="cursor_read_prompts"),
         ],
         [
             InlineKeyboardButton(text="🔗 Dashboard",              callback_data="dashboard_btn"),
@@ -2677,6 +2772,8 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     dp.callback_query.register(handle_dashboard_btn,     F.data == "dashboard_btn")
     dp.callback_query.register(handle_help_btn,          F.data == "help_btn")
     dp.callback_query.register(handle_start_menu,        F.data == "start_menu")
+    dp.callback_query.register(handle_cursor_prompt_btn,   F.data == "cursor_prompt_btn")
+    dp.callback_query.register(handle_cursor_read_prompts, F.data == "cursor_read_prompts")
 
     # Polymarket control panel callbacks
     dp.callback_query.register(handle_poly_menu,         F.data == "poly_menu")
@@ -2815,6 +2912,8 @@ async def run() -> None:
     dp.callback_query.register(handle_dashboard_btn,     F.data == "dashboard_btn")
     dp.callback_query.register(handle_help_btn,          F.data == "help_btn")
     dp.callback_query.register(handle_start_menu,        F.data == "start_menu")
+    dp.callback_query.register(handle_cursor_prompt_btn,   F.data == "cursor_prompt_btn")
+    dp.callback_query.register(handle_cursor_read_prompts, F.data == "cursor_read_prompts")
 
     # Polymarket control panel callbacks
     dp.callback_query.register(handle_poly_menu,          F.data == "poly_menu")

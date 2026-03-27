@@ -222,6 +222,13 @@ class PolymarketClient:
                         loop.run_in_executor(None, fn, params),
                         timeout=10.0,
                     )
+                    # #region agent log
+                    import json as _json, time as _time
+                    try:
+                        with open("debug-020f7b.log", "a") as _f:
+                            _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:get_balance_usdc","message":"balance_allowance_raw_response","data":{"resp_type":type(resp).__name__,"resp_repr":str(resp)[:300]},"hypothesisId":"H-C"}) + "\n")
+                    except Exception: pass
+                    # #endregion
                     if isinstance(resp, dict):
                         raw = resp.get("balance", 0)
                         # USDC on Polygon has 6 decimals — value may be in wei
@@ -240,6 +247,13 @@ class PolymarketClient:
                 except ImportError:
                     pass
                 except Exception as exc:
+                    # #region agent log
+                    import json as _json, time as _time
+                    try:
+                        with open("debug-020f7b.log", "a") as _f:
+                            _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:get_balance_usdc","message":"balance_allowance_exception","data":{"error":str(exc),"error_type":type(exc).__name__},"hypothesisId":"H-C"}) + "\n")
+                    except Exception: pass
+                    # #endregion
                     log.debug("polymarket.get_balance_sdk_miss", method="get_balance_allowance", error=str(exc))
 
             # Legacy fallback: get_balance()
@@ -250,6 +264,13 @@ class PolymarketClient:
                         loop.run_in_executor(None, fn_legacy),
                         timeout=10.0,
                     )
+                    # #region agent log
+                    import json as _json, time as _time
+                    try:
+                        with open("debug-020f7b.log", "a") as _f:
+                            _f.write(_json.dumps({"sessionId":"020f7b","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:get_balance_usdc","message":"legacy_balance_raw_response","data":{"resp_type":type(resp).__name__,"resp_repr":str(resp)[:300]},"hypothesisId":"H-C"}) + "\n")
+                    except Exception: pass
+                    # #endregion
                     if isinstance(resp, (int, float)):
                         return float(resp)
                     if isinstance(resp, dict):
@@ -519,6 +540,23 @@ class PolymarketClient:
         """Synchronous limit order — called from a thread executor."""
         from py_clob_client.clob_types import OrderArgs, OrderType
 
+        # #region agent log
+        import json as _json, time as _time
+        try:
+            with open("debug-e259b0.log", "a") as _f:
+                _f.write(_json.dumps({"sessionId":"e259b0","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:_place_limit_order_sync","message":"place_limit_order_entry","data":{"tick_size":str(tick_size),"tick_size_type":type(tick_size).__name__,"side":side,"price":price},"hypothesisId":"H1/H3"}) + "\n")
+        except Exception: pass
+        # check if create_order accepts options as dict or object
+        try:
+            import inspect as _inspect
+            sig = str(_inspect.signature(self._clob.create_order))
+            with open("debug-e259b0.log", "a") as _f:
+                _f.write(_json.dumps({"sessionId":"e259b0","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:_place_limit_order_sync","message":"create_order_signature","data":{"signature":sig},"hypothesisId":"H3"}) + "\n")
+        except Exception as _e:
+            with open("debug-e259b0.log", "a") as _f:
+                _f.write(_json.dumps({"sessionId":"e259b0","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:_place_limit_order_sync","message":"create_order_signature_error","data":{"error":str(_e)},"hypothesisId":"H3"}) + "\n")
+        # #endregion
+
         log.info(f"Preparing order for Builder: {self.builder_id}")
         signed = self._clob.create_order(
             OrderArgs(token_id=token_id, price=price, size=size, side=side),
@@ -542,7 +580,18 @@ class PolymarketClient:
     def get_tick_size(self, token_id: str) -> str:
         if self._clob is None:
             return "0.01"
-        return self._clob.get_tick_size(token_id)
+        # #region agent log
+        import json as _json, time as _time
+        try:
+            raw_tick = self._clob.get_tick_size(token_id)
+            with open("debug-e259b0.log", "a") as _f:
+                _f.write(_json.dumps({"sessionId":"e259b0","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:get_tick_size","message":"get_tick_size_raw_result","data":{"token_id":token_id[:20],"raw_tick":str(raw_tick),"raw_tick_type":type(raw_tick).__name__},"hypothesisId":"H1"}) + "\n")
+            return raw_tick
+        except Exception as _exc:
+            with open("debug-e259b0.log", "a") as _f:
+                _f.write(_json.dumps({"sessionId":"e259b0","timestamp":int(_time.time()*1000),"location":"polymarket_client.py:get_tick_size","message":"get_tick_size_error","data":{"error":str(_exc),"error_type":type(_exc).__name__},"hypothesisId":"H2"}) + "\n")
+            return "0.01"
+        # #endregion
 
     def get_neg_risk(self, token_id: str) -> bool:
         if self._clob is None:
