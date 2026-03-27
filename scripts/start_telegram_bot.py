@@ -1519,15 +1519,23 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
 
         # Also include cross-exchange high-conf signal
         cx_alert_lines: list[str] = []
+        cx_rec_amt: float = 0.0
         if cx_conf and cx_signal:
             pct = 10.0
-            rec_amt = round(portfolio_val * pct / 100, 2)
+            cx_rec_amt = round(portfolio_val * pct / 100, 2)
+            signal_upper = cx_signal.upper()
+            is_buy = "BUY" in signal_upper
+            signal_icon = "📈" if is_buy else "📉"
+            action_icon = "🟢" if is_buy else "🔴"
             cx_alert_lines = [
-                f"⚡ *HIGH CONFIDENCE SIGNAL*",
-                f"  Signal: `{_esc(cx_signal)}`",
-                f"  ARB Gap: `{arb_gap*100:.3f}%`",
-                f"  Rec: `${rec_amt:.2f}` \\({pct:.0f}% of portfolio\\)",
-                "",
+                f"⚡ *HIGH CONFIDENCE SIGNAL* / אות בביטחון גבוה",
+                f"",
+                f"{signal_icon} Signal: `{_esc(cx_signal)}`",
+                f"📊 ARB Gap: `{arb_gap*100:.3f}%`",
+                f"💰 Rec / המלצה: `${cx_rec_amt:.2f}` \\({pct:.0f}% מהתיק\\)",
+                f"",
+                f"_Use `/poly\\_buy` to execute_",
+                f"",
             ]
 
         if not high_conf_recs and not cx_alert_lines:
@@ -1580,20 +1588,29 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
                 reply_markup=alert_keyboard,
             )
 
-        # Send cross-exchange alert if present (no approve button — no specific token)
+        # Send cross-exchange alert with approve/execute buttons
         if cx_alert_lines:
+            is_cx_buy = "BUY" in cx_signal.upper()
+            cx_side = "BUY" if is_cx_buy else "SELL"
             cx_text = (
-                "🚨 *Cross\\-Exchange AI Alert*\n\n"
+                "🚨 *Polymarket AI Alert / פולימרקט AI התראת*\n\n"
                 + "\n".join(cx_alert_lines)
                 + f"🔄 _{_esc(_now_utc())}_"
             )
             cx_keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="🤖 AI Recs",    callback_data="poly_ai_recs"),
-                    InlineKeyboardButton(text="🎯 Panel",      callback_data="poly_menu"),
+                    InlineKeyboardButton(
+                        text=f"✅ בצע {cx_side} ${cx_rec_amt:.0f} / Execute",
+                        callback_data=f"poly_cx_approve:{cx_side}:{cx_rec_amt:.2f}",
+                    ),
+                    InlineKeyboardButton(text="❌ דחה / Dismiss", callback_data="poly_alert_dismiss"),
                 ],
                 [
-                    InlineKeyboardButton(text="❌ Dismiss",    callback_data="poly_alert_dismiss"),
+                    InlineKeyboardButton(text="📊 Positions / פוזיציות", callback_data="poly_positions"),
+                    InlineKeyboardButton(text="🤖 AI / AI Recs המלצות", callback_data="poly_ai_recs"),
+                ],
+                [
+                    InlineKeyboardButton(text="🎯 Polymarket Panel", callback_data="poly_menu"),
                 ],
             ])
             await bot.send_message(
@@ -1623,16 +1640,59 @@ async def handle_poly_alert_approve(callback: CallbackQuery) -> None:
 
     side   = parts[1].upper()
     amount = parts[2]
+    cmd    = "buy" if side == "BUY" else "sell"
+    icon   = "📈" if side == "BUY" else "📉"
 
-    await callback.answer("אישור התקבל / Approved")
+    await callback.answer("✅ אישור התקבל / Approved")
     await callback.message.edit_text(
-        f"✅ *Approved / אושר*\n\n"
-        f"To execute, send:\n"
-        f"`/poly\\_{'buy' if side == 'BUY' else 'sell'} <token\\_id> {_esc(amount)}`\n\n"
-        f"_Get token\\_id from /polymarket → Positions_",
+        f"✅ *Approved / אושר* {icon}\n\n"
+        f"⚡ לביצוע, שלח:\n"
+        f"`/poly\\_{cmd} <token\\_id> {_esc(amount)}`\n\n"
+        f"💡 _קבל token\\_id מ: /polymarket → Positions_",
         parse_mode=ParseMode.MARKDOWN_V2,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📈 Positions", callback_data="poly_positions")],
+            [
+                InlineKeyboardButton(text="📊 Positions / פוזיציות", callback_data="poly_positions"),
+                InlineKeyboardButton(text="🎯 Panel", callback_data="poly_menu"),
+            ],
+        ]),
+    )
+
+
+async def handle_poly_cx_approve(callback: CallbackQuery) -> None:
+    """Handle approve button on Cross-Exchange AI alert — show execute prompt."""
+    if callback.data is None:
+        await callback.answer("Invalid.")
+        return
+
+    # callback_data format: poly_cx_approve:<side>:<amount>
+    parts = callback.data.split(":")
+    if len(parts) < 3:
+        await callback.answer("Invalid format.")
+        return
+
+    side   = parts[1].upper()
+    amount = parts[2]
+    cmd    = "buy" if side == "BUY" else "sell"
+    icon   = "📈" if side == "BUY" else "📉"
+
+    await callback.answer("✅ אישור התקבל / Approved")
+    await callback.message.edit_text(
+        f"✅ *Approved / אושר* {icon}\n\n"
+        f"⚡ *Cross\\-Exchange Signal — ביצוע*\n\n"
+        f"שלח את הפקודה הבאה עם ה\\-token\\_id:\n"
+        f"`/poly\\_{cmd} <token\\_id> {_esc(amount)}`\n\n"
+        f"💡 _קבל token\\_id מ: /polymarket → Positions_\n"
+        f"📊 _ARB Gap מצביע על הזדמנות ארביטראז' חוצת בורסות_",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📊 Positions / פוזיציות", callback_data="poly_positions"),
+                InlineKeyboardButton(text="🤖 AI Recs", callback_data="poly_ai_recs"),
+            ],
+            [
+                InlineKeyboardButton(text="🎯 Polymarket Panel", callback_data="poly_menu"),
+            ],
         ]),
     )
 
@@ -2610,6 +2670,7 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     dp.callback_query.register(handle_poly_buy_prompt,   F.data == "poly_buy_prompt")
     dp.callback_query.register(handle_poly_sell_prompt,  F.data == "poly_sell_prompt")
     dp.callback_query.register(handle_poly_alert_approve, F.data.startswith("poly_alert_approve:"))
+    dp.callback_query.register(handle_poly_cx_approve,    F.data.startswith("poly_cx_approve:"))
     dp.callback_query.register(handle_poly_alert_dismiss, F.data == "poly_alert_dismiss")
 
     # HITL and control handlers
@@ -2747,6 +2808,7 @@ async def run() -> None:
     dp.callback_query.register(handle_poly_buy_prompt,    F.data == "poly_buy_prompt")
     dp.callback_query.register(handle_poly_sell_prompt,   F.data == "poly_sell_prompt")
     dp.callback_query.register(handle_poly_alert_approve, F.data.startswith("poly_alert_approve:"))
+    dp.callback_query.register(handle_poly_cx_approve,    F.data.startswith("poly_cx_approve:"))
     dp.callback_query.register(handle_poly_alert_dismiss, F.data == "poly_alert_dismiss")
 
     # HITL inline keyboard callbacks

@@ -201,13 +201,7 @@ const DECISION_DOT: Record<string, string> = {
 // ── Root ────────────────────────────────────────────────────────────────────
 
 export default function NexusOsGodMode() {
-  const [activeTab, setActiveTabRaw] = useState("master-hub");
-  // #region agent log
-  const setActiveTab = (tab: string) => {
-    fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',location:'NexusOsGodMode.tsx:SET_ACTIVE_TAB',message:'setActiveTab called',data:{tab,prev:activeTab},timestamp:Date.now(),hypothesisId:'G'})}).catch(()=>{});
-    setActiveTabRaw(tab);
-  };
-  // #endregion
+  const [activeTab, setActiveTab] = useState("master-hub");
   const [currentTime, setCurrentTime] = useState("");
   const [marketData, setMarketData] = useState<GodModeDashboard | null>(null);
 
@@ -2390,11 +2384,22 @@ function PolymarketTradingView({
     setTimeout(() => setBatchStatus(null), 4000);
   };
 
-  // #region agent log
-  React.useEffect(() => {
-    fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',location:'NexusOsGodMode.tsx:POLY_VIEW_MOUNT',message:'PolymarketTradingView mounted',data:{containLayout:'removed'},timestamp:Date.now(),hypothesisId:'D'})}).catch(()=>{});
-  }, []);
-  // #endregion
+  const handleDepositSubmit = async () => {
+    const val = parseFloat(depositInput);
+    if (isNaN(val) || val <= 0) { setDepositStatus({ msg: "סכום לא תקין / Invalid amount", ok: false }); return; }
+    const endpoint = depositModal === "deposit" ? "set-deposit" : "set-withdrawn";
+    try {
+      const res = await fetch(`${API_BASE}/api/polymarket/${endpoint}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: val }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setDepositStatus({ msg: depositModal === "deposit" ? `✅ הפקדה עודכנה: $${val.toFixed(2)}` : `✅ משיכה עודכנה: $${val.toFixed(2)}`, ok: true });
+      setTimeout(() => { setDepositModal(null); setDepositStatus(null); setDepositInput(""); fetchDashboardData(); }, 1500);
+    } catch (e) {
+      setDepositStatus({ msg: `שגיאה: ${e instanceof Error ? e.message : String(e)}`, ok: false });
+    }
+  };
 
   return (
     <div className="space-y-6" style={{ background: "transparent" }}>
@@ -2457,13 +2462,59 @@ function PolymarketTradingView({
 
           {/* Right: action buttons */}
           <div className="flex gap-3">
-            <button type="button" className="px-5 py-2 bg-cyan-500 hover:bg-cyan-400 text-black font-black text-xs rounded-xl transition shadow-lg shadow-cyan-500/20 uppercase tracking-widest">
-              Deposit / הפקדה
+            <button type="button" onClick={() => { setDepositModal("deposit"); setDepositInput(""); setDepositStatus(null); }} className="px-5 py-2 bg-cyan-500 hover:bg-cyan-400 text-black font-black text-xs rounded-xl transition shadow-lg shadow-cyan-500/20 uppercase tracking-widest">
+              הפקדה / Deposit
             </button>
-            <button type="button" className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-black text-xs rounded-xl transition border border-slate-700 uppercase tracking-widest">
-              Withdraw / משיכה
+            <button type="button" onClick={() => { setDepositModal("withdraw"); setDepositInput(""); setDepositStatus(null); }} className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-black text-xs rounded-xl transition border border-slate-700 uppercase tracking-widest">
+              משיכה / Withdraw
             </button>
           </div>
+
+          {/* Deposit / Withdraw modal */}
+          {depositModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={(e) => { if (e.target === e.currentTarget) setDepositModal(null); }}>
+              <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-base font-black text-white">
+                    {depositModal === "deposit" ? "הפקדה / Deposit" : "משיכה / Withdraw"}
+                  </h3>
+                  <button type="button" onClick={() => setDepositModal(null)} className="text-slate-500 hover:text-white text-lg leading-none">✕</button>
+                </div>
+                <p className="text-xs text-slate-500 mb-4">
+                  {depositModal === "deposit"
+                    ? "הזן את סך כל הסכום שהפקדת לפולימרקט עד כה (לחישוב נקודת איזון)"
+                    : "הזן את סך כל הסכום שמשכת מפולימרקט עד כה"}
+                </p>
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="text-slate-400 font-black">$</span>
+                  <input
+                    type="number" min="0" step="0.01"
+                    value={depositInput}
+                    onChange={(e) => setDepositInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleDepositSubmit()}
+                    placeholder="0.00"
+                    className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-cyan-500"
+                    autoFocus
+                  />
+                </div>
+                {depositStatus && (
+                  <div className={`text-xs font-bold mb-3 ${depositStatus.ok ? "text-emerald-400" : "text-rose-400"}`}>
+                    {depositStatus.msg}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <button type="button" onClick={handleDepositSubmit}
+                    className="flex-1 py-2 bg-cyan-500 hover:bg-cyan-400 text-black font-black text-xs rounded-xl transition">
+                    אישור / Confirm
+                  </button>
+                  <button type="button" onClick={() => setDepositModal(null)}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-black text-xs rounded-xl transition border border-slate-700">
+                    ביטול / Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* PnL sparkline */}
@@ -2741,12 +2792,7 @@ function PolymarketTradingView({
                     const batchCmd = positionBatchCmds[pos.asset] ?? String(8100 + i);
                     return (
                     <tr key={i}
-                      onClick={() => {
-                        // #region agent log
-                        fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',location:'NexusOsGodMode.tsx:POS_ROW_CLICK',message:'Position row clicked',data:{asset:pos.asset},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
-                        // #endregion
-                        setTokenId(pos.asset); setSelectedPosition(pos.asset); void fetchOrderbook(pos.asset);
-                      }}
+                      onClick={() => { setTokenId(pos.asset); setSelectedPosition(pos.asset); void fetchOrderbook(pos.asset); }}
                       className={`border-b border-slate-800/40 hover:bg-cyan-500/5 cursor-pointer transition ${selectedPosition === pos.asset ? "bg-cyan-500/5 border-l-2 border-l-cyan-500" : ""}`}>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
@@ -3013,12 +3059,7 @@ function PolymarketTradingView({
                       {actionLabel}
                     </span>
                     <button type="button"
-                      onClick={() => {
-                        // #region agent log
-                        fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',location:'NexusOsGodMode.tsx:AI_REC_CLICK',message:'AI rec chevron clicked',data:{asset:rec.asset},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-                        // #endregion
-                        setTokenId(rec.asset); setSelectedPosition(rec.asset);
-                      }}
+                      onClick={() => { setTokenId(rec.asset); setSelectedPosition(rec.asset); }}
                       className="text-slate-600 hover:text-cyan-400 transition">
                       <ChevronRight size={14} />
                     </button>
@@ -4940,12 +4981,7 @@ function MenuItem({
   return (
     <button
       type="button"
-      onClick={() => {
-        // #region agent log
-        fetch('http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c21539'},body:JSON.stringify({sessionId:'c21539',location:'NexusOsGodMode.tsx:MENU_CLICK',message:'MenuItem clicked',data:{id},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
-        setActive(id);
-      }}
+      onClick={() => setActive(id)}
       className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
         active === id
           ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shadow-[0_0_15px_rgba(6,182,212,0.1)]"
