@@ -152,8 +152,19 @@ def _redis_server_path() -> Path:
     return Path(_subprocess_resource_path("redis-local", "redis-server.exe"))
 
 
+def _redis_listen_lan() -> bool:
+    """When True, bundled Redis binds 0.0.0.0 so LAN workers can use the Master IPv4 (see redis.windows-lan.conf)."""
+    return os.environ.get("NEXUS_REDIS_LISTEN_LAN", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _redis_argv() -> list[str]:
-    return [_subprocess_resource_path("redis-local", "redis-server.exe")]
+    exe = _subprocess_resource_path("redis-local", "redis-server.exe")
+    if not _redis_listen_lan():
+        return [exe]
+    lan_conf = ROOT / "redis-local" / "redis.windows-lan.conf"
+    if lan_conf.is_file():
+        return [exe, str(lan_conf)]
+    return [exe, "--bind", "0.0.0.0"]
 
 
 def _ensure_redis_extracted(logf=None) -> bool:
@@ -685,8 +696,8 @@ def main() -> int:
                 logf.write("[launcher] waiting 5 s for Redis to become ready...\n")
                 logf.flush()
             time.sleep(3)
-            # If Redis failed to bind on 127.0.0.1, retry with ::1-only bind
-            if not _is_redis_running():
+            # If Redis failed to bind on 127.0.0.1, retry with ::1-only bind (not when LAN listen is requested).
+            if not _is_redis_running() and not _redis_listen_lan():
                 _dbg("[launcher] Redis failed on 127.0.0.1 — retrying with --bind ::1")
                 with _log_lock:
                     logf.write("[launcher] Redis bind failed on 127.0.0.1 — retrying with --bind ::1\n")
