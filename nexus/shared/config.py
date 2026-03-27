@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from nexus.shared.redis_util import (
@@ -38,6 +38,16 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @field_validator("telegram_api_id", mode="before")
+    @classmethod
+    def _empty_env_int(cls, value: object) -> object:
+        """`.env` often has `TELEGRAM_API_ID=` with no value — treat as unset (0)."""
+        if value is None:
+            return 0
+        if isinstance(value, str) and not value.strip():
+            return 0
+        return value
 
     # ── Broker ────────────────────────────────────────────────────────────────
     redis_url: str = Field(default_factory=default_redis_url_string)
