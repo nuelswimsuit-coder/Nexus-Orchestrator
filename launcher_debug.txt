@@ -5521,3 +5521,14 @@ eded the max restart limit (3). Manual intervention required.
 [launcher] spawn [git-sync]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
 [launcher] child process exited pid=41216 label=frontend returncode=1.
 [watchdog] Restarting [frontend] in 5s (attempt 1/3)…
+[watchdog] [frontend] restarted — pid=27816
+[launcher] child process exited pid=27816 label=frontend returncode=1.
+[watchdog] Restarting [frontend] in 10s (attempt 2/3)…
+[auto-worker] No worker heartbeats — auto-spawning local worker…
+[auto-worker] Worker spawned — pid=43888
+[watchdog] [frontend] restarted — pid=11756
+[launcher] child process exited pid=11756 label=frontend returncode=1.
+[watchdog] Restarting [frontend] in 15s (attempt 3/3)…
+[watchdog] [frontend] restarted — pid=30176
+[launcher] child process exited pid=30176 label=frontend returncode=1.
+[WATCHDOG] Service *frontend* has crashed 3 times and exceeded the max restart limit (3). Manual intervention required.
