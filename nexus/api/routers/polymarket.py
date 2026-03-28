@@ -44,7 +44,7 @@ def _get_http_client() -> httpx.AsyncClient:
 
 log = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/polymarket", tags=["polymarket-god-mode"])
+router = APIRouter(prefix="/polymarket", tags=["polymarket"])
 
 _MANUAL_ORDER_HEADERS = {"X-Nexus-Manual-Order-Enrich": MANUAL_ORDER_ENRICH_REV}
 

@@ -26,7 +26,7 @@ from nexus.agents.trading.polymarket_client import PolymarketClient, TradingHalt
 
 log = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/polymarket", tags=["polymarket-god-mode"])
+router = APIRouter(prefix="/polymarket", tags=["polymarket"])
 
 
 def _short_ts(ts: str) -> str:

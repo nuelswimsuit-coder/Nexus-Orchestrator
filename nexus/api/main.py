@@ -1161,6 +1161,7 @@ def _get_swagger_ui_html(openapi_url: str, title: str) -> str:  # noqa: PLR0915
         'swarm':         '🐝 ניהול נחיל — Swarm',
         'modules':       '🔌 מודולים חיצוניים — OpenClaw & Moltbot',
         'polymarket':    '📈 מסחר Polymarket',
+        'polymarket-god-mode': '📈 מסחר Polymarket',
         'prediction':    '🔮 מנוע ניבוי — Prediction & Arbitrage',
         'scalper':       '⚡ סקאלפר מהיר — Scalper',
         'deploy':        '🚀 פריסה לשרתים — Deploy via SSH',
@@ -1193,6 +1194,7 @@ def _get_swagger_ui_html(openapi_url: str, title: str) -> str:  # noqa: PLR0915
         'swarm':         '🐝 Account Swarm Management',
         'modules':       '🔌 External Modules — OpenClaw & Moltbot',
         'polymarket':    '📈 Polymarket Trading',
+        'polymarket-god-mode': '📈 Polymarket Trading',
         'prediction':    '🔮 Prediction & Arbitrage Engine',
         'scalper':       '⚡ Fast Scalper',
         'deploy':        '🚀 Remote Deploy via SSH',
@@ -1215,25 +1217,30 @@ def _get_swagger_ui_html(openapi_url: str, title: str) -> str:  # noqa: PLR0915
     document.getElementById('banner-subtitle').textContent = t.subtitle;
     document.getElementById('footer-text').innerHTML = t.footer;
 
-    // Translate tag section headers once Swagger UI has rendered them
+    // Allow re-translation after language switch (labels differ per locale).
+    document.querySelectorAll('.opblock-tag h3 a[data-nexus-label]').forEach((a) =>
+      a.removeAttribute('data-nexus-label')
+    );
     translateTags(t.tags);
   }}
 
   function translateTags(tagMap) {{
-    // Swagger renders tag headers as <h3> inside .opblock-tag-section
-    // We look for the data-tag attribute or the text content
+    // Replace the entire <a> label once per tag+lang. Do NOT prepend text nodes:
+    // Swagger UI nests <span>/<small> inside <a>; prepending caused "Engineprediction"
+    // style concatenation. MutationObserver + old translateTags also re-fired endlessly.
     document.querySelectorAll('.opblock-tag[data-tag]').forEach(el => {{
       const tag = el.getAttribute('data-tag');
-      if (tagMap[tag]) {{
-        const h3 = el.querySelector('h3 a') || el.querySelector('h3');
-        if (h3) {{
-          // Preserve the expand arrow span if present
-          const arrow = h3.querySelector('svg, .arrow');
-          h3.childNodes.forEach(n => {{ if (n.nodeType === 3) n.textContent = ''; }});
-          const textNode = document.createTextNode(tagMap[tag]);
-          h3.insertBefore(textNode, h3.firstChild);
-        }}
-      }}
+      const label = tagMap[tag];
+      if (!label) return;
+      const link = el.querySelector('h3 a');
+      if (!link) return;
+      if (link.getAttribute('data-nexus-label') === label) return;
+      const svgs = Array.from(link.querySelectorAll(':scope > svg'));
+      while (link.firstChild) link.removeChild(link.firstChild);
+      svgs.forEach(svg => link.appendChild(svg));
+      if (svgs.length) link.appendChild(document.createTextNode('\\u00A0'));
+      link.appendChild(document.createTextNode(label));
+      link.setAttribute('data-nexus-label', label);
     }});
   }}
 
@@ -1260,7 +1267,7 @@ def _get_swagger_ui_html(openapi_url: str, title: str) -> str:  # noqa: PLR0915
       displayRequestDuration: true,
       defaultModelsExpandDepth: 1,
       defaultModelExpandDepth: 2,
-      docExpansion: "none",
+      docExpansion: "list",
       filter: true,
       showExtensions: true,
       showCommonExtensions: true,
@@ -1274,15 +1281,18 @@ def _get_swagger_ui_html(openapi_url: str, title: str) -> str:  # noqa: PLR0915
         return req;
       }},
       onComplete: () => {{
-        // Apply saved language once Swagger finishes rendering
         applyLang(currentLang);
-        // Re-apply on any DOM mutations (expand/collapse)
-        const observer = new MutationObserver(() => {{
-          translateTags(TRANSLATIONS[currentLang].tags);
-        }});
+        // Debounced: filter/expand mutates DOM; translating must stay idempotent (see translateTags).
+        let tmo = null;
         const container = document.getElementById('swagger-ui');
         if (container) {{
-          observer.observe(container, {{ childList: true, subtree: true }});
+          new MutationObserver(() => {{
+            if (tmo) clearTimeout(tmo);
+            tmo = setTimeout(() => {{
+              tmo = null;
+              translateTags(TRANSLATIONS[currentLang].tags);
+            }}, 200);
+          }}).observe(container, {{ childList: true, subtree: true }});
         }}
       }},
     }});
