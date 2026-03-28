@@ -93,6 +93,26 @@ def _derived_eoa_from_key(pk: str) -> str:
         return ""
 
 
+def _signing_key_format_error(private_key: str) -> str | None:
+    """Return a user-facing message if ``private_key`` cannot be a 32-byte secp256k1 secret."""
+    k = (private_key or "").strip()
+    if not k:
+        return "POLYMARKET_RELAYER_KEY (or POLY_PRIVATE_KEY) is not set."
+    raw = k[2:] if k.lower().startswith("0x") else k
+    if not raw or any(c not in "0123456789abcdefABCDEF" for c in raw):
+        return "POLYMARKET_RELAYER_KEY must be hex (optionally 0x-prefixed)."
+    if len(raw) == 40:
+        return (
+            "POLYMARKET_RELAYER_KEY looks like a wallet address (20 bytes), not a private key. "
+            "Set the 32-byte account secret (0x + 64 hex from your wallet export), not POLYMARKET_SIGNER_ADDRESS."
+        )
+    if len(raw) != 64:
+        return (
+            f"POLYMARKET_RELAYER_KEY must be 32 bytes (64 hex digits); this value decodes to {len(raw) // 2} bytes."
+        )
+    return None
+
+
 def resolve_clob_funder_address(private_key: str, env_signer_address: str) -> str:
     """CLOB ``OrderBuilder`` uses ``funder`` as ``maker``; for EOAs it must match the signing key.
 
@@ -250,7 +270,13 @@ class PolymarketClient:
             get_polymarket_funder_address(),
         )
         self._clob: Any | None = None
+        self._sdk_init_error: str | None = None
         self._try_init_sdk()
+
+    def _clob_unavailable_message(self) -> str:
+        if self._sdk_init_error:
+            return self._sdk_init_error
+        return "Polymarket SDK not initialised (py-clob-client missing)"
 
     def _try_init_sdk(self) -> None:
         # #region agent log
@@ -267,6 +293,11 @@ class PolymarketClient:
             },
         )
         # #endregion
+        fmt_err = _signing_key_format_error(self._private_key)
+        if fmt_err:
+            self._sdk_init_error = fmt_err
+            log.warning("polymarket.signing_key_invalid", detail=fmt_err)
+            return
         try:
             from py_clob_client.client import ClobClient
 
@@ -292,6 +323,7 @@ class PolymarketClient:
                 paper_trading=PAPER_TRADING,
                 host=_CLOB_HOST,
             )
+            self._sdk_init_error = None
         except ImportError as exc:
             # #region agent log
             _agent_debug_log(
@@ -301,6 +333,10 @@ class PolymarketClient:
                 {"exc_type": type(exc).__name__, "exc_msg": str(exc)[:400]},
             )
             # #endregion
+            self._sdk_init_error = (
+                "Polymarket SDK not installed (py-clob-client). "
+                "Run: pip install py-clob-client py-builder-signing-sdk"
+            )
             log.warning(
                 "polymarket.sdk_not_installed",
                 hint="pip install py-clob-client py-builder-signing-sdk",
@@ -314,6 +350,14 @@ class PolymarketClient:
                 {"exc_type": type(exc).__name__, "exc_msg": str(exc)[:400]},
             )
             # #endregion
+            msg = str(exc)
+            if "32 bytes" in msg and "20 bytes" in msg:
+                self._sdk_init_error = (
+                    "Invalid signing key: Polymarket CLOB expects a 32-byte wallet private key "
+                    "(0x + 64 hex), not a 20-byte address. Fix POLYMARKET_RELAYER_KEY / POLY_PRIVATE_KEY."
+                )
+            else:
+                self._sdk_init_error = f"Polymarket CLOB client failed to start: {msg[:400]}"
             log.warning("polymarket.client_init_error", error=str(exc))
 
     # ── Balance & kill-switch ─────────────────────────────────────────────────
@@ -522,7 +566,7 @@ class PolymarketClient:
                 {"paper_mode": paper_mode},
             )
             # #endregion
-            base.error = "Polymarket SDK not initialised (py-clob-client missing)"
+            base.error = self._clob_unavailable_message()
             return base
 
         from nexus.shared.polymarket_util import preflight_live_clob_order
@@ -621,7 +665,7 @@ class PolymarketClient:
                 {"paper_mode": ep},
             )
             # #endregion
-            base.error = "Polymarket SDK not initialised (py-clob-client missing)"
+            base.error = self._clob_unavailable_message()
             return base
 
         from nexus.shared.polymarket_util import preflight_live_clob_order

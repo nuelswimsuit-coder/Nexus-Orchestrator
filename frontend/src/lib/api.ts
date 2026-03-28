@@ -10,8 +10,16 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:800
 
 // ── Generic fetch helper ──────────────────────────────────────────────────────
 
+function _resolveApiUrl(path: string): string {
+  const p = (path || "").trim();
+  if (/^https?:\/\//i.test(p)) {
+    return p;
+  }
+  return `${API_BASE}${p.startsWith("/") ? p : `/${p}`}`;
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(_resolveApiUrl(path), {
     headers: { "Content-Type": "application/json", ...init?.headers },
     ...init,
   });
