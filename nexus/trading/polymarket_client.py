@@ -50,7 +50,11 @@ from nexus.trading.config import (
     PREDICTION_MANUAL_HALT_KEY,
 )
 from nexus.trading.runtime_mode import effective_paper_trading
-from nexus.trading.wallet_manager import get_polymarket_funder_address, get_polymarket_private_key
+from nexus.trading.wallet_manager import (
+    get_polymarket_funder_address,
+    get_polymarket_private_key,
+    normalize_polymarket_private_key_env,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -103,7 +107,7 @@ _UUID_RELAYER_API_KEY = re.compile(
 
 def _signing_key_format_error(private_key: str) -> str | None:
     """Return a user-facing message if ``private_key`` cannot be a 32-byte secp256k1 secret."""
-    k = (private_key or "").strip().strip('"').strip("'")
+    k = normalize_polymarket_private_key_env(private_key or "")
     if not k:
         return "POLYMARKET_RELAYER_KEY (or POLY_PRIVATE_KEY) is not set."
     if _UUID_RELAYER_API_KEY.match(k):
@@ -114,9 +118,16 @@ def _signing_key_format_error(private_key: str) -> str | None:
         )
     raw = k[2:] if k.lower().startswith("0x") else k
     if not raw or any(c not in "0123456789abcdefABCDEF" for c in raw):
+        bad = next((c for c in raw if c not in "0123456789abcdefABCDEF"), None)
+        hint = (
+            f" Remove stray characters (found {bad!r})."
+            if bad is not None
+            else ""
+        )
         return (
-            "POLYMARKET_RELAYER_KEY must be a hex private key (0x + 64 hex). "
-            "Do not paste Polymarket’s Relayer API Key UUID or other non-hex strings."
+            "POLYMARKET_RELAYER_KEY must be only hex: optional 0x prefix plus 64 hex digits (wallet private key). "
+            "Strip spaces/newlines/quotes in .env; do not use the Polymarket Relayer UUID."
+            + hint
         )
     if len(raw) == 40:
         return (

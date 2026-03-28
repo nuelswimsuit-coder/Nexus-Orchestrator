@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -32,13 +33,29 @@ PANIC_STATE_KEY = "SYSTEM_STATE:PANIC"
 PANIC_META_KEY = "SYSTEM_STATE:PANIC_META"
 
 
+def normalize_polymarket_private_key_env(raw: str) -> str:
+    """Strip quotes/whitespace/BOM so pasted .env keys validate (never logs ``raw``)."""
+    s = (raw or "").strip().lstrip("\ufeff")
+    for q in ('"', "'", "\u201c", "\u201d", "\u2018", "\u2019"):
+        s = s.strip(q)
+    s = re.sub(r"\s+", "", s)
+    if not s:
+        return ""
+    if s.lower().startswith("0x"):
+        return "0x" + s[2:]
+    if len(s) == 64 and re.fullmatch(r"[0-9a-fA-F]+", s):
+        return "0x" + s.lower()
+    return s
+
+
 def get_polymarket_private_key() -> str:
     """Return the raw 0x-prefixed private key, or empty string if unset."""
-    return (
+    chosen = (
         (os.getenv(ENV_PRIVATE_KEY) or "").strip()
         or (os.getenv(ENV_PRIVATE_KEY_ALT) or "").strip()
         or (os.getenv(ENV_POLY_LEGACY) or "").strip()
     )
+    return normalize_polymarket_private_key_env(chosen)
 
 
 def get_polymarket_funder_address() -> str:
