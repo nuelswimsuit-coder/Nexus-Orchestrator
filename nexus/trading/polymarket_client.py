@@ -14,9 +14,10 @@ Safety layers
 
 Required environment variables
 ──────────────────────────────
-POLYMARKET_RELAYER_KEY       0x-prefixed private key for EIP-712 signing
+POLYMARKET_RELAYER_KEY       **Wallet** private key (0x + 64 hex) for EIP-712 / CLOB signing — *not*
+                             Polymarket Settings → “Relayer API Key” (UUID) and *not* that screen’s Address.
 POLY_PRIVATE_KEY             alias for POLYMARKET_RELAYER_KEY (optional)
-POLYMARKET_SIGNER_ADDRESS    Funder / EOA address
+POLYMARKET_SIGNER_ADDRESS    Funder / EOA address (may match Polymarket’s relayer **Address** if that is your signer)
 POLYMARKET_API_KEY           L2 API key  (optional — for authenticated routes)
 POLYMARKET_API_SECRET        L2 API secret
 POLYMARKET_API_PASSPHRASE    L2 API passphrase
@@ -30,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -93,18 +95,34 @@ def _derived_eoa_from_key(pk: str) -> str:
         return ""
 
 
+_UUID_RELAYER_API_KEY = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z",
+    re.IGNORECASE,
+)
+
+
 def _signing_key_format_error(private_key: str) -> str | None:
     """Return a user-facing message if ``private_key`` cannot be a 32-byte secp256k1 secret."""
-    k = (private_key or "").strip()
+    k = (private_key or "").strip().strip('"').strip("'")
     if not k:
         return "POLYMARKET_RELAYER_KEY (or POLY_PRIVATE_KEY) is not set."
+    if _UUID_RELAYER_API_KEY.match(k):
+        return (
+            "That value is Polymarket’s **Relayer API Key** (UUID from Settings). "
+            "Nexus/py-clob-client needs your **wallet private key** here (0x + 64 hex from MetaMask or your signer), "
+            "not the UUID. Use POLYMARKET_SIGNER_ADDRESS for the public 0x address only."
+        )
     raw = k[2:] if k.lower().startswith("0x") else k
     if not raw or any(c not in "0123456789abcdefABCDEF" for c in raw):
-        return "POLYMARKET_RELAYER_KEY must be hex (optionally 0x-prefixed)."
+        return (
+            "POLYMARKET_RELAYER_KEY must be a hex private key (0x + 64 hex). "
+            "Do not paste Polymarket’s Relayer API Key UUID or other non-hex strings."
+        )
     if len(raw) == 40:
         return (
-            "POLYMARKET_RELAYER_KEY looks like a wallet address (20 bytes), not a private key. "
-            "Set the 32-byte account secret (0x + 64 hex from your wallet export), not POLYMARKET_SIGNER_ADDRESS."
+            "POLYMARKET_RELAYER_KEY looks like a public address (20 bytes), e.g. the **Address** on Polymarket "
+            "→ Relayer API Keys. That page does not show your private key. "
+            "Export the **private key** from the wallet that controls that address (0x + 64 hex) and put it here."
         )
     if len(raw) != 64:
         return (
