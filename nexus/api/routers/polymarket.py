@@ -30,7 +30,6 @@ from nexus.trading.polymarket_client import (
     PolymarketClient,
     TradingHalted,
     _CLOB_HOST,
-    _agent_debug_ndjson_45,
     get_polymarket_clob_funder_address,
 )
 
@@ -421,21 +420,6 @@ async def polymarket_manual_order(
     Every response includes header ``X-Nexus-Manual-Order-Enrich`` so DevTools can prove which
     API build handled the request (HTTPException would drop injected headers).
     """
-    # #region agent log
-    _tid = body.token_id.strip()
-    _agent_debug_ndjson_45(
-        "H5",
-        "polymarket.py:polymarket_manual_order:entry",
-        "manual_order_attempt",
-        {
-            "side": body.side,
-            "amount": body.amount,
-            "token_id_len": len(_tid),
-            "token_id_is_all_digits": _tid.isdigit(),
-            "token_prefix": _tid[:32],
-        },
-    )
-    # #endregion
     price = body.price
     market_question = ""
     if price is None:

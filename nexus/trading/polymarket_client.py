@@ -32,7 +32,6 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -54,27 +53,6 @@ log = structlog.get_logger(__name__)
 
 _CLOB_HOST: str = "https://clob.polymarket.com"
 _POLYGON_CHAIN_ID: int = 137
-_DEBUG_LOG_PATH = Path(__file__).resolve().parents[2] / "debug-45ccd1.log"
-
-
-def _agent_debug_ndjson_45(
-    hypothesis_id: str, location: str, message: str, data: dict[str, Any]
-) -> None:
-    # #region agent log
-    try:
-        payload = {
-            "sessionId": "45ccd1",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as df:
-            df.write(json.dumps(payload) + "\n")
-    except Exception:
-        pass
-    # #endregion
 
 
 def _derived_eoa_from_key(pk: str) -> str:
@@ -288,21 +266,6 @@ class PolymarketClient:
             httpx.TimeoutException: if the REST fallback request times out.
         """
         loop = asyncio.get_event_loop()
-        _fu = (self._funder or "").strip().lower()
-        _pv = (os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip().lower()
-        _dk = _derived_eoa_from_key(self._private_key)
-        _agent_debug_ndjson_45(
-            "H1",
-            "polymarket_client.py:get_balance_usdc:entry",
-            "wallet_resolution",
-            {
-                "funder_short": f"{_fu[:6]}…{_fu[-4:]}" if len(_fu) >= 10 else _fu,
-                "derived_from_key_short": f"{_dk[:6]}…{_dk[-4:]}" if len(_dk) >= 10 else _dk,
-                "key_matches_funder": bool(_dk and _fu and _dk == _fu),
-                "portfolio_env_set": bool(_pv),
-                "portfolio_differs_from_funder": bool(_pv and _fu and _pv != _fu),
-            },
-        )
 
         if self._clob is not None:
             # Try the preferred SDK method: get_balance_allowance(BalanceAllowanceParams)
@@ -322,22 +285,7 @@ class PolymarketClient:
                         if val > 1_000_000:
                             val = val / 1_000_000
                         if val > 0:
-                            _agent_debug_ndjson_45(
-                                "H4",
-                                "polymarket_client.py:get_balance_usdc",
-                                "sdk_positive_balance",
-                                {"sdk_balance_usd": val},
-                            )
                             return val
-                        _agent_debug_ndjson_45(
-                            "H4",
-                            "polymarket_client.py:get_balance_usdc",
-                            "sdk_collateral_zero_definitive",
-                            {
-                                "raw_balance": raw,
-                                "allowance": resp.get("allowance"),
-                            },
-                        )
                         # Definitive CLOB reading: do not substitute data-api portfolio value.
                         return 0.0
                     elif isinstance(resp, (int, float)):
@@ -345,12 +293,6 @@ class PolymarketClient:
                         if val > 1_000_000:
                             val = val / 1_000_000
                         if val > 0:
-                            _agent_debug_ndjson_45(
-                                "H4",
-                                "polymarket_client.py:get_balance_usdc",
-                                "sdk_positive_balance_scalar",
-                                {"sdk_balance_usd": val},
-                            )
                             return val
                         return 0.0
                 except asyncio.TimeoutError:
@@ -390,12 +332,6 @@ class PolymarketClient:
         # "tradable" USDC while post_order failed with balance 0.
 
         log.warning("polymarket.get_balance_unavailable", default=100.0)
-        _agent_debug_ndjson_45(
-            "H2",
-            "polymarket_client.py:get_balance_usdc",
-            "default_balance_100_returned",
-            {"reason": "all_methods_failed_or_zero"},
-        )
         return 100.0
 
     async def check_kill_switch(self) -> None:
@@ -415,12 +351,6 @@ class PolymarketClient:
             "polymarket.kill_switch_check",
             balance_usd=balance,
             threshold=KILL_SWITCH_BALANCE_USD,
-        )
-        _agent_debug_ndjson_45(
-            "H2",
-            "polymarket_client.py:check_kill_switch",
-            "kill_switch_balance_seen",
-            {"balance_usd": balance, "threshold": KILL_SWITCH_BALANCE_USD},
         )
         if balance < KILL_SWITCH_BALANCE_USD:
             raise TradingHalted(
@@ -663,23 +593,6 @@ class PolymarketClient:
         from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
 
         log.info(f"Preparing order for Builder: {self.builder_id}")
-        # #region agent log
-        _fu = (self._funder or "").strip().lower()
-        _dk = _derived_eoa_from_key(self._private_key)
-        _agent_debug_ndjson_45(
-            "H3",
-            "polymarket_client.py:_place_limit_order_sync",
-            "clob_order_before_create",
-            {
-                "side": str(side),
-                "size": size,
-                "price": price,
-                "funder_short": f"{_fu[:6]}…{_fu[-4:]}" if len(_fu) >= 10 else _fu,
-                "derived_key_short": f"{_dk[:6]}…{_dk[-4:]}" if len(_dk) >= 10 else _dk,
-                "key_matches_funder": bool(_dk and _fu and _dk == _fu),
-            },
-        )
-        # #endregion
         signed = self._clob.create_order(
             OrderArgs(token_id=token_id, price=price, size=size, side=side),
             options=PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk),
