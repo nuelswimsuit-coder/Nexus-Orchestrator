@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -50,6 +51,32 @@ from nexus.trading.runtime_mode import effective_paper_trading
 from nexus.trading.wallet_manager import get_polymarket_funder_address, get_polymarket_private_key
 
 log = structlog.get_logger(__name__)
+
+# #region agent log
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    try:
+        from pathlib import Path
+
+        p = Path(__file__).resolve().parents[2] / "debug-04a19b.log"
+        line = json.dumps(
+            {
+                "sessionId": "04a19b",
+                "runId": os.environ.get("NEXUS_DEBUG_RUN_ID", "pre-fix"),
+                "hypothesisId": hypothesis_id,
+                "location": location,
+                "message": message,
+                "data": data,
+                "timestamp": int(time.time() * 1000),
+            },
+            default=str,
+        )
+        with p.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+# #endregion
 
 _CLOB_HOST: str = "https://clob.polymarket.com"
 _POLYGON_CHAIN_ID: int = 137
@@ -226,6 +253,20 @@ class PolymarketClient:
         self._try_init_sdk()
 
     def _try_init_sdk(self) -> None:
+        # #region agent log
+        pk = (self._private_key or "").strip()
+        _agent_debug_log(
+            "H1",
+            "polymarket_client.py:_try_init_sdk:entry",
+            "sdk_init_start",
+            {
+                "executable": sys.executable,
+                "python_version": sys.version.split()[0],
+                "private_key_len": len(pk),
+                "funder_len": len((self._funder or "").strip()),
+            },
+        )
+        # #endregion
         try:
             from py_clob_client.client import ClobClient
 
@@ -237,18 +278,42 @@ class PolymarketClient:
                 funder=self._funder,
                 builder_config=_build_builder_config(),
             )
+            # #region agent log
+            _agent_debug_log(
+                "H3",
+                "polymarket_client.py:_try_init_sdk:success",
+                "clob_client_constructed",
+                {"has_clob": self._clob is not None},
+            )
+            # #endregion
             log.info(
                 "polymarket.client_ready",
                 builder_id=self.builder_id,
                 paper_trading=PAPER_TRADING,
                 host=_CLOB_HOST,
             )
-        except ImportError:
+        except ImportError as exc:
+            # #region agent log
+            _agent_debug_log(
+                "H1",
+                "polymarket_client.py:_try_init_sdk:import_error",
+                "clob_import_failed",
+                {"exc_type": type(exc).__name__, "exc_msg": str(exc)[:400]},
+            )
+            # #endregion
             log.warning(
                 "polymarket.sdk_not_installed",
                 hint="pip install py-clob-client py-builder-signing-sdk",
             )
         except Exception as exc:
+            # #region agent log
+            _agent_debug_log(
+                "H2",
+                "polymarket_client.py:_try_init_sdk:init_exception",
+                "clob_construct_failed",
+                {"exc_type": type(exc).__name__, "exc_msg": str(exc)[:400]},
+            )
+            # #endregion
             log.warning("polymarket.client_init_error", error=str(exc))
 
     # ── Balance & kill-switch ─────────────────────────────────────────────────
@@ -449,6 +514,14 @@ class PolymarketClient:
             return base
 
         if self._clob is None:
+            # #region agent log
+            _agent_debug_log(
+                "H4",
+                "polymarket_client.py:place_order_async:no_clob",
+                "live_buy_blocked",
+                {"paper_mode": paper_mode},
+            )
+            # #endregion
             base.error = "Polymarket SDK not initialised (py-clob-client missing)"
             return base
 
@@ -540,6 +613,14 @@ class PolymarketClient:
             return base
 
         if self._clob is None:
+            # #region agent log
+            _agent_debug_log(
+                "H4",
+                "polymarket_client.py:place_sell_async:no_clob",
+                "live_sell_blocked",
+                {"paper_mode": ep},
+            )
+            # #endregion
             base.error = "Polymarket SDK not initialised (py-clob-client missing)"
             return base
 
