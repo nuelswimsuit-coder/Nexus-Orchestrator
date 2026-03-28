@@ -96,12 +96,18 @@ def main() -> None:
     )
     derived = ""
     if key:
-        try:
-            from eth_account import Account
+        from nexus.trading.polymarket_client import _signing_key_format_error
 
-            derived = Account.from_key(key).address
-        except Exception as exc:
-            print(f"Could not derive from POLYMARKET_RELAYER_KEY: {exc}")
+        fmt_err = _signing_key_format_error(key)
+        if fmt_err:
+            print(fmt_err)
+        else:
+            try:
+                from eth_account import Account
+
+                derived = Account.from_key(key).address
+            except Exception as exc:
+                print(f"Could not derive from POLYMARKET_RELAYER_KEY: {exc}")
 
     portfolio_from_file = (os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()
 
