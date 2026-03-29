@@ -1,9 +1,12 @@
 """
-Nexus master stack: Redis, core worker, node monitor TUI, and deployer API in parallel.
+Nexus master stack: Redis, core worker, node monitor TUI, deployer API, Telegram bot(s),
+Polymarket helper, frontend, and optional git-sync — all in one process tree.
 
 All child stdout/stderr is captured and displayed in a single Rich.Live dashboard
 (unified terminal multiplexer). No separate CMD windows are opened.
-Ctrl+C or process exit tears down the full process tree.
+Run: ``python -m scripts.nexus_launcher`` from the repo root (``.env`` is loaded here).
+
+Ctrl+C tears down the full process tree.
 
 Self-healing: any service that exits with a non-zero code is restarted up to 3 times.
 After 3 failed restarts a Telegram critical alert is dispatched.
@@ -52,6 +55,26 @@ def _project_root() -> Path:
 
 
 ROOT = _project_root()
+
+
+def _load_repo_dotenv() -> None:
+    """Merge repo ``.env`` into ``os.environ`` without overriding existing vars (same as bot script)."""
+    env_path = ROOT / ".env"
+    if not env_path.is_file():
+        return
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().split("#")[0].strip()
+            if key and key not in os.environ:
+                os.environ[key] = val
+    except OSError:
+        pass
+
 
 # ── Debug log (file only — stdout stays for Rich) ────────────────────────────
 _DEBUG_LOG = ROOT / "launcher_debug.txt"
@@ -135,10 +158,22 @@ _SERVICE_COLORS: dict[str, str] = {
     "frontend":       "bright_blue",
     "git-sync":       "bright_white",
     "polymarket":     "bright_yellow",
+    "telegram-bot":   "bright_green",
     "israeli-swarm":  "bright_cyan",
 }
 
-_SERVICES_ORDER = ["redis", "core", "monitor", "deployer", "api", "frontend", "israeli-swarm", "git-sync", "polymarket"]
+_SERVICES_ORDER = [
+    "redis",
+    "core",
+    "monitor",
+    "deployer",
+    "telegram-bot",
+    "api",
+    "frontend",
+    "israeli-swarm",
+    "git-sync",
+    "polymarket",
+]
 
 
 def _atexit_kill_children() -> None:
@@ -499,12 +534,14 @@ def _build_rich_layout():
             Layout(name="core"),
             Layout(name="monitor"),
             Layout(name="deployer"),
+            Layout(name="telegram-bot"),
         )
         layout["right"].split_column(
             Layout(name="api"),
             Layout(name="frontend"),
             Layout(name="git-sync"),
             Layout(name="polymarket"),
+            Layout(name="israeli-swarm"),
         )
         return layout
     except ImportError:
@@ -591,7 +628,7 @@ def _run_rich_dashboard(logf, stop_event: threading.Event) -> None:
             with _ring_lock:
                 rings_snapshot = {k: list(v) for k, v in _log_rings.items()}
 
-            for svc in ["redis", "core", "monitor", "deployer", "api", "frontend", "git-sync", "polymarket"]:
+            for svc in _SERVICES_ORDER:
                 lines = rings_snapshot.get(svc, [])
                 color = _SERVICE_COLORS.get(svc, "white")
                 panel = _make_service_panel(svc, lines, color)
@@ -618,6 +655,7 @@ _HATAN_BANNER = """
 
 def main() -> int:
     global _cleaned
+    _load_repo_dotenv()
     _cleaned = False
     _processes.clear()
     _reader_threads.clear()
