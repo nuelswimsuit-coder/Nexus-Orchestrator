@@ -99,6 +99,7 @@ from aiogram.types import (  # noqa: E402
 
 from nexus.shared.config import settings  # noqa: E402
 from nexus.shared.logging_config import configure_logging  # noqa: E402
+from nexus.shared.poly_alert_ignore import fingerprint_cx, fingerprint_position  # noqa: E402
 
 log = structlog.get_logger(__name__)
 
@@ -1826,7 +1827,8 @@ async def _resolve_cross_exchange_yes_token() -> str:
 
 _POLY_ALERT_FOOTER_TEXT_ONLY = (
     "\n\n_⚙️ Inline Execute / Panel buttons only work on the channel bot \\(polling\\)\\._\n"
-    "_להרצת כפתורים — בבוט אחושרמוטה; כאן רק התראת פרויקט\\. העתק את `/poly\\_buy` לשם\\._"
+    "_להרצת כפתורים — בבוט אחושרמוטה; כאן רק התראת פרויקט\\. העתק את `/poly\\_buy` לשם\\._\n"
+    "_לשתיקת התראה חוזרת: בבוט אחושרמוטה לחץ 🚫 Ignore future\\._"
 )
 
 
@@ -1852,6 +1854,11 @@ async def send_poly_ai_alert(
         if not dash:
             return
 
+        ign_raw = await _api_get("/api/prediction/poly-ai-alert/ignores")
+        ignored: set[str] = set()
+        if isinstance(ign_raw, dict) and isinstance(ign_raw.get("fingerprints"), list):
+            ignored = {str(x).strip().lower() for x in ign_raw["fingerprints"] if x}
+
         positions     = dash.get("portfolio_positions_list") or []
         cx_conf       = bool((cx or {}).get("high_confidence"))
         cx_signal     = str((cx or {}).get("signal_label") or (cx or {}).get("signal") or "")
@@ -1867,6 +1874,18 @@ async def send_poly_ai_alert(
             tmid = await _gamma_clob_token_for_market_id(str(cx_poly.get("market_id")), "YES")
             cx_yes_token = tmid if tmid else None
 
+        cx_should_alert = bool(cx_conf and cx_signal)
+        cx_ignore_fp = ""
+        if cx_should_alert:
+            cx_ignore_fp = fingerprint_cx(
+                yes_token=str(cx_yes_token or ""),
+                slug=str(cx_poly.get("slug") or ""),
+                market_id=str(cx_poly.get("market_id") or ""),
+                signal=cx_signal,
+            )
+            if cx_ignore_fp in ignored:
+                cx_should_alert = False
+
         recs = _compute_ai_recs(positions, portfolio_val)
         # Only alert on high-confidence recs (>= 75%)
         high_conf_recs = [r for r in recs if r["confidence"] >= 75 and r["action_type"] != "HOLD"]
@@ -1874,7 +1893,7 @@ async def send_poly_ai_alert(
         # Also include cross-exchange high-conf signal
         cx_alert_lines: list[str] = []
         cx_rec_amt: float = 0.0
-        if cx_conf and cx_signal:
+        if cx_should_alert:
             pct = 10.0
             cx_rec_amt = round(portfolio_val * pct / 100, 2)
             signal_upper = cx_signal.upper()
@@ -1918,6 +1937,21 @@ async def send_poly_ai_alert(
 
         # Build one alert message per high-conf rec (with approve/reject buttons)
         for rec_idx, rec in enumerate(high_conf_recs[:3]):
+            tid = str(rec.get("token_id") or "").strip()
+            if (not tid or not _is_valid_clob_token_id(tid)) and rec.get("slug"):
+                tid = await _gamma_clob_token_for_slug(
+                    str(rec["slug"]),
+                    str(rec.get("outcome") or "YES"),
+                )
+            rec_fp = fingerprint_position(
+                token_id=tid or "",
+                slug=str(rec.get("slug") or ""),
+                outcome=str(rec.get("outcome") or "YES"),
+                action=str(rec.get("action_type") or ""),
+            )
+            if rec_fp in ignored:
+                continue
+
             title_short = rec["title"][:40]
             icon = "🟢" if rec["action_type"] == "BUY" else "🔴"
 
@@ -1931,12 +1965,6 @@ async def send_poly_ai_alert(
                 f"  Avg Price: `{rec['avg_price']*100:.1f}c` → Now: `{rec['cur_price']*100:.1f}c`\n\n"
                 f"  💡 Recommended size: `${rec['rec_amount']:.2f}` \\({rec['pct_of_portfolio']:.0f}% of portfolio\\)\n\n"
             )
-            tid = str(rec.get("token_id") or "").strip()
-            if (not tid or not _is_valid_clob_token_id(tid)) and rec.get("slug"):
-                tid = await _gamma_clob_token_for_slug(
-                    str(rec["slug"]),
-                    str(rec.get("outcome") or "YES"),
-                )
             if tid and _is_valid_clob_token_id(tid):
                 amt = rec["rec_amount"]
                 alert_text += (
@@ -1950,6 +1978,7 @@ async def send_poly_ai_alert(
                 alert_text += (
                     "⚠️ _Could not resolve CLOB token \\(Data API \\+ Gamma\\) — check 📊 Positions if the market is still active\\._\n\n"
                 )
+
             alert_text += (
                 f"_האם לבצע? / Execute?_\n"
                 f"🔄 _{_esc(_now_utc())}_"
@@ -1978,6 +2007,12 @@ async def send_poly_ai_alert(
                     [
                         InlineKeyboardButton(text="📊 Positions", callback_data="poly_positions"),
                         InlineKeyboardButton(text="🎯 Panel",     callback_data="poly_menu"),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="🚫 Ignore future / אל תשלח שוב",
+                            callback_data=f"poly_ign:{rec_fp}",
+                        ),
                     ],
                 ])
 
@@ -2015,6 +2050,12 @@ async def send_poly_ai_alert(
                     ],
                     [
                         InlineKeyboardButton(text="🎯 Polymarket Panel", callback_data="poly_menu"),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="🚫 Ignore future / אל תשלח שוב",
+                            callback_data=f"poly_ign:{cx_ignore_fp}",
+                        ),
                     ],
                 ])
             await bot.send_message(
@@ -2203,6 +2244,34 @@ async def handle_poly_alert_dismiss(callback: CallbackQuery) -> None:
             original + "\n\n_❌ Dismissed / נדחה_",
             reply_markup=None,
         )
+    except Exception:
+        pass
+
+
+async def handle_poly_alert_ignore_permanent(callback: CallbackQuery) -> None:
+    """Persist ignore fingerprint in Redis via API — scheduled alerts skip it."""
+    data = (callback.data or "").strip()
+    if not data.startswith("poly_ign:"):
+        await callback.answer("Invalid.")
+        return
+    fp = data.split(":", 1)[1].strip().lower()
+    if len(fp) != 16 or any(c not in "0123456789abcdef" for c in fp):
+        await callback.answer("Invalid id.")
+        return
+
+    res = await _api_post("/api/prediction/poly-ai-alert/ignore", {"fingerprint": fp})
+    if not res or not res.get("ok"):
+        await callback.answer("❌ API error — could not save ignore.", show_alert=True)
+        return
+
+    await callback.answer("🚫 Silenced / לא יישלח שוב")
+    try:
+        if callback.message:
+            orig = callback.message.text or ""
+            await callback.message.edit_text(
+                orig + "\n\n🚫 Ignored permanently / התעלמות — לא יישלח שוב.",
+                reply_markup=None,
+            )
     except Exception:
         pass
 
@@ -3195,6 +3264,7 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     dp.callback_query.register(handle_poly_alert_approve, F.data.startswith("poly_alert_approve:"))
     dp.callback_query.register(handle_poly_cx_approve,    F.data.startswith("poly_cx_approve:"))
     dp.callback_query.register(handle_poly_alert_dismiss, F.data == "poly_alert_dismiss")
+    dp.callback_query.register(handle_poly_alert_ignore_permanent, F.data.startswith("poly_ign:"))
 
     # HITL and control handlers
     dp.callback_query.register(
@@ -3336,6 +3406,7 @@ async def run() -> None:
     dp.callback_query.register(handle_poly_alert_approve, F.data.startswith("poly_alert_approve:"))
     dp.callback_query.register(handle_poly_cx_approve,    F.data.startswith("poly_cx_approve:"))
     dp.callback_query.register(handle_poly_alert_dismiss, F.data == "poly_alert_dismiss")
+    dp.callback_query.register(handle_poly_alert_ignore_permanent, F.data.startswith("poly_ign:"))
 
     # HITL inline keyboard callbacks
     dp.callback_query.register(

@@ -28,6 +28,12 @@ GET  /api/prediction/manual-override/status — whether halt is active.
 GET  /api/prediction/poly5m-scalper
     Dashboard snapshot for NEXUS-POLY-SCALPER-5M (Redis ``nexus:poly5m:dashboard``).
 
+GET  /api/prediction/poly-ai-alert/ignores
+    Fingerprints the Telegram bot should not re-send (Redis SET).
+
+POST /api/prediction/poly-ai-alert/ignore
+    Body ``{"fingerprint": "<16 hex>"}`` — silence that alert until removed from Redis.
+
 Ultimate 5m scalper UI also uses ``/api/scalper/*`` — see ``nexus.api.routers.scalper``.
 """
 
@@ -41,6 +47,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from nexus.api.dependencies import RedisDep
+from nexus.shared.poly_alert_ignore import (
+    POLY_AI_ALERT_IGNORE_REDIS_KEY,
+    is_valid_ignore_fingerprint,
+)
 from nexus.trading.config import (
     PAPER_TRADING,
     PAPER_TRADING_REDIS_KEY,
@@ -601,3 +611,47 @@ async def get_manual_override_status(redis: RedisDep) -> ManualOverrideStatusRes
     if not raw:
         return ManualOverrideStatusResponse(active=False)
     return ManualOverrideStatusResponse(active=True, halted_at=str(raw))
+
+
+# ── Polymarket AI Telegram alert ignore list (Redis SET) ──────────────────────
+
+
+class PolyAiAlertIgnoresResponse(BaseModel):
+    fingerprints: List[str]
+
+
+class PolyAiAlertIgnoreBody(BaseModel):
+    fingerprint: str = Field(..., min_length=16, max_length=16)
+
+
+class PolyAiAlertIgnoreOk(BaseModel):
+    ok: bool
+    fingerprint: str
+
+
+@router.get(
+    "/poly-ai-alert/ignores",
+    response_model=PolyAiAlertIgnoresResponse,
+    summary="Ignored Polymarket AI alert fingerprints (for Telegram dedupe)",
+)
+async def get_poly_ai_alert_ignores(redis: RedisDep) -> PolyAiAlertIgnoresResponse:
+    members = await redis.smembers(POLY_AI_ALERT_IGNORE_REDIS_KEY)
+    fps = sorted(m for m in (members or []) if isinstance(m, str) and m)
+    return PolyAiAlertIgnoresResponse(fingerprints=fps)
+
+
+@router.post(
+    "/poly-ai-alert/ignore",
+    response_model=PolyAiAlertIgnoreOk,
+    summary="Ignore one Polymarket AI alert fingerprint — bot will not send it again",
+)
+async def post_poly_ai_alert_ignore(
+    redis: RedisDep,
+    body: PolyAiAlertIgnoreBody,
+) -> PolyAiAlertIgnoreOk:
+    fp = body.fingerprint.strip().lower()
+    if not is_valid_ignore_fingerprint(fp):
+        raise HTTPException(status_code=400, detail="fingerprint must be 16 lowercase hex chars")
+    await redis.sadd(POLY_AI_ALERT_IGNORE_REDIS_KEY, fp)
+    log.info("poly_ai_alert_ignore_added", fingerprint=fp)
+    return PolyAiAlertIgnoreOk(ok=True, fingerprint=fp)
