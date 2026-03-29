@@ -102,6 +102,30 @@ from nexus.shared.logging_config import configure_logging  # noqa: E402
 
 log = structlog.get_logger(__name__)
 
+# #region agent log
+_AGENT_DEBUG_LOG = Path(__file__).resolve().parent.parent / "debug-105476.log"
+
+
+def _agent_log_poly_route(hypothesis_id: str, message: str, data: dict) -> None:
+    try:
+        import time as _time
+
+        line = {
+            "sessionId": "105476",
+            "hypothesisId": hypothesis_id,
+            "location": "start_telegram_bot.py",
+            "message": message,
+            "data": data,
+            "timestamp": int(_time.time() * 1000),
+        }
+        with open(_AGENT_DEBUG_LOG, "a", encoding="utf-8") as _f:
+            _f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+# #endregion
+
 # ── Config ────────────────────────────────────────────────────────────────────
 _host = "localhost" if settings.api_host == "0.0.0.0" else settings.api_host
 API_BASE = f"http://{_host}:{settings.api_port}"
@@ -1800,10 +1824,25 @@ async def _resolve_cross_exchange_yes_token() -> str:
     return ""
 
 
-async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
+_POLY_ALERT_FOOTER_TEXT_ONLY = (
+    "\n\n_⚙️ Inline Execute / Panel buttons only work on the channel bot \\(polling\\)\\._\n"
+    "_להרצת כפתורים — בבוט אחושרמוטה; כאן רק התראת פרויקט\\. העתק את `/poly\\_buy` לשם\\._"
+)
+
+
+async def send_poly_ai_alert(
+    bot: "Bot",
+    chat_id: str,
+    *,
+    use_inline_keyboard: bool = True,
+) -> None:
     """
     Proactive AI alert: fetch Polymarket data and send high-confidence
     trade recommendations with BUY/SELL/DISMISS approve buttons.
+
+    When ``use_inline_keyboard`` is False (separate ``TELEGRAM_NEXUS_BOT_TOKEN`` bot),
+    messages are text-only: callback buttons would not reach this process's polling
+    loop, which runs on the channel bot.
     """
     try:
         dash, cx = await asyncio.gather(
@@ -1915,28 +1954,32 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
                 f"_האם לבצע? / Execute?_\n"
                 f"🔄 _{_esc(_now_utc())}_"
             )
+            if not use_inline_keyboard:
+                alert_text += _POLY_ALERT_FOOTER_TEXT_ONLY
 
             # Encode token_id + amount into callback for direct execution
             # Format: poly_exec_approve:<side>:<rec_amount>
             side = rec["action_type"]
             amt  = rec["rec_amount"]
 
-            alert_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=f"✅ בצע {side} ${amt:.0f} / Execute",
-                        callback_data=f"poly_alert_approve:{side}:{amt:.2f}:{rec_idx}",
-                    ),
-                    InlineKeyboardButton(
-                        text="❌ דחה / Dismiss",
-                        callback_data="poly_alert_dismiss",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(text="📊 Positions", callback_data="poly_positions"),
-                    InlineKeyboardButton(text="🎯 Panel",     callback_data="poly_menu"),
-                ],
-            ])
+            alert_keyboard: InlineKeyboardMarkup | None = None
+            if use_inline_keyboard:
+                alert_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=f"✅ בצע {side} ${amt:.0f} / Execute",
+                            callback_data=f"poly_alert_approve:{side}:{amt:.2f}:{rec_idx}",
+                        ),
+                        InlineKeyboardButton(
+                            text="❌ דחה / Dismiss",
+                            callback_data="poly_alert_dismiss",
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(text="📊 Positions", callback_data="poly_positions"),
+                        InlineKeyboardButton(text="🎯 Panel",     callback_data="poly_menu"),
+                    ],
+                ])
 
             await bot.send_message(
                 chat_id=chat_id,
@@ -1954,22 +1997,26 @@ async def send_poly_ai_alert(bot: "Bot", chat_id: str) -> None:
                 + "\n".join(cx_alert_lines)
                 + f"🔄 _{_esc(_now_utc())}_"
             )
-            cx_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=f"✅ בצע {cx_side} ${cx_rec_amt:.0f} / Execute",
-                        callback_data=f"poly_cx_approve:{cx_side}:{cx_rec_amt:.2f}",
-                    ),
-                    InlineKeyboardButton(text="❌ דחה / Dismiss", callback_data="poly_alert_dismiss"),
-                ],
-                [
-                    InlineKeyboardButton(text="📊 Positions / פוזיציות", callback_data="poly_positions"),
-                    InlineKeyboardButton(text="🤖 AI / AI Recs המלצות", callback_data="poly_ai_recs"),
-                ],
-                [
-                    InlineKeyboardButton(text="🎯 Polymarket Panel", callback_data="poly_menu"),
-                ],
-            ])
+            if not use_inline_keyboard:
+                cx_text += _POLY_ALERT_FOOTER_TEXT_ONLY
+            cx_keyboard: InlineKeyboardMarkup | None = None
+            if use_inline_keyboard:
+                cx_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=f"✅ בצע {cx_side} ${cx_rec_amt:.0f} / Execute",
+                            callback_data=f"poly_cx_approve:{cx_side}:{cx_rec_amt:.2f}",
+                        ),
+                        InlineKeyboardButton(text="❌ דחה / Dismiss", callback_data="poly_alert_dismiss"),
+                    ],
+                    [
+                        InlineKeyboardButton(text="📊 Positions / פוזיציות", callback_data="poly_positions"),
+                        InlineKeyboardButton(text="🤖 AI / AI Recs המלצות", callback_data="poly_ai_recs"),
+                    ],
+                    [
+                        InlineKeyboardButton(text="🎯 Polymarket Panel", callback_data="poly_menu"),
+                    ],
+                ])
             await bot.send_message(
                 chat_id=chat_id,
                 text=cx_text,
@@ -2160,12 +2207,36 @@ async def handle_poly_alert_dismiss(callback: CallbackQuery) -> None:
         pass
 
 
-async def _poly_alert_loop(bot: "Bot", chat_id: str, interval_s: int = 300) -> None:
+async def _poly_alert_loop(
+    bot: "Bot",
+    chat_id: str,
+    interval_s: int = 300,
+    *,
+    use_inline_keyboard: bool = True,
+) -> None:
     """Background loop that sends Polymarket AI alerts every `interval_s` seconds."""
-    log.info("poly_alert_loop_started", interval_s=interval_s)
+    log.info(
+        "poly_alert_loop_started",
+        interval_s=interval_s,
+        use_inline_keyboard=use_inline_keyboard,
+    )
+    _agent_log_poly_route(
+        "B",
+        "poly_alert_loop_started",
+        {
+            "use_inline_keyboard": use_inline_keyboard,
+            "nexus_token_env_set": bool((os.getenv("TELEGRAM_NEXUS_BOT_TOKEN") or "").strip()),
+            "chat_id_suffix": chat_id[-4:] if len(chat_id) >= 4 else "short",
+        },
+    )
     while True:
         await asyncio.sleep(interval_s)
-        await send_poly_ai_alert(bot, chat_id)
+        await send_poly_ai_alert(bot, chat_id, use_inline_keyboard=use_inline_keyboard)
+        _agent_log_poly_route(
+            "B",
+            "poly_alert_tick_sent",
+            {"use_inline_keyboard": use_inline_keyboard},
+        )
 
 
 # ── V2 Menu Handlers ──────────────────────────────────────────────────────────
@@ -3198,6 +3269,7 @@ async def run() -> None:
         token=token,
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2),
     )
+    poly_alert_bot_extra: Bot | None = None
     dp = TgDispatcher()
 
     # ── Register handlers ──────────────────────────────────────────────────────
@@ -3322,14 +3394,56 @@ async def run() -> None:
         pass  # SIGTERM not available on Windows
 
     # ── Start Polymarket AI alert loop (every 5 minutes) ──────────────────────
-    admin_chat_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "").strip()
+    # Scheduled pushes use TELEGRAM_NEXUS_BOT_TOKEN when set (project bot), not the channel bot.
+    nexus_alert_tok = (os.environ.get("TELEGRAM_NEXUS_BOT_TOKEN") or "").strip()
+    admin_chat_id = (os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
+    nexus_admin_chat = (os.environ.get("TELEGRAM_NEXUS_ADMIN_CHAT_ID") or "").strip()
+    poly_alert_target_chat = nexus_admin_chat or admin_chat_id
+
+    poly_alert_bot: Bot = bot
+    poly_alert_use_inline = True
+    if nexus_alert_tok and nexus_alert_tok != token:
+        await _preflight_cleanup(nexus_alert_tok)
+        poly_alert_bot_extra = Bot(
+            token=nexus_alert_tok,
+            default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2),
+        )
+        poly_alert_bot = poly_alert_bot_extra
+        poly_alert_use_inline = False
+    elif nexus_alert_tok and nexus_alert_tok == token:
+        poly_alert_bot = bot
+        poly_alert_use_inline = True
+
     poly_alert_task: asyncio.Task | None = None
-    if admin_chat_id:
+    if poly_alert_target_chat:
+        if not nexus_alert_tok:
+            log.warning(
+                "poly_alert_uses_channel_bot_token",
+                hint="Set TELEGRAM_NEXUS_BOT_TOKEN so Polymarket AI alerts go to the Nexus project bot.",
+            )
         poly_alert_task = asyncio.create_task(
-            _poly_alert_loop(bot, admin_chat_id, interval_s=300),
+            _poly_alert_loop(
+                poly_alert_bot,
+                poly_alert_target_chat,
+                interval_s=300,
+                use_inline_keyboard=poly_alert_use_inline,
+            ),
             name="poly-alert-loop",
         )
-        log.info("poly_alert_loop_started", chat_id=admin_chat_id, interval_s=300)
+        log.info(
+            "poly_alert_loop_scheduled",
+            separate_nexus_bot=poly_alert_bot_extra is not None,
+            interval_s=300,
+        )
+        _agent_log_poly_route(
+            "A",
+            "poly_alert_run_config",
+            {
+                "nexus_token_env_set": bool(nexus_alert_tok),
+                "separate_alert_bot": poly_alert_bot_extra is not None,
+                "use_inline_keyboard": poly_alert_use_inline,
+            },
+        )
 
     # ── Start polling as a task so we can cancel it on signal ─────────────────
     polling_task = asyncio.create_task(dp.start_polling(bot), name="bot-polling")
@@ -3354,6 +3468,8 @@ async def run() -> None:
             except asyncio.CancelledError:
                 pass
         print("[SHUTDOWN] מתנתק משרתי טלגרם ומסיים את הפעילות...")
+        if poly_alert_bot_extra is not None:
+            await poly_alert_bot_extra.session.close()
         await bot.session.close()
         log.info("telegram_bot_stopped")
 
