@@ -1861,6 +1861,7 @@ async def send_poly_ai_alert(
             )
             if cx_ignore_fp in ignored:
                 cx_should_alert = False
+                log.info("poly_ai_alert_skipped_cx_ignored", fingerprint=cx_ignore_fp)
 
         recs = _compute_ai_recs(positions, portfolio_val)
         # Only alert on high-confidence recs (>= 75%)
@@ -1926,6 +1927,7 @@ async def send_poly_ai_alert(
                 action=str(rec.get("action_type") or ""),
             )
             if rec_fp in ignored:
+                log.info("poly_ai_alert_skipped_position_ignored", fingerprint=rec_fp)
                 continue
 
             title_short = rec["title"][:40]

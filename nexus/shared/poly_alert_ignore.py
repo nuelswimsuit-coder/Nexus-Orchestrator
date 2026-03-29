@@ -24,12 +24,11 @@ def fingerprint_cx(
     yes_token: str,
     slug: str,
     market_id: str,
-    signal: str,
+    signal: str,  # noqa: ARG001 — kept for callers; not part of hash (label drifts)
 ) -> str:
-    """Cross-exchange high-confidence alert — one row per market anchor + signal label."""
+    """Cross-exchange alert — stable per market only (signal text can drift tick-to-tick)."""
     anchor = (yes_token or "").strip() or (slug or "").strip() or (market_id or "").strip()
-    sig = (signal or "").strip().upper()
-    raw = f"cx|{anchor}|{sig}"
+    raw = f"cx|{anchor}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -38,11 +37,10 @@ def fingerprint_position(
     token_id: str,
     slug: str,
     outcome: str,
-    action: str,
+    action: str,  # noqa: ARG001 — BUY/SELL flips with edge; ignore is per contract
 ) -> str:
-    """Portfolio-based AI rec — token (or slug+outcome) + BUY/SELL."""
+    """Portfolio AI alert — stable per CLOB/slug."""
     tid = (token_id or "").strip()
     anchor = tid or f"{(slug or '').strip()}|{(outcome or 'YES').strip().upper()}"
-    act = (action or "").strip().upper()
-    raw = f"pos|{anchor}|{act}"
+    raw = f"pos|{anchor}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
