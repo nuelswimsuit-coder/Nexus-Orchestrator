@@ -26,7 +26,9 @@ GIT_SYNC_BRANCH            — branch name (default: main)
 GIT_SYNC_PUSH_INTERVAL_S   — master push interval in seconds (default: 600)
 GIT_SYNC_PULL_INTERVAL_S   — worker pull interval in seconds (default: 1800)
 GIT_SYNC_COMMIT_MSG        — commit message prefix (default: "Auto-sync")
-TELEGRAM_BOT_TOKEN         — bot token for notifications
+TELEGRAM_NEXUS_BOT_TOKEN   — project bot (preferred for git notifications)
+TELEGRAM_NEXUS_ADMIN_CHAT_ID — optional; defaults to TELEGRAM_ADMIN_CHAT_ID
+TELEGRAM_BOT_TOKEN         — fallback if NEXUS token unset
 TELEGRAM_ADMIN_CHAT_ID     — chat-id to receive notifications
 REDIS_URL                  — Redis connection string (default: redis://127.0.0.1:6379/0)
 NEXUS_MASTER_HOSTNAME      — hostname of the master node (default: Jacob-PC)
@@ -55,8 +57,6 @@ PUSH_INTERVAL_S: int = int(os.getenv("GIT_SYNC_PUSH_INTERVAL_S", "600"))
 PULL_INTERVAL_S: int = int(os.getenv("GIT_SYNC_PULL_INTERVAL_S", "1800"))
 COMMIT_MSG_PREFIX: str = os.getenv("GIT_SYNC_COMMIT_MSG", "Auto-sync")
 REDIS_URL: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
-BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID: str = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "")
 MASTER_HOSTNAME: str = os.getenv("NEXUS_MASTER_HOSTNAME", "Jacob-PC")
 
 ALERTS_KEY = "nexus:system:alerts"
@@ -119,14 +119,25 @@ def _push_redis_alert(payload: dict) -> None:
         pass
 
 
+def _git_notify_telegram_credentials() -> tuple[str, str]:
+    tok = (os.getenv("TELEGRAM_NEXUS_BOT_TOKEN") or "").strip()
+    if not tok:
+        tok = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat = (os.getenv("TELEGRAM_NEXUS_ADMIN_CHAT_ID") or "").strip()
+    if not chat:
+        chat = (os.getenv("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
+    return tok, chat
+
+
 def _send_telegram(message: str) -> None:
-    if not BOT_TOKEN or not CHAT_ID:
+    bot_token, chat_id = _git_notify_telegram_credentials()
+    if not bot_token or not chat_id:
         return
     try:
         import urllib.request
 
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        data = json.dumps({"chat_id": CHAT_ID, "text": message}).encode()
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        data = json.dumps({"chat_id": chat_id, "text": message}).encode()
         req = urllib.request.Request(
             url,
             data=data,

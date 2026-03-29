@@ -26,7 +26,9 @@ NODE_ROLE               — "master" | "worker" (overrides auto-detect)
 NODE_ID                 — node identifier (used for role auto-detect)
 GIT_SYNC_BRANCH         — branch name (default: main)
 REDIS_URL               — Redis connection string (default: redis://127.0.0.1:6379/0)
-TELEGRAM_BOT_TOKEN      — bot token for push/pull notifications
+TELEGRAM_NEXUS_BOT_TOKEN — project / Nexus bot (preferred for git push notices)
+TELEGRAM_NEXUS_ADMIN_CHAT_ID — optional; defaults to TELEGRAM_ADMIN_CHAT_ID
+TELEGRAM_BOT_TOKEN      — fallback bot token if NEXUS token unset
 TELEGRAM_ADMIN_CHAT_ID  — chat-id to receive git sync messages
 
 Usage
@@ -60,8 +62,6 @@ from pathlib import Path
 
 BRANCH: str = os.getenv("GIT_SYNC_BRANCH", "main")
 REDIS_URL: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
-BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID: str = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "")
 
 MASTER_INTERVAL_S: int = 600    # 10 minutes
 WORKER_INTERVAL_S: int = 1800   # 30 minutes
@@ -140,13 +140,25 @@ def _push_redis_alert(payload: dict) -> None:
         pass
 
 
+def _git_notify_telegram_credentials() -> tuple[str, str]:
+    """Nexus project bot first (same as Polymarket / wallet alerts), then channel bot."""
+    tok = (os.getenv("TELEGRAM_NEXUS_BOT_TOKEN") or "").strip()
+    if not tok:
+        tok = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat = (os.getenv("TELEGRAM_NEXUS_ADMIN_CHAT_ID") or "").strip()
+    if not chat:
+        chat = (os.getenv("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
+    return tok, chat
+
+
 def _send_telegram(message: str) -> None:
-    if not BOT_TOKEN or not CHAT_ID:
+    bot_token, chat_id = _git_notify_telegram_credentials()
+    if not bot_token or not chat_id:
         return
     try:
         import urllib.request
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        data = json.dumps({"chat_id": CHAT_ID, "text": message}).encode()
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        data = json.dumps({"chat_id": chat_id, "text": message}).encode()
         req = urllib.request.Request(
             url, data=data,
             headers={"Content-Type": "application/json"},

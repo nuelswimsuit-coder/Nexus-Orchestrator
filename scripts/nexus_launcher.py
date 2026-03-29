@@ -427,9 +427,13 @@ def _spawn(label: str, argv: list[str], *, cwd: str, logf, env: dict[str, str] |
 
 
 def _send_telegram_critical(message: str) -> None:
-    """Best-effort Telegram critical alert (no external deps)."""
-    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "").strip()
+    """Best-effort Telegram critical alert (no external deps). Uses Nexus project bot when set."""
+    bot_token = (os.environ.get("TELEGRAM_NEXUS_BOT_TOKEN") or "").strip()
+    if not bot_token:
+        bot_token = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = (os.environ.get("TELEGRAM_NEXUS_ADMIN_CHAT_ID") or "").strip()
+    if not chat_id:
+        chat_id = (os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
     if not bot_token or not chat_id:
         return
     try:
