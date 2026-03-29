@@ -131,9 +131,10 @@ def _signing_key_format_error(private_key: str) -> str | None:
         )
     if len(raw) == 40:
         return (
-            "POLYMARKET_RELAYER_KEY looks like a public address (20 bytes), e.g. the **Address** on Polymarket "
-            "→ Relayer API Keys. That page does not show your private key. "
-            "Export the **private key** from the wallet that controls that address (0x + 64 hex) and put it here."
+            "POLYMARKET_RELAYER_KEY looks like a public address (20 bytes). "
+            "Use POLYMARKET_SIGNER_ADDRESS for that. For the secret, open Polymarket → Settings → "
+            "Private Key (sidebar) and paste the full key here as 0x + 64 hex — or export the private key "
+            "from MetaMask / your wallet if you sign with an external EOA."
         )
     if len(raw) != 64:
         return (
