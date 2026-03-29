@@ -14,8 +14,9 @@ Safety layers
 
 Required environment variables
 ──────────────────────────────
-POLYMARKET_RELAYER_KEY       **Wallet** private key (0x + 64 hex) for EIP-712 / CLOB signing — *not*
-                             Polymarket Settings → “Relayer API Key” (UUID) and *not* that screen’s Address.
+POLYMARKET_WALLET_PRIVATE_KEY  Preferred: **wallet** private key (0x + 64 hex). Use this name to avoid confusing
+                               Polymarket’s Settings → “Relayer API Key” (UUID) with signing material.
+POLYMARKET_RELAYER_KEY       Same secret as above (legacy name — many operators paste the UUID here by mistake).
 POLY_PRIVATE_KEY             alias for POLYMARKET_RELAYER_KEY (optional)
 POLYMARKET_SIGNER_ADDRESS    Funder / EOA address (may match Polymarket’s relayer **Address** if that is your signer)
 POLYMARKET_API_KEY           L2 API key  (optional — for authenticated routes)
@@ -63,10 +64,10 @@ def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict
     try:
         from pathlib import Path
 
-        p = Path(__file__).resolve().parents[2] / "debug-04a19b.log"
+        p = Path(__file__).resolve().parents[2] / "debug-b0363d.log"
         line = json.dumps(
             {
-                "sessionId": "04a19b",
+                "sessionId": "b0363d",
                 "runId": os.environ.get("NEXUS_DEBUG_RUN_ID", "pre-fix"),
                 "hypothesisId": hypothesis_id,
                 "location": location,
@@ -108,13 +109,26 @@ _UUID_RELAYER_API_KEY = re.compile(
 def _signing_key_format_error(private_key: str) -> str | None:
     """Return a user-facing message if ``private_key`` cannot be a 32-byte secp256k1 secret."""
     k = normalize_polymarket_private_key_env(private_key or "")
+    # #region agent log
+    _agent_debug_log(
+        "H1",
+        "polymarket_client.py:_signing_key_format_error",
+        "signing_key_shape",
+        {
+            "normalized_len": len(k),
+            "matches_polymarket_relayer_uuid_pattern": bool(k and _UUID_RELAYER_API_KEY.match(k)),
+            "starts_with_0x": k.lower().startswith("0x"),
+        },
+    )
+    # #endregion
     if not k:
-        return "POLYMARKET_RELAYER_KEY (or POLY_PRIVATE_KEY) is not set."
+        return "POLYMARKET_WALLET_PRIVATE_KEY (or POLYMARKET_RELAYER_KEY / POLY_PRIVATE_KEY) is not set."
     if _UUID_RELAYER_API_KEY.match(k):
         return (
             "That value is Polymarket’s **Relayer API Key** (UUID from Settings). "
             "Nexus/py-clob-client needs your **wallet private key** here (0x + 64 hex from MetaMask or your signer), "
-            "not the UUID. Use POLYMARKET_SIGNER_ADDRESS for the public 0x address only."
+            "not the UUID. Use POLYMARKET_SIGNER_ADDRESS for the public 0x address only. "
+            "Tip: put the hex key in POLYMARKET_WALLET_PRIVATE_KEY so RELAYER_KEY is not confused with the Relayer UUID."
         )
     raw = k[2:] if k.lower().startswith("0x") else k
     if not raw or any(c not in "0123456789abcdefABCDEF" for c in raw):
@@ -325,6 +339,17 @@ class PolymarketClient:
         # #endregion
         fmt_err = _signing_key_format_error(self._private_key)
         if fmt_err:
+            # #region agent log
+            _agent_debug_log(
+                "H4",
+                "polymarket_client.py:_try_init_sdk:format_error",
+                "clob_init_skipped_bad_signing_key",
+                {
+                    "relayer_uuid_confusion": "Relayer API Key" in (fmt_err or ""),
+                    "format_error_len": len(fmt_err or ""),
+                },
+            )
+            # #endregion
             self._sdk_init_error = fmt_err
             log.warning("polymarket.signing_key_invalid", detail=fmt_err)
             return

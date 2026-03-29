@@ -25,6 +25,8 @@ import structlog
 log = structlog.get_logger(__name__)
 
 # Same env names as PolymarketClient — single source of truth for operators.
+# Prefer POLYMARKET_WALLET_PRIVATE_KEY: POLYMARKET_RELAYER_KEY is often mistaken for Polymarket’s “Relayer API Key” (UUID).
+ENV_WALLET_PRIVATE_KEY = "POLYMARKET_WALLET_PRIVATE_KEY"
 ENV_PRIVATE_KEY = "POLYMARKET_RELAYER_KEY"
 ENV_PRIVATE_KEY_ALT = "NEXUS_POLY_PRIVATE_KEY"
 ENV_POLY_LEGACY = "POLY_PRIVATE_KEY"
@@ -56,7 +58,8 @@ def normalize_polymarket_private_key_env(raw: str) -> str:
 def get_polymarket_private_key() -> str:
     """Return the raw 0x-prefixed private key, or empty string if unset."""
     chosen = (
-        (os.getenv(ENV_PRIVATE_KEY) or "").strip()
+        (os.getenv(ENV_WALLET_PRIVATE_KEY) or "").strip()
+        or (os.getenv(ENV_PRIVATE_KEY) or "").strip()
         or (os.getenv(ENV_PRIVATE_KEY_ALT) or "").strip()
         or (os.getenv(ENV_POLY_LEGACY) or "").strip()
     )
@@ -75,7 +78,7 @@ def require_signing_material() -> tuple[str, str]:
     funder = get_polymarket_funder_address()
     if not key or not funder:
         raise ValueError(
-            f"{ENV_PRIVATE_KEY} and {ENV_FUNDER} must be set for live wallet access"
+            f"{ENV_WALLET_PRIVATE_KEY} (or {ENV_PRIVATE_KEY}) and {ENV_FUNDER} must be set for live wallet access"
         )
     return key, funder
 

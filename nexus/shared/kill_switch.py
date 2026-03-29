@@ -56,6 +56,7 @@ POLY5M_PENDING_KEY: str = "nexus:poly5m:pending"
 
 # Secrets removed from process memory after trigger (names only, never values)
 _ENV_SECRET_KEYS: tuple[str, ...] = (
+    "POLYMARKET_WALLET_PRIVATE_KEY",
     "POLYMARKET_RELAYER_KEY",
     "NEXUS_POLY_PRIVATE_KEY",
     "POLY_PRIVATE_KEY",
