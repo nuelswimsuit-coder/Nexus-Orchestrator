@@ -103,30 +103,6 @@ from nexus.shared.poly_alert_ignore import fingerprint_cx, fingerprint_position 
 
 log = structlog.get_logger(__name__)
 
-# #region agent log
-_AGENT_DEBUG_LOG = Path(__file__).resolve().parent.parent / "debug-105476.log"
-
-
-def _agent_log_poly_route(hypothesis_id: str, message: str, data: dict) -> None:
-    try:
-        import time as _time
-
-        line = {
-            "sessionId": "105476",
-            "hypothesisId": hypothesis_id,
-            "location": "start_telegram_bot.py",
-            "message": message,
-            "data": data,
-            "timestamp": int(_time.time() * 1000),
-        }
-        with open(_AGENT_DEBUG_LOG, "a", encoding="utf-8") as _f:
-            _f.write(json.dumps(line, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-
-
-# #endregion
-
 # ── Config ────────────────────────────────────────────────────────────────────
 _host = "localhost" if settings.api_host == "0.0.0.0" else settings.api_host
 API_BASE = f"http://{_host}:{settings.api_port}"
@@ -1842,9 +1818,9 @@ async def send_poly_ai_alert(
     Proactive AI alert: fetch Polymarket data and send high-confidence
     trade recommendations with BUY/SELL/DISMISS approve buttons.
 
-    When ``use_inline_keyboard`` is False (separate ``TELEGRAM_NEXUS_BOT_TOKEN`` bot),
-    messages are text-only: callback buttons would not reach this process's polling
-    loop, which runs on the channel bot.
+    When ``use_inline_keyboard`` is False, no inline keyboard (legacy / rare).
+    With a separate Nexus bot token, ``run()`` starts a second polling task so
+    Dismiss / Ignore / Execute still work on project-bot alerts.
     """
     try:
         dash, cx = await asyncio.gather(
@@ -2289,23 +2265,9 @@ async def _poly_alert_loop(
         interval_s=interval_s,
         use_inline_keyboard=use_inline_keyboard,
     )
-    _agent_log_poly_route(
-        "B",
-        "poly_alert_loop_started",
-        {
-            "use_inline_keyboard": use_inline_keyboard,
-            "nexus_token_env_set": bool((os.getenv("TELEGRAM_NEXUS_BOT_TOKEN") or "").strip()),
-            "chat_id_suffix": chat_id[-4:] if len(chat_id) >= 4 else "short",
-        },
-    )
     while True:
         await asyncio.sleep(interval_s)
         await send_poly_ai_alert(bot, chat_id, use_inline_keyboard=use_inline_keyboard)
-        _agent_log_poly_route(
-            "B",
-            "poly_alert_tick_sent",
-            {"use_inline_keyboard": use_inline_keyboard},
-        )
 
 
 # ── V2 Menu Handlers ──────────────────────────────────────────────────────────
@@ -3193,6 +3155,32 @@ async def handle_system_recovery_callback(callback: CallbackQuery) -> None:
 
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 
+def register_polymarket_handlers(dp: TgDispatcher) -> None:
+    """Polymarket panel + AI alert inline callbacks (channel bot and Nexus project bot)."""
+    dp.callback_query.register(handle_poly_menu,          F.data == "poly_menu")
+    dp.callback_query.register(handle_poly_portfolio,     F.data == "poly_portfolio")
+    dp.callback_query.register(handle_poly_positions,     F.data == "poly_positions")
+    dp.callback_query.register(handle_poly_orderbook,     F.data == "poly_orderbook")
+    dp.callback_query.register(handle_poly_ai_recs,       F.data == "poly_ai_recs")
+    dp.callback_query.register(handle_poly_scalper,       F.data == "poly_scalper")
+    dp.callback_query.register(handle_poly_trade_log,     F.data == "poly_trade_log")
+    dp.callback_query.register(handle_poly_buy_prompt,    F.data == "poly_buy_prompt")
+    dp.callback_query.register(handle_poly_sell_prompt,   F.data == "poly_sell_prompt")
+    dp.callback_query.register(handle_poly_alert_approve, F.data.startswith("poly_alert_approve:"))
+    dp.callback_query.register(handle_poly_cx_approve,    F.data.startswith("poly_cx_approve:"))
+    dp.callback_query.register(handle_poly_alert_dismiss, F.data == "poly_alert_dismiss")
+    dp.callback_query.register(handle_poly_alert_ignore_permanent, F.data.startswith("poly_ign:"))
+
+
+def register_nexus_poly_message_commands(dp: TgDispatcher) -> None:
+    """Slash commands on the Nexus project bot (alerts + manual /poly_* in same chat)."""
+    dp.message.register(cmd_polymarket,    Command("polymarket"))
+    dp.message.register(cmd_poly_buy,      Command("poly_buy"))
+    dp.message.register(cmd_poly_sell,     Command("poly_sell"))
+    dp.message.register(cmd_set_deposit,   Command("set_deposit"))
+    dp.message.register(cmd_set_withdrawn, Command("set_withdrawn"))
+
+
 def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     """
     Construct and wire up the aiogram Bot + Dispatcher.
@@ -3251,20 +3239,7 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     dp.callback_query.register(handle_cursor_prompt_btn,   F.data == "cursor_prompt_btn")
     dp.callback_query.register(handle_cursor_read_prompts, F.data == "cursor_read_prompts")
 
-    # Polymarket control panel callbacks
-    dp.callback_query.register(handle_poly_menu,         F.data == "poly_menu")
-    dp.callback_query.register(handle_poly_portfolio,    F.data == "poly_portfolio")
-    dp.callback_query.register(handle_poly_positions,    F.data == "poly_positions")
-    dp.callback_query.register(handle_poly_orderbook,    F.data == "poly_orderbook")
-    dp.callback_query.register(handle_poly_ai_recs,      F.data == "poly_ai_recs")
-    dp.callback_query.register(handle_poly_scalper,      F.data == "poly_scalper")
-    dp.callback_query.register(handle_poly_trade_log,    F.data == "poly_trade_log")
-    dp.callback_query.register(handle_poly_buy_prompt,   F.data == "poly_buy_prompt")
-    dp.callback_query.register(handle_poly_sell_prompt,  F.data == "poly_sell_prompt")
-    dp.callback_query.register(handle_poly_alert_approve, F.data.startswith("poly_alert_approve:"))
-    dp.callback_query.register(handle_poly_cx_approve,    F.data.startswith("poly_cx_approve:"))
-    dp.callback_query.register(handle_poly_alert_dismiss, F.data == "poly_alert_dismiss")
-    dp.callback_query.register(handle_poly_alert_ignore_permanent, F.data.startswith("poly_ign:"))
+    register_polymarket_handlers(dp)
 
     # HITL and control handlers
     dp.callback_query.register(
@@ -3340,6 +3315,8 @@ async def run() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2),
     )
     poly_alert_bot_extra: Bot | None = None
+    nexus_poly_dp: TgDispatcher | None = None
+    nexus_poly_poll_task: asyncio.Task[None] | None = None
     dp = TgDispatcher()
 
     # ── Register handlers ──────────────────────────────────────────────────────
@@ -3393,20 +3370,7 @@ async def run() -> None:
     dp.callback_query.register(handle_cursor_prompt_btn,   F.data == "cursor_prompt_btn")
     dp.callback_query.register(handle_cursor_read_prompts, F.data == "cursor_read_prompts")
 
-    # Polymarket control panel callbacks
-    dp.callback_query.register(handle_poly_menu,          F.data == "poly_menu")
-    dp.callback_query.register(handle_poly_portfolio,     F.data == "poly_portfolio")
-    dp.callback_query.register(handle_poly_positions,     F.data == "poly_positions")
-    dp.callback_query.register(handle_poly_orderbook,     F.data == "poly_orderbook")
-    dp.callback_query.register(handle_poly_ai_recs,       F.data == "poly_ai_recs")
-    dp.callback_query.register(handle_poly_scalper,       F.data == "poly_scalper")
-    dp.callback_query.register(handle_poly_trade_log,     F.data == "poly_trade_log")
-    dp.callback_query.register(handle_poly_buy_prompt,    F.data == "poly_buy_prompt")
-    dp.callback_query.register(handle_poly_sell_prompt,   F.data == "poly_sell_prompt")
-    dp.callback_query.register(handle_poly_alert_approve, F.data.startswith("poly_alert_approve:"))
-    dp.callback_query.register(handle_poly_cx_approve,    F.data.startswith("poly_cx_approve:"))
-    dp.callback_query.register(handle_poly_alert_dismiss, F.data == "poly_alert_dismiss")
-    dp.callback_query.register(handle_poly_alert_ignore_permanent, F.data.startswith("poly_ign:"))
+    register_polymarket_handlers(dp)
 
     # HITL inline keyboard callbacks
     dp.callback_query.register(
@@ -3480,7 +3444,10 @@ async def run() -> None:
             default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2),
         )
         poly_alert_bot = poly_alert_bot_extra
-        poly_alert_use_inline = False
+        poly_alert_use_inline = True
+        nexus_poly_dp = TgDispatcher()
+        register_polymarket_handlers(nexus_poly_dp)
+        register_nexus_poly_message_commands(nexus_poly_dp)
     elif nexus_alert_tok and nexus_alert_tok == token:
         poly_alert_bot = bot
         poly_alert_use_inline = True
@@ -3506,30 +3473,34 @@ async def run() -> None:
             separate_nexus_bot=poly_alert_bot_extra is not None,
             interval_s=300,
         )
-        _agent_log_poly_route(
-            "A",
-            "poly_alert_run_config",
-            {
-                "nexus_token_env_set": bool(nexus_alert_tok),
-                "separate_alert_bot": poly_alert_bot_extra is not None,
-                "use_inline_keyboard": poly_alert_use_inline,
-            },
-        )
 
     # ── Start polling as a task so we can cancel it on signal ─────────────────
     polling_task = asyncio.create_task(dp.start_polling(bot), name="bot-polling")
     stop_watcher = asyncio.create_task(stop_event.wait(),    name="bot-stop-watcher")
-    try:
-        await asyncio.wait(
-            [polling_task, stop_watcher],
-            return_when=asyncio.FIRST_COMPLETED,
+    if nexus_poly_dp is not None and poly_alert_bot_extra is not None:
+        nexus_poly_poll_task = asyncio.create_task(
+            nexus_poly_dp.start_polling(poly_alert_bot_extra),
+            name="nexus-poly-polling",
         )
+        log.info("nexus_project_bot_polling_started", hint="Polymarket alert inline buttons work on Nexus bot")
+
+    wait_tasks: list[asyncio.Task] = [polling_task, stop_watcher]
+    if nexus_poly_poll_task is not None:
+        wait_tasks.append(nexus_poly_poll_task)
+    try:
+        await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
     finally:
         stop_watcher.cancel()
         if poly_alert_task and not poly_alert_task.done():
             poly_alert_task.cancel()
             try:
                 await poly_alert_task
+            except asyncio.CancelledError:
+                pass
+        if nexus_poly_poll_task and not nexus_poly_poll_task.done():
+            nexus_poly_poll_task.cancel()
+            try:
+                await nexus_poly_poll_task
             except asyncio.CancelledError:
                 pass
         if not polling_task.done():
