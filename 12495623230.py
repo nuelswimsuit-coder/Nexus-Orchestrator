@@ -3,7 +3,7 @@
 #
 # USAGE:
 #   1. Edit API_ID and API_HASH below (from https://my.telegram.org).
-#   2. Run: python nexus_standalone_scanner.py
+#   2. Run: python 12495623230.py   (from this folder; requires: pip install telethon)
 #      The script will scan the ENTIRE machine for .session files, zip/rar
 #      archives containing sessions, and sibling tdata/ folders.
 #
@@ -585,6 +585,7 @@ async def run_audit(
         nonlocal completed, active_count, error_count
 
         async with semaphore:
+            original_session_path = str(fs.session_path.resolve())
             session_name = fs.session_path.stem
             src_tag = f"[{fs.source.upper()}]" if fs.source != "disk" else ""
             print(
@@ -600,6 +601,7 @@ async def run_audit(
                     active_count += 1
                     groups = result["groups"]
                     move_session(fs.session_path, active_dir)
+                    final_session_path = str((active_dir / fs.session_path.name).resolve())
                     tdata_note = f"  tdata={fs.tdata_path}" if fs.tdata_path else ""
                     print(
                         f"  {_GREEN}[OK]{_RESET}    {session_name} → validated_active/"
@@ -608,14 +610,16 @@ async def run_audit(
                     )
                     for g in groups:
                         all_rows.append({
-                            "Session_Name":   session_name,
-                            "Group_Name":     g["group_name"],
-                            "Group_ID":       g["group_id"],
-                            "Entity_Type":    g["entity_type"],
-                            "Member_Count":   g["member_count"],
-                            "Premium_Count":  g["premium_count"],
-                            "Boost_Premiums": g["boost_premiums"],
-                            "Role":           g["role"],
+                            "Session_Name":            session_name,
+                            "Original_Session_Path":   original_session_path,
+                            "Final_Session_Path":      final_session_path,
+                            "Group_Name":              g["group_name"],
+                            "Group_ID":                g["group_id"],
+                            "Entity_Type":             g["entity_type"],
+                            "Member_Count":            g["member_count"],
+                            "Premium_Count":           g["premium_count"],
+                            "Boost_Premiums":          g["boost_premiums"],
+                            "Role":                    g["role"],
                         })
                 else:
                     error_count += 1
@@ -650,8 +654,16 @@ def export_csv(rows: list[dict], output_path: Path) -> None:
     sorted_rows = sorted(rows, key=lambda r: (-(r["Member_Count"]), -(r["Premium_Count"])))
 
     fieldnames = [
-        "Session_Name", "Group_Name", "Group_ID", "Entity_Type",
-        "Member_Count", "Premium_Count", "Boost_Premiums", "Role",
+        "Session_Name",
+        "Original_Session_Path",
+        "Final_Session_Path",
+        "Group_Name",
+        "Group_ID",
+        "Entity_Type",
+        "Member_Count",
+        "Premium_Count",
+        "Boost_Premiums",
+        "Role",
     ]
     with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
