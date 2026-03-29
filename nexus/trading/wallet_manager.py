@@ -4,6 +4,11 @@ Polymarket wallet access and real-balance safety brake.
 Reads signing material only from environment variables (never logs secrets).
 If the live USDC balance falls 30% or more below the first observed baseline
 for this deployment, trading is halted and the operator is notified on Telegram.
+
+Telegram routing: Polymarket / wallet safety alerts use ``TELEGRAM_NEXUS_BOT_TOKEN``
+(and optional ``TELEGRAM_NEXUS_ADMIN_CHAT_ID``). If unset, falls back to
+``TELEGRAM_BOT_TOKEN`` / ``TELEGRAM_ADMIN_CHAT_ID`` — use separate Nexus vars when
+``TELEGRAM_BOT_TOKEN`` is a dedicated channel bot (e.g. Achusharmuta only).
 """
 
 from __future__ import annotations
@@ -75,9 +80,19 @@ def require_signing_material() -> tuple[str, str]:
     return key, funder
 
 
+def _polymarket_alert_telegram_credentials() -> tuple[str, str]:
+    """Bot + chat for Polymarket wallet / safety-brake alerts (not the channel bot)."""
+    token = (os.getenv("TELEGRAM_NEXUS_BOT_TOKEN") or "").strip()
+    if not token:
+        token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = (os.getenv("TELEGRAM_NEXUS_ADMIN_CHAT_ID") or "").strip()
+    if not chat_id:
+        chat_id = (os.getenv("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
+    return token, chat_id
+
+
 async def _send_telegram_alert(text: str) -> None:
-    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    chat_id = (os.getenv("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
+    token, chat_id = _polymarket_alert_telegram_credentials()
     if not token or not chat_id:
         log.warning("wallet_manager_telegram_skipped", reason="token_or_chat_missing")
         return
