@@ -747,7 +747,7 @@ async def cmd_start_nexus_project(message: Message) -> None:
         "🎯 *Nexus Orchestrator* \\(בוט פרויקט\\)\n\n"
         f"שלום, {_esc(name)}\\!\n\n"
         "כאן התראות Git / Polymarket AI ופקודות מסחר\\. "
-        "הפאנל המלא \\(HITL, קלאסטר, Incubator\\) — **בבוט אחושרמוטה** \\(אותו מספר צ'אט\\)\\.\n\n"
+        "הפאנל המלא \\(HITL, קלאסטר, Incubator\\) — **בבוט אחושרמוטה**\\.\n\n"
         "שלח `/help` או בחר למטה\\."
     )
     await message.answer(
