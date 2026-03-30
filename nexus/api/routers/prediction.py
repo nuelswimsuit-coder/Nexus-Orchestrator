@@ -525,10 +525,10 @@ async def get_trade_log(redis: RedisDep) -> TradeLogResponse:
       - ``status``    — "success" | "failed" | "halted" | "timeout" | "skipped"
       - ``paper``     — True while PAPER_TRADING mode is active
 
-    The ``kill_switch_balance_usd`` field shows the threshold below which all
-    trading is halted ($90).
+    The ``kill_switch_balance_usd`` field shows the threshold below which live
+    BUY paths halt (default $90; override ``POLY_KILL_SWITCH_MIN_USD``).
     """
-    from nexus.trading.polymarket_client import KILL_SWITCH_BALANCE_USD
+    from nexus.trading.polymarket_client import kill_switch_threshold_usd
 
     raw_entries: list[str] = await redis.lrange(PAPER_TRADING_REDIS_KEY, 0, 19)
 
@@ -559,7 +559,7 @@ async def get_trade_log(redis: RedisDep) -> TradeLogResponse:
         entries=entries,
         total=len(entries),
         paper_trading=PAPER_TRADING,
-        kill_switch_balance_usd=KILL_SWITCH_BALANCE_USD,
+        kill_switch_balance_usd=kill_switch_threshold_usd(),
     )
 
 

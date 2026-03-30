@@ -9,7 +9,7 @@ trading when the USDC balance drops below $90.
 Safety layers
 -------------
 1. ``nexus.trading.config.PAPER_TRADING = True``  — virtual trades only.
-2. Kill switch: balance < KILL_SWITCH_BALANCE_USD → ``TradingHalted`` raised.
+2. Kill switch: CLOB collateral < ``kill_switch_threshold_usd()`` (default ``KILL_SWITCH_BALANCE_USD``) → ``TradingHalted`` on live BUYs.
 3. API timeout: 15-second hard limit on every order placement.
 
 Required environment variables
@@ -157,8 +157,22 @@ def get_polymarket_clob_funder_address() -> str:
     return resolve_clob_funder_address(get_polymarket_private_key(), get_polymarket_funder_address())
 
 
-# Kill-switch threshold — trading halts if USDC balance falls below this
+# Kill-switch default — trading halts if CLOB USDC collateral falls below this (override: POLY_KILL_SWITCH_MIN_USD)
 KILL_SWITCH_BALANCE_USD: float = 90.0
+
+
+def kill_switch_threshold_usd() -> float:
+    """Effective kill-switch floor (env ``POLY_KILL_SWITCH_MIN_USD``, else ``KILL_SWITCH_BALANCE_USD``).
+
+    Set to ``0`` to disable the minimum-balance gate (dev only — live orders can still fail at the exchange).
+    """
+    raw = (os.getenv("POLY_KILL_SWITCH_MIN_USD") or "").strip()
+    if not raw:
+        return float(KILL_SWITCH_BALANCE_USD)
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return float(KILL_SWITCH_BALANCE_USD)
 
 
 # ── Sentinel exceptions ───────────────────────────────────────────────────────
@@ -466,7 +480,16 @@ class PolymarketClient:
 
         Also halts if the balance fetch itself times out — losing connectivity
         is treated as a reason to stop trading, not to continue.
+
+        Refreshes CLOB collateral cache first (same as preflight) so the first read is not a stale zero.
         """
+        thr = kill_switch_threshold_usd()
+        if thr <= 0:
+            return
+
+        if self._clob is not None:
+            await self.sync_collateral_allowance_async()
+
         try:
             balance = await self.get_balance_usdc()
         except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
@@ -477,12 +500,13 @@ class PolymarketClient:
         log.info(
             "polymarket.kill_switch_check",
             balance_usd=balance,
-            threshold=KILL_SWITCH_BALANCE_USD,
+            threshold=thr,
         )
-        if balance < KILL_SWITCH_BALANCE_USD:
+        if balance < thr:
             raise TradingHalted(
                 f"Kill switch: balance ${balance:.2f} < "
-                f"${KILL_SWITCH_BALANCE_USD:.2f} — all trading halted"
+                f"${thr:.2f} — all trading halted "
+                f"(CLOB collateral for your signing wallet; deposit USDC for trading or set POLY_KILL_SWITCH_MIN_USD=0 for dev)"
             )
 
     async def sync_collateral_allowance_async(self) -> None:
@@ -543,12 +567,12 @@ class PolymarketClient:
             ``TradeResult`` — never raises on order failures, only on
             ``TradingHalted`` or ``asyncio.TimeoutError``.
         """
-        await self.check_kill_switch()
-
-        shares = round(budget_usd / price, 2) if price > 0 else 0.0
-
         ep = await effective_paper_trading(redis)
         paper_mode = ep and not force_live
+        if not paper_mode:
+            await self.check_kill_switch()
+
+        shares = round(budget_usd / price, 2) if price > 0 else 0.0
 
         base = TradeResult(
             success=False,

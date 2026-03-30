@@ -40,7 +40,7 @@ import structlog
 
 from nexus.shared.config import settings
 from nexus.shared.system_settings import read_system_settings
-from nexus.trading.polymarket_client import KILL_SWITCH_BALANCE_USD
+from nexus.trading.polymarket_client import kill_switch_threshold_usd
 from nexus.trading.config import (
     PAPER_TRADING,
     PAPER_TRADING_AMOUNT_USD,
@@ -781,7 +781,9 @@ async def collect_arbitrage_datapoint(redis: Any) -> dict[str, Any]:
         else:
             try:
                 live_balance = await get_live_balance_usd()
-                balance_ok = live_balance >= max(KILL_SWITCH_BALANCE_USD, PAPER_TRADING_AMOUNT_USD)
+                balance_ok = live_balance >= max(
+                    kill_switch_threshold_usd(), PAPER_TRADING_AMOUNT_USD
+                )
             except Exception as exc:
                 log.error("live_balance_check_failed", error=str(exc))
 
@@ -800,7 +802,9 @@ async def collect_arbitrage_datapoint(redis: Any) -> dict[str, Any]:
             log.warning(
                 "trade_skipped_balance_guard",
                 balance_usd=round(live_balance, 2),
-                min_required_usd=round(max(KILL_SWITCH_BALANCE_USD, PAPER_TRADING_AMOUNT_USD), 2),
+                min_required_usd=round(
+                    max(kill_switch_threshold_usd(), PAPER_TRADING_AMOUNT_USD), 2
+                ),
             )
         elif is_high_confidence and meets_trade_thresholds:
             try:

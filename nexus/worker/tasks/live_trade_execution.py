@@ -5,7 +5,11 @@ from typing import Any
 import structlog
 
 from nexus.trading.config import PAPER_TRADING_AMOUNT_USD
-from nexus.trading.polymarket_client import KILL_SWITCH_BALANCE_USD, PolymarketClient, place_order
+from nexus.trading.polymarket_client import (
+    PolymarketClient,
+    kill_switch_threshold_usd,
+    place_order,
+)
 from nexus.trading.runtime_mode import effective_paper_trading
 
 log = structlog.get_logger(__name__)
@@ -16,6 +20,7 @@ async def get_live_balance_usd() -> float:
     Fetch the currently available USDC balance from Polymarket.
     """
     client = PolymarketClient()
+    await client.sync_collateral_allowance_async()
     return await client.get_balance_usdc()
 
 
@@ -29,7 +34,7 @@ async def execute_live_trade(
     """
     Execute a live trade only after a strict balance pre-check.
     """
-    min_required = max(KILL_SWITCH_BALANCE_USD, PAPER_TRADING_AMOUNT_USD)
+    min_required = max(kill_switch_threshold_usd(), PAPER_TRADING_AMOUNT_USD)
     paper = await effective_paper_trading(redis)
     if paper:
         balance_usd = 100.0
