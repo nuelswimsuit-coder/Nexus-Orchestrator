@@ -8,7 +8,7 @@ from typing import Literal
 from nexus.trading.polymarket_client import get_polymarket_clob_funder_address
 
 # Bump when changing enrich copy; exposed on GET /api/polymarket/dashboard.json as manual_order_error_enrich.
-MANUAL_ORDER_ENRICH_REV = "v4"
+MANUAL_ORDER_ENRICH_REV = "v5"
 
 # Appended to every enriched balance error — if you never see this in the UI, the client is not
 # hitting the same Python codebase that defines this module (stale worker, wrong host, or old venv).
@@ -44,7 +44,12 @@ def enrich_manual_order_error(err: str | None, side: Literal["BUY", "SELL"]) -> 
     if portfolio and funder and portfolio.lower() != funder.lower():
         mismatch = (
             f"\n\nUI portfolio {portfolio[:6]}…{portfolio[-4]} (POLYMARKET_PORTFOLIO_ADDRESS) ≠ maker above — "
-            "the positions table is not the same on-chain account as this API key."
+            "the positions table is not the same on-chain account as this API key.\n"
+            "Fix A: deposit USDC on the maker address (the one that signs / holds L2 API).\n"
+            "Fix B: use the private key for the wallet that already has USDC (the portfolio address).\n"
+            "Fix C: set POLYMARKET_SYNC_WALLET_ENV=1 (default) so Nexus overwrites "
+            "POLYMARKET_PORTFOLIO_ADDRESS with your signing key — or remove the wrong "
+            "POLYMARKET_PORTFOLIO_ADDRESS line if you disabled sync on purpose."
         )
 
     if su == "SELL":
