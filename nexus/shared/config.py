@@ -25,7 +25,9 @@ from nexus.shared.redis_util import (
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ENV_FILE = _REPO_ROOT / ".env"
 if _ENV_FILE.is_file():
-    load_dotenv(_ENV_FILE, override=False)
+    # Repo `.env` must win over stale machine/user env (e.g. old POLYMARKET_* from
+    # Windows System Environment), otherwise dashboard keeps querying the wrong address.
+    load_dotenv(_ENV_FILE, override=True)
 apply_remote_worker_env_overrides()
 apply_worker_cli_redis_host_override()
 apply_redis_url_to_environment()

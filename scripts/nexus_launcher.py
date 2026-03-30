@@ -58,7 +58,7 @@ ROOT = _project_root()
 
 
 def _load_repo_dotenv() -> None:
-    """Merge repo ``.env`` into ``os.environ`` without overriding existing vars (same as bot script)."""
+    """Apply repo ``.env`` into ``os.environ`` so project config wins over inherited OS env."""
     env_path = ROOT / ".env"
     if not env_path.is_file():
         return
@@ -70,7 +70,7 @@ def _load_repo_dotenv() -> None:
             key, _, val = line.partition("=")
             key = key.strip()
             val = val.strip().split("#")[0].strip()
-            if key and key not in os.environ:
+            if key:
                 os.environ[key] = val
     except OSError:
         pass
