@@ -155,7 +155,11 @@ class Settings(BaseSettings):
 def apply_polymarket_wallet_alignment() -> None:
     """
     Keep ``POLYMARKET_SIGNER_ADDRESS`` and ``POLYMARKET_PORTFOLIO_ADDRESS`` aligned with the
-    EOA derived from ``POLYMARKET_RELAYER_KEY`` so the UI and CLOB signer match.
+    EOA derived from the configured signing material so the UI and CLOB signer match.
+
+    Uses the same key resolution as :func:`nexus.trading.wallet_manager.get_polymarket_private_key`
+    (includes ``POLYMARKET_WALLET_PRIVATE_KEY``). Legacy code only read ``POLYMARKET_RELAYER_KEY``,
+    so operators with wallet key only had an empty portfolio address and zero Data API rows.
 
     Disable with ``POLYMARKET_SYNC_WALLET_ENV=0`` (advanced: separate portfolio view address).
     """
@@ -168,11 +172,9 @@ def apply_polymarket_wallet_alignment() -> None:
         "off",
     ):
         return
-    key = (
-        (os.getenv("POLYMARKET_RELAYER_KEY") or "").strip()
-        or (os.getenv("NEXUS_POLY_PRIVATE_KEY") or "").strip()
-        or (os.getenv("POLY_PRIVATE_KEY") or "").strip()
-    )
+    from nexus.trading.wallet_manager import get_polymarket_private_key
+
+    key = get_polymarket_private_key()
     if not key:
         return
     try:
@@ -202,11 +204,9 @@ def log_polymarket_wallet_mismatch_at_startup() -> None:
         "off",
     ):
         return  # auto-sync on — portfolio/signer were forced to derived address
-    key = (
-        (os.getenv("POLYMARKET_RELAYER_KEY") or "").strip()
-        or (os.getenv("NEXUS_POLY_PRIVATE_KEY") or "").strip()
-        or (os.getenv("POLY_PRIVATE_KEY") or "").strip()
-    )
+    from nexus.trading.wallet_manager import get_polymarket_private_key
+
+    key = get_polymarket_private_key()
     if not key:
         return
     try:

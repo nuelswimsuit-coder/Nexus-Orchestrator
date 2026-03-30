@@ -2576,20 +2576,24 @@ function PolymarketTradingView({
   const portfolioApiValue = data?.portfolio_value ?? 0;
   const portfolioCash = data?.portfolio_cash ?? 0;
   const portfolioPositions = data?.portfolio_positions ?? 0;
+  const positionsListForUi = data?.portfolio_positions_list ?? [];
+  const sumPositionsNotional = positionsListForUi.reduce((s, p) => s + (p.current_value ?? 0), 0);
   const collateralRaw = parseFloat(data?.collateral_usdc ?? "0");
   const killSwitchBalance = tradeLog?.kill_switch_balance_usd ?? 0;
   const portfolioValue =
     portfolioApiValue > 0
       ? portfolioApiValue
-      : collateralRaw > 0
-        ? collateralRaw
-        : killSwitchBalance > 0
-          ? killSwitchBalance
-          : Math.max(bot?.total_pnl_usd ?? 0, 0);
+      : sumPositionsNotional > 0
+        ? sumPositionsNotional + portfolioCash
+        : collateralRaw > 0
+          ? collateralRaw
+          : killSwitchBalance > 0
+            ? killSwitchBalance
+            : Math.max(bot?.total_pnl_usd ?? 0, 0);
 
-  // Use real portfolio PnL from positions list if available
-  const realPositionsPnl = (data?.portfolio_positions_list ?? []).reduce((sum, p) => sum + p.cash_pnl, 0);
-  const totalPnl = realPositionsPnl !== 0 ? realPositionsPnl : (bot?.total_pnl_usd ?? 0);
+  // Use real portfolio PnL from positions list when the API returned rows (sum may be 0 legitimately)
+  const realPositionsPnl = positionsListForUi.reduce((sum, p) => sum + p.cash_pnl, 0);
+  const totalPnl = positionsListForUi.length > 0 ? realPositionsPnl : (bot?.total_pnl_usd ?? 0);
   const realizedPnl = bot?.realized_pnl_usd ?? 0;
   const unrealizedPnl = bot?.unrealized_pnl_usd ?? 0;
   const isPnlPositive = totalPnl >= 0;
@@ -2672,12 +2676,17 @@ function PolymarketTradingView({
   // ── Order handler ────────────────────────────────────────────────────────
   const handleOrder = async (side: "BUY" | "SELL") => {
     if (!tokenId.trim()) { setOrderStatus({ msg: "Enter Token ID first", ok: false }); return; }
+    const usd = parseFloat(amount);
+    if (!Number.isFinite(usd) || usd <= 0) {
+      setOrderStatus({ msg: "Amount must be a number greater than 0", ok: false });
+      return;
+    }
     setOrderStatus(null);
     try {
       const res = await fetch(`${API_BASE}/api/polymarket/manual-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token_id: tokenId.trim(), side, amount: parseFloat(amount) }),
+        body: JSON.stringify({ token_id: tokenId.trim(), side, amount: usd }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -2704,28 +2713,15 @@ function PolymarketTradingView({
       }));
       return;
     }
+    if (!Number.isFinite(betAmount) || betAmount <= 0) {
+      setRecOrderStatus((prev) => ({
+        ...prev,
+        [recIdx]: { msg: "סכום לא תקין — חייב להיות > 0 / Invalid bet amount", ok: false },
+      }));
+      return;
+    }
     setRecOrderStatus((prev) => ({ ...prev, [recIdx]: { msg: "שולח פקודה...", ok: true, loading: true } }));
     try {
-      // #region agent log
-      fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c91743" },
-        body: JSON.stringify({
-          sessionId: "c91743",
-          hypothesisId: "H1",
-          location: "NexusOsGodMode.tsx:handleRecOrder",
-          message: "rec_order_clob_token_shape",
-          data: {
-            recIdx,
-            side,
-            tokenLen: tid.length,
-            tokenIsAllDigits: /^\d+$/.test(tid),
-            tokenPrefix: tid.slice(0, 40),
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       const res = await fetch(`${API_BASE}/api/polymarket/manual-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

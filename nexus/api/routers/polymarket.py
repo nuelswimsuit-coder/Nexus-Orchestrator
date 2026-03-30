@@ -206,6 +206,10 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
                             "token_id": token_id,
                         })
 
+            # /value can be 0 while /positions still lists markets; avoid a totally empty UI
+            if total_val <= 0 and positions_value > 0:
+                total_val = positions_value
+
             # Cash = total portfolio value minus open positions
             cash = max(total_val - positions_value, 0.0)
             # #region agent log

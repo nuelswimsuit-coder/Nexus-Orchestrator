@@ -1218,6 +1218,31 @@ def _fmt_poly_orderbook(ob: dict) -> str:
     return "\n".join(lines)
 
 
+def _poly_alert_min_order_usd() -> float:
+    """Floor USD for Telegram Execute / manual-order when portfolio_value rounds to 0."""
+    try:
+        return max(0.01, float(os.environ.get("POLY_ALERT_MIN_ORDER_USD", "5")))
+    except ValueError:
+        return 5.0
+
+
+def _poly_sizing_basis_usd(dash: dict) -> float:
+    """USD basis for alert sizing when ``portfolio_value`` is 0 but cash/CLOB/positions exist."""
+    d = dash or {}
+    pv = float(d.get("portfolio_value") or 0.0)
+    if pv > 0:
+        return pv
+    cash = float(d.get("portfolio_cash") or 0.0)
+    clob = float(d.get("clob_balance") or 0.0)
+    positions = d.get("portfolio_positions_list") or []
+    pos_sum = 0.0
+    if isinstance(positions, list):
+        for p in positions:
+            if isinstance(p, dict):
+                pos_sum += float(p.get("current_value") or 0.0)
+    return max(0.0, cash, clob, pos_sum)
+
+
 def _compute_ai_recs(positions: list[dict], portfolio_val: float) -> list[dict]:
     """Compute AI recommendations for a list of positions. Returns list of rec dicts."""
     recs = []
@@ -1246,8 +1271,10 @@ def _compute_ai_recs(positions: list[dict], portfolio_val: float) -> list[dict]:
             action_en = "HOLD"
             action_type = "HOLD"
 
-        pct_of_portfolio = min(15.0, abs(edge) * 1.5) if portfolio_val > 0 else 0.0
+        pct_of_portfolio = min(15.0, abs(edge) * 1.5)
         rec_amount = round(portfolio_val * pct_of_portfolio / 100, 2)
+        if action_type != "HOLD" and rec_amount <= 0:
+            rec_amount = _poly_alert_min_order_usd()
 
         tid = str(p.get("token_id") or p.get("asset") or "").strip()
         slug = str(p.get("slug") or "").strip()
@@ -1274,7 +1301,7 @@ def _compute_ai_recs(positions: list[dict], portfolio_val: float) -> list[dict]:
 def _fmt_poly_ai_recs(dash: dict, cx_data: dict | None) -> str:
     """Format AI recommendations from cross-exchange + positions into Telegram."""
     positions    = dash.get("portfolio_positions_list") or []
-    portfolio_val = float(dash.get("portfolio_value") or 0)
+    portfolio_val = _poly_sizing_basis_usd(dash)
     cx_signal    = str((cx_data or {}).get("signal_label") or (cx_data or {}).get("signal") or "—")
     cx_conf      = bool((cx_data or {}).get("high_confidence", False))
     arb_gap      = float((cx_data or {}).get("arbitrage_gap") or 0.0)
@@ -1647,6 +1674,14 @@ async def cmd_poly_buy(message: Message) -> None:
             await message.answer("❌ סכום לא תקין / Invalid amount\\.")
             return
 
+    if amount <= 0 or amount != amount:
+        await message.answer(
+            "❌ *סכום חייב להיות גדול מ־0 / Amount must be \\> 0*\n\n"
+            "_ה־API דוחה `amount: 0` — בדוק את הספרות אחרי מזהה הטוקן\\._",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        return
+
     if not _is_valid_clob_token_id(token_id):
         await message.answer(
             "❌ *מזהה טוקן לא תקין / Invalid token*\n\n"
@@ -1704,6 +1739,13 @@ async def cmd_poly_sell(message: Message) -> None:
         amount = float(parts[2])
     except ValueError:
         await message.answer("❌ סכום לא תקין / Invalid amount\\.")
+        return
+
+    if amount <= 0 or amount != amount:
+        await message.answer(
+            "❌ *סכום חייב להיות גדול מ־0 / Amount must be \\> 0*",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
         return
 
     if not _is_valid_clob_token_id(token_id):
@@ -1874,7 +1916,7 @@ async def send_poly_ai_alert(
         cx_conf       = bool((cx or {}).get("high_confidence"))
         cx_signal     = str((cx or {}).get("signal_label") or (cx or {}).get("signal") or "")
         arb_gap       = float((cx or {}).get("arbitrage_gap") or 0.0)
-        portfolio_val = float(dash.get("portfolio_value") or 0.0)
+        portfolio_val = _poly_sizing_basis_usd(dash)
         cx_poly = (cx or {}).get("polymarket") if isinstance((cx or {}).get("polymarket"), dict) else {}
         cx_market_q = str(cx_poly.get("market_question") or "")
         cx_yes_token = _yes_token_from_poly_snapshot(cx_poly)
@@ -1908,6 +1950,8 @@ async def send_poly_ai_alert(
         if cx_should_alert:
             pct = 10.0
             cx_rec_amt = round(portfolio_val * pct / 100, 2)
+            if cx_rec_amt <= 0:
+                cx_rec_amt = _poly_alert_min_order_usd()
             signal_upper = cx_signal.upper()
             is_buy = "BUY" in signal_upper
             signal_icon = "📈" if is_buy else "📉"
@@ -2118,8 +2162,8 @@ async def handle_poly_alert_approve(callback: CallbackQuery) -> None:
         return
 
     positions = dash.get("portfolio_positions_list") or []
-    portfolio_val = float(dash.get("portfolio_value") or 0.0)
-    recs = _compute_ai_recs(positions, portfolio_val)
+    sizing_basis = _poly_sizing_basis_usd(dash)
+    recs = _compute_ai_recs(positions, sizing_basis)
     high_conf = [r for r in recs if r["confidence"] >= 75 and r["action_type"] != "HOLD"]
     if rec_idx < 0 or rec_idx >= len(high_conf):
         await callback.message.edit_text(
@@ -2129,6 +2173,11 @@ async def handle_poly_alert_approve(callback: CallbackQuery) -> None:
         return
 
     rec = high_conf[rec_idx]
+    if amt <= 0:
+        amt = float(rec.get("rec_amount") or 0)
+    if amt <= 0:
+        amt = _poly_alert_min_order_usd()
+
     tok = await _resolve_rec_clob_token(rec)
     if not _is_valid_clob_token_id(tok):
         await callback.message.edit_text(
@@ -2192,6 +2241,11 @@ async def handle_poly_cx_approve(callback: CallbackQuery) -> None:
         return
 
     await callback.answer("⏳ מבצע… / Executing…")
+
+    if amt <= 0:
+        dash0 = await _api_get("/api/polymarket/dashboard.json")
+        basis = _poly_sizing_basis_usd(dash0) if isinstance(dash0, dict) else 0.0
+        amt = max(round(basis * 10 / 100, 2), _poly_alert_min_order_usd()) if basis > 0 else _poly_alert_min_order_usd()
 
     tok = await _resolve_cross_exchange_yes_token()
     mq = ""
