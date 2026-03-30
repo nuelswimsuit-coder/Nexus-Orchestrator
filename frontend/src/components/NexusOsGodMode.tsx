@@ -2542,6 +2542,18 @@ function PolymarketTradingView({
     }
   }, [tokenId]);
 
+  const defaultOrderbookTokenId = useMemo(() => {
+    const list = data?.portfolio_positions_list ?? [];
+    const row = list.find((p) => (p.token_id ?? "").trim());
+    return (row?.token_id ?? "").trim();
+  }, [data?.portfolio_positions_list]);
+
+  useEffect(() => {
+    if (!defaultOrderbookTokenId) return;
+    if (tokenId.trim()) return;
+    setTokenId(defaultOrderbookTokenId);
+  }, [defaultOrderbookTokenId, tokenId]);
+
   useEffect(() => {
     void fetchOrderbook();
     const t = setInterval(() => void fetchOrderbook(), 2_000);

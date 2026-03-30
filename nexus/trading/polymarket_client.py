@@ -30,8 +30,11 @@ POLY_BUILDER_PASSPHRASE      Builder API passphrase
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -210,6 +213,22 @@ class TradeResult:
 
 # ── SDK helpers (lazy imports — no hard failure when SDK is absent) ───────────
 
+def _normalize_urlsafe_b64_secret_for_hmac(raw: str | None) -> str:
+    """py_clob_client / py_builder_signing_sdk decode API secrets with ``urlsafe_b64decode``; missing
+    trailing padding raises ``binascii.Error: Incorrect padding``."""
+    s = (raw or "").strip()
+    for q in ('"', "'", "\u201c", "\u201d"):
+        if len(s) >= 2 and s.startswith(q) and s.endswith(q):
+            s = s[1:-1].strip()
+    s = "".join(s.split())
+    if not s:
+        return ""
+    pad = (-len(s)) % 4
+    if pad:
+        s += "=" * pad
+    return s
+
+
 def _build_builder_config() -> Any | None:
     try:
         from py_builder_signing_sdk.config import BuilderApiKeyCreds, BuilderConfig
@@ -217,7 +236,7 @@ def _build_builder_config() -> Any | None:
         return None
 
     key = os.getenv("POLY_BUILDER_API_KEY")
-    secret = os.getenv("POLY_BUILDER_SECRET")
+    secret = _normalize_urlsafe_b64_secret_for_hmac(os.getenv("POLY_BUILDER_SECRET"))
     passphrase = os.getenv("POLY_BUILDER_PASSPHRASE")
     if not all([key, secret, passphrase]):
         log.warning(
@@ -237,8 +256,42 @@ def _build_api_creds() -> Any | None:
         return None
 
     api_key = os.getenv("POLYMARKET_API_KEY")
-    api_secret = os.getenv("POLYMARKET_API_SECRET")
+    raw_secret = os.getenv("POLYMARKET_API_SECRET")
+    api_secret = _normalize_urlsafe_b64_secret_for_hmac(raw_secret)
     api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE")
+    # #region agent log
+    try:
+        _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        _log_path = os.path.join(_root, "debug-105476.log")
+        _rs = "".join((raw_secret or "").strip().split())
+        _dec_ok = False
+        _dec_err = ""
+        if api_secret:
+            try:
+                base64.urlsafe_b64decode(api_secret)
+                _dec_ok = True
+            except Exception as _e:
+                _dec_err = type(_e).__name__
+        _payload = {
+            "sessionId": "105476",
+            "hypothesisId": "H1_padding",
+            "location": "polymarket_client._build_api_creds",
+            "message": "poly_l2_secret_shape",
+            "data": {
+                "stripped_len": len(_rs),
+                "mod4_before_pad": len(_rs) % 4,
+                "norm_len": len(api_secret),
+                "mod4_after_pad": len(api_secret) % 4 if api_secret else None,
+                "decode_ok": _dec_ok,
+                "decode_err_type": _dec_err or None,
+            },
+            "timestamp": int(time.time() * 1000),
+        }
+        with open(_log_path, "a", encoding="utf-8") as _f:
+            _f.write(json.dumps(_payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # #endregion
     if not all([api_key, api_secret, api_passphrase]):
         log.warning(
             "polymarket.api_creds_incomplete",
@@ -333,8 +386,8 @@ class PolymarketClient:
         Tries the SDK first, then the Polymarket data API for ``POLYMARKET_SIGNER_ADDRESS``
         only — not ``POLYMARKET_PORTFOLIO_ADDRESS`` (UI may point at another account).
 
-        Returns ``100.0`` when every method fails so callers can distinguish a genuine
-        low balance from a connectivity issue.
+        Returns ``0.0`` when every method fails — the old ``100.0`` sentinel made the
+        God Mode UI look funded while CLOB/SDK was actually unavailable.
 
         Raises:
             httpx.TimeoutException: if the REST fallback request times out.
@@ -405,8 +458,8 @@ class PolymarketClient:
         # (positions + cash), not CLOB collateral. Using it made the UI show hundreds of
         # "tradable" USDC while post_order failed with balance 0.
 
-        log.warning("polymarket.get_balance_unavailable", default=100.0)
-        return 100.0
+        log.warning("polymarket.get_balance_unavailable", default=0.0)
+        return 0.0
 
     async def check_kill_switch(self) -> None:
         """Raise ``TradingHalted`` if the USDC balance is below the threshold.

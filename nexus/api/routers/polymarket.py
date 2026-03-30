@@ -81,6 +81,15 @@ def _short_ts(ts: str) -> str:
     return s[-8:] if len(s) >= 8 else s or "—"
 
 
+def _polymarket_data_api_user_address() -> str:
+    """0x address Polymarket data-api should query (env first, then CLOB funder from private key)."""
+    return (
+        (os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()
+        or (os.getenv("POLYMARKET_SIGNER_ADDRESS") or "").strip()
+        or (get_polymarket_clob_funder_address() or "").strip()
+    )
+
+
 def _extract_position_clob_token_id(p: dict[str, Any]) -> str:
     """Best-effort CLOB outcome token id from a Data API `/positions` row."""
     for key in ("asset", "assetId", "tokenId", "token_id", "tokenID", "clobTokenId"):
@@ -123,14 +132,12 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
     async def _portfolio_value() -> tuple[float, float, float, list[dict[str, Any]]]:
         """Fetch portfolio value + cash + positions from Polymarket data API.
 
-        Uses POLYMARKET_PORTFOLIO_ADDRESS if set (personal account),
-        otherwise falls back to POLYMARKET_SIGNER_ADDRESS (bot wallet).
+        Uses POLYMARKET_PORTFOLIO_ADDRESS, else POLYMARKET_SIGNER_ADDRESS, else the
+        effective CLOB funder derived from the configured private key (same wallet the
+        SDK uses) so Data API queries still work when env addresses were never set.
         Returns (portfolio_total, cash, positions_value, positions_list).
         """
-        address = (
-            os.getenv("POLYMARKET_PORTFOLIO_ADDRESS", "").strip()
-            or os.getenv("POLYMARKET_SIGNER_ADDRESS", "").strip()
-        )
+        address = _polymarket_data_api_user_address()
         # #region agent log
         _agent_debug_ndjson(
             "H1",
@@ -140,7 +147,7 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
                 "has_portfolio_env": bool((os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()),
                 "has_signer_env": bool((os.getenv("POLYMARKET_SIGNER_ADDRESS") or "").strip()),
                 "has_wallet_private_key": bool(get_polymarket_private_key()),
-                "has_relayer_key_raw": bool((os.getenv("POLYMARKET_RELAYER_KEY") or "").strip()),
+                "has_clob_funder_fallback": bool((get_polymarket_clob_funder_address() or "").strip()),
                 "address_len_for_data_api": len(address),
             },
         )
@@ -262,6 +269,7 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
             "portfolio_val": portfolio_val,
             "clob_balance": bal,
             "positions_list_len": len(portfolio_positions_list),
+            "data_api_user_len": len(_polymarket_data_api_user_address()),
             "collateral_branch": "portfolio"
             if (portfolio_val is not None and portfolio_val > 0)
             else "clob"
@@ -335,12 +343,11 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
             }
         )
 
-    signer = os.getenv("POLYMARKET_SIGNER_ADDRESS", "")
+    signer = (os.getenv("POLYMARKET_SIGNER_ADDRESS", "") or "").strip() or (
+        get_polymarket_clob_funder_address() or ""
+    ).strip()
 
-    portfolio_address = (
-        os.getenv("POLYMARKET_PORTFOLIO_ADDRESS", "").strip()
-        or signer
-    )
+    portfolio_address = _polymarket_data_api_user_address() or signer
 
     # ── Break-even / total deposited tracker ──────────────────────────────────
     # Stored in Redis as a float so it persists across restarts.
