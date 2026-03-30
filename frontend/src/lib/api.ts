@@ -6,7 +6,19 @@
  * host when deploying.
  */
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
+const _SERVER_API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001").trim();
+
+/** Browser: same-origin `/api` (Next rewrites → backend). Server: absolute URL. */
+export const API_BASE = typeof window !== "undefined" ? "" : _SERVER_API_BASE;
+
+/** WebSocket base for the active API target. */
+export function apiWsBase(): string {
+  if (typeof window !== "undefined" && API_BASE === "") {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}`;
+  }
+  return _SERVER_API_BASE.replace(/^https/, "wss").replace(/^http/, "ws");
+}
 
 // ── Generic fetch helper ──────────────────────────────────────────────────────
 
@@ -15,7 +27,8 @@ function _resolveApiUrl(path: string): string {
   if (/^https?:\/\//i.test(p)) {
     return p;
   }
-  return `${API_BASE}${p.startsWith("/") ? p : `/${p}`}`;
+  const base = typeof window !== "undefined" ? API_BASE : _SERVER_API_BASE;
+  return `${base}${p.startsWith("/") ? p : `/${p}`}`;
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {

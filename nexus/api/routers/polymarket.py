@@ -90,6 +90,42 @@ def _polymarket_data_api_user_address() -> str:
     )
 
 
+async def _polygon_wallet_usdc_total_usd(wallet_hex: str) -> float:
+    """Best-effort on-chain USDC (Polygon) for profile wallet — fills gap when CLOB balance is 0."""
+    if (os.getenv("POLYMARKET_CHAIN_USDC_BALANCE") or "1").strip().lower() in ("0", "false", "no", "off"):
+        return 0.0
+    w = (wallet_hex or "").strip().lower()
+    if not w.startswith("0x") or len(w) != 42:
+        return 0.0
+    addr_word = "0" * 24 + w[2:]
+    payload = "0x70a08231" + addr_word
+    rpc = (os.getenv("POLYGON_RPC_URL") or "https://polygon-bor-rpc.publicnode.com").strip()
+    tokens = (
+        "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+        "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+    )
+    total_raw = 0
+    client = _get_http_client()
+    for token in tokens:
+        try:
+            body = {
+                "jsonrpc": "2.0",
+                "method": "eth_call",
+                "params": [{"to": token, "data": payload}, "latest"],
+                "id": 1,
+            }
+            r = await asyncio.wait_for(client.post(rpc, json=body), timeout=2.5)
+            if r.status_code != 200:
+                continue
+            res = r.json().get("result")
+            if not isinstance(res, str) or not res.startswith("0x"):
+                continue
+            total_raw += int(res, 16)
+        except Exception:
+            continue
+    return float(total_raw) / 1_000_000.0
+
+
 def _extract_position_clob_token_id(p: dict[str, Any]) -> str:
     """Best-effort CLOB outcome token id from a Data API `/positions` row."""
     for key in ("asset", "assetId", "tokenId", "token_id", "tokenID", "clobTokenId"):
@@ -349,6 +385,9 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
 
     portfolio_address = _polymarket_data_api_user_address() or signer
 
+    polygon_wallet_usdc = await _polygon_wallet_usdc_total_usd(portfolio_address)
+    portfolio_total_estimated = float(portfolio_val) + float(bal or 0.0) + float(polygon_wallet_usdc)
+
     # ── Break-even / total deposited tracker ──────────────────────────────────
     # Stored in Redis as a float so it persists across restarts.
     # The frontend/bot can POST /api/polymarket/set-deposit to update it.
@@ -381,6 +420,8 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
         "portfolio_positions_list": portfolio_positions_list,
         "portfolio_address": portfolio_address,
         "clob_balance": bal or 0.0,
+        "polygon_wallet_usdc": round(polygon_wallet_usdc, 2),
+        "portfolio_total_estimated": round(portfolio_total_estimated, 2),
         "btc_up_pct": round(buy_pct, 2),
         "btc_down_pct": round(sell_pct, 2),
         "direction_side": direction,

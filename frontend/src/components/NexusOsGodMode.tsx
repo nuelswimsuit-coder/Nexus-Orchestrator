@@ -50,7 +50,7 @@ import {
   Line,
   ReferenceLine,
 } from "recharts";
-import { API_BASE, triggerPanic, swrFetcher } from "@/lib/api";
+import { API_BASE, apiWsBase, triggerPanic, swrFetcher } from "@/lib/api";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -76,6 +76,10 @@ export interface GodModeDashboard {
   portfolio_positions_list?: PortfolioPosition[];
   portfolio_address?: string;
   clob_balance?: number;
+  /** On-chain USDC on Polygon (wallet), when CLOB balance is unavailable */
+  polygon_wallet_usdc?: number;
+  /** Data-API positions value + CLOB + polygon wallet USDC (closer to Polymarket site total) */
+  portfolio_total_estimated?: number;
   btc_up_pct: number;
   btc_down_pct: number;
   direction_side: string;
@@ -457,9 +461,15 @@ export default function NexusOsGodMode() {
           <div className="flex gap-10 flex-wrap">
             <GlobalMetric
               label="יתרה (USDC)"
-              value={marketData?.portfolio_value && marketData.portfolio_value > 0
-                ? `$${marketData.portfolio_value.toFixed(2)}`
-                : marketData?.collateral_usdc || "0.00"}
+              value={(() => {
+                const est = Number(marketData?.portfolio_total_estimated ?? 0) || 0;
+                if (est > 0) return `$${est.toFixed(2)}`;
+                const pv = Number(marketData?.portfolio_value ?? 0) || 0;
+                const cb = Number(marketData?.clob_balance ?? 0) || 0;
+                const total = pv + cb;
+                if (total > 0) return `$${total.toFixed(2)}`;
+                return marketData?.collateral_usdc || "0.00";
+              })()}
               color="emerald"
               icon={<TrendingUp size={14} />}
             />
@@ -2072,7 +2082,7 @@ function AhuLogsTab() {
   const wsRef = React.useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    const wsBase = API_BASE.replace(/^http/, "ws");
+    const wsBase = apiWsBase();
     const ws = new WebSocket(`${wsBase}/api/ahu/logs/stream`);
     wsRef.current = ws;
 
@@ -2584,8 +2594,11 @@ function PolymarketTradingView({
     return series.filter((p) => now - new Date(p.time).getTime() <= cutoff);
   }, [data?.pnl_series, pnlRange]);
 
-  // Portfolio from real Polymarket account (POLYMARKET_PORTFOLIO_ADDRESS or bot wallet)
-  const portfolioApiValue = data?.portfolio_value ?? 0;
+  // Portfolio: backend `portfolio_total_estimated` = positions (data-api) + CLOB + on-chain Polygon USDC
+  const portfolioApiValue =
+    data?.portfolio_total_estimated != null && data.portfolio_total_estimated > 0
+      ? data.portfolio_total_estimated
+      : (data?.portfolio_value ?? 0);
   const portfolioCash = data?.portfolio_cash ?? 0;
   const portfolioPositions = data?.portfolio_positions ?? 0;
   const positionsListForUi = data?.portfolio_positions_list ?? [];
@@ -4133,9 +4146,7 @@ function useMasterTerminalStream() {
   const [connected, setConnected] = React.useState(false);
 
   React.useEffect(() => {
-    const wsBase = (API_BASE || "http://localhost:8002")
-      .replace(/^https/, "wss")
-      .replace(/^http/, "ws");
+    const wsBase = apiWsBase();
     const url = `${wsBase}/api/v1/swarm/nodes/${encodeURIComponent(MASTER_NODE_ID_UI)}/log_stream`;
     let ws: WebSocket;
     try {
@@ -5690,9 +5701,7 @@ function LiveConsoleModal({
   const wsRef = React.useRef<WebSocket | null>(null);
 
   React.useEffect(() => {
-    const wsBase = (API_BASE || "http://localhost:8002")
-      .replace(/^https/, "wss")
-      .replace(/^http/, "ws");
+    const wsBase = apiWsBase();
     const url = `${wsBase}/api/v1/swarm/nodes/${encodeURIComponent(nodeId)}/log_stream`;
     let ws: WebSocket;
     try {
@@ -6183,9 +6192,7 @@ function RemoteTerminalPanel({
 
   React.useEffect(() => {
     if (!expanded) return;
-    const wsBase = (API_BASE || "http://localhost:8002")
-      .replace(/^https/, "wss")
-      .replace(/^http/, "ws");
+    const wsBase = apiWsBase();
     const url = `${wsBase}/api/v1/swarm/nodes/${encodeURIComponent(nodeId)}/log_stream`;
     const ws = new WebSocket(url);
     wsRef.current = ws;

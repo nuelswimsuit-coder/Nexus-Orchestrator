@@ -46,6 +46,37 @@ if ($dockerCmd) {
     }
 }
 
+# Bundled redis-local\redis-server.exe (same layout as nexus_launcher / redis-win.zip)
+$bundledExe = Join-Path $RepoRoot "redis-local\redis-server.exe"
+if (Test-Path $bundledExe) {
+    $lanRaw = if ($env:NEXUS_REDIS_LISTEN_LAN) { $env:NEXUS_REDIS_LISTEN_LAN.Trim().ToLower() } else { "" }
+    $useLan = @("1", "true", "yes", "on") -contains $lanRaw
+    $lanConf = Join-Path $RepoRoot "redis-local\redis.windows-lan.conf"
+    $stdConf = Join-Path $RepoRoot "redis-local\redis.windows.conf"
+    $confToUse = $null
+    if ($useLan -and (Test-Path $lanConf)) {
+        $confToUse = $lanConf
+    } elseif (Test-Path $stdConf) {
+        $confToUse = $stdConf
+    }
+    if ($confToUse) {
+        Write-Host "Starting bundled redis-server with $confToUse ..."
+        Start-Process -FilePath $bundledExe -ArgumentList "`"$confToUse`"" -WorkingDirectory (Split-Path $bundledExe) -WindowStyle Minimized
+    } else {
+        Write-Host "Starting bundled redis-server (no redis-local\*.conf) ..."
+        Start-Process -FilePath $bundledExe -WorkingDirectory (Split-Path $bundledExe) -WindowStyle Minimized
+    }
+    Start-Sleep -Seconds 2
+    if (Test-PortOpen -P $Port) {
+        if ($useLan) {
+            Write-Host "OK (LAN bind). Workers can use REDIS_URL=redis://<this-PC-LAN-IP>:$Port/0"
+        } else {
+            Write-Host "OK. REDIS_URL=redis://127.0.0.1:$Port/0"
+        }
+        exit 0
+    }
+}
+
 # Native Redis for Windows (e.g. chocolatey: choco install redis-64)
 $redisServer = Get-Command redis-server -ErrorAction SilentlyContinue
 $conf = Join-Path $RepoRoot "redis-local\redis.windows.conf"
