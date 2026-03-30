@@ -49,13 +49,13 @@ log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/polymarket", tags=["polymarket"])
 
 # #region agent log
-_DEBUG_LOG_PATH = Path(__file__).resolve().parents[3] / "debug-7ec1ca.log"
+_DEBUG_LOG_PATH = Path(__file__).resolve().parents[3] / "debug-02fc4d.log"
 
 
 def _agent_debug_ndjson(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
     try:
         payload = {
-            "sessionId": "7ec1ca",
+            "sessionId": "02fc4d",
             "hypothesisId": hypothesis_id,
             "location": location,
             "message": message,
@@ -82,12 +82,44 @@ def _short_ts(ts: str) -> str:
 
 
 def _polymarket_data_api_user_address() -> str:
-    """0x address Polymarket data-api should query (env first, then CLOB funder from private key)."""
-    return (
-        (os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()
-        or (os.getenv("POLYMARKET_SIGNER_ADDRESS") or "").strip()
-        or (get_polymarket_clob_funder_address() or "").strip()
+    """0x address Polymarket data-api should query for positions/value.
+
+    When a private key is configured, this must match the CLOB maker (funder) so the UI
+    lists outcome shares the same wallet can sell. ``POLYMARKET_PORTFOLIO_ADDRESS`` is
+    only used when no signing key is set (read-only / watch another address).
+    """
+    key = get_polymarket_private_key()
+    clob = (get_polymarket_clob_funder_address() or "").strip()
+    port = (os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()
+    sync_raw = (os.getenv("POLYMARKET_SYNC_WALLET_ENV", "1") or "").strip().lower()
+    sync_off = sync_raw in ("0", "false", "no", "off")
+
+    if key and clob:
+        chosen = clob
+        source = "clob_funder_with_key"
+    else:
+        chosen = (
+            port
+            or (os.getenv("POLYMARKET_SIGNER_ADDRESS") or "").strip()
+            or clob
+        )
+        source = "env_chain_no_key_or_empty_clob"
+
+    # #region agent log
+    _agent_debug_ndjson(
+        "H1",
+        "polymarket.py:_polymarket_data_api_user_address",
+        "data-api user resolution",
+        {
+            "source": source,
+            "has_private_key": bool(key),
+            "sync_wallet_env_off": sync_off,
+            "portfolio_ne_clob": bool(port and clob and port.lower() != clob.lower()),
+            "addr_short": f"{chosen[:6]}…{chosen[-4:]}" if len(chosen) >= 10 else "",
+        },
     )
+    # #endregion
+    return chosen
 
 
 async def _polygon_wallet_usdc_total_usd(wallet_hex: str) -> float:
@@ -168,26 +200,11 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
     async def _portfolio_value() -> tuple[float, float, float, list[dict[str, Any]]]:
         """Fetch portfolio value + cash + positions from Polymarket data API.
 
-        Uses POLYMARKET_PORTFOLIO_ADDRESS, else POLYMARKET_SIGNER_ADDRESS, else the
-        effective CLOB funder derived from the configured private key (same wallet the
-        SDK uses) so Data API queries still work when env addresses were never set.
+        User address comes from :func:`_polymarket_data_api_user_address` (CLOB maker when a
+        key is set, else env portfolio / signer / funder fallbacks).
         Returns (portfolio_total, cash, positions_value, positions_list).
         """
         address = _polymarket_data_api_user_address()
-        # #region agent log
-        _agent_debug_ndjson(
-            "H1",
-            "polymarket.py:_portfolio_value",
-            "env and address resolution",
-            {
-                "has_portfolio_env": bool((os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()),
-                "has_signer_env": bool((os.getenv("POLYMARKET_SIGNER_ADDRESS") or "").strip()),
-                "has_wallet_private_key": bool(get_polymarket_private_key()),
-                "has_clob_funder_fallback": bool((get_polymarket_clob_funder_address() or "").strip()),
-                "address_len_for_data_api": len(address),
-            },
-        )
-        # #endregion
         if not address:
             return (0.0, 0.0, 0.0, [])
         addr = address.lower()
@@ -563,6 +580,21 @@ async def polymarket_manual_order(
     Every response includes header ``X-Nexus-Manual-Order-Enrich`` so DevTools can prove which
     API build handled the request (HTTPException would drop injected headers).
     """
+    # #region agent log
+    _f = (get_polymarket_clob_funder_address() or "").strip()
+    _p = (os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()
+    _agent_debug_ndjson(
+        "H5",
+        "polymarket.py:polymarket_manual_order",
+        "manual order vs maker",
+        {
+            "side": body.side,
+            "maker_short": f"{_f[:6]}…{_f[-4:]}" if len(_f) >= 10 else "",
+            "portfolio_env_short": f"{_p[:6]}…{_p[-4:]}" if len(_p) >= 10 else "",
+            "portfolio_ne_maker": bool(_p and _f and _p.lower() != _f.lower()),
+        },
+    )
+    # #endregion
     price = body.price
     market_question = ""
     if price is None:
