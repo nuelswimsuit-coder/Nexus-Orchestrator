@@ -22,6 +22,7 @@ POLYMARKET_SIGNER_ADDRESS    Funder / EOA address (may match Polymarket’s rela
 POLYMARKET_API_KEY           L2 API key  (optional — for authenticated routes)
 POLYMARKET_API_SECRET        L2 API secret
 POLYMARKET_API_PASSPHRASE    L2 API passphrase
+POLYMARKET_CLOB_SIGNATURE_TYPE  Optional ``0``/``1``/``2`` for ClobClient (EOA / POLY_PROXY / GNOSIS_SAFE); wrong value → balance reads ``0``
 POLY_BUILDER_API_KEY         Builder API key (polymarket.com/settings?tab=builder)
 POLY_BUILDER_SECRET          Builder API secret
 POLY_BUILDER_PASSPHRASE      Builder API passphrase
@@ -159,6 +160,64 @@ def get_polymarket_clob_funder_address() -> str:
 
 # Kill-switch default — trading halts if CLOB USDC collateral falls below this (override: POLY_KILL_SWITCH_MIN_USD)
 KILL_SWITCH_BALANCE_USD: float = 90.0
+
+
+def _clob_signature_type_from_env() -> int | None:
+    """Polymarket ``ClobClient`` / balance-allowance need the correct signer model.
+
+    ``0`` = EOA (MetaMask), ``1`` = POLY_PROXY (email/Magic), ``2`` = POLY_GNOSIS_SAFE.
+    Wrong type often yields balance ``0`` while the UI still shows funds.
+    """
+    raw = (
+        os.getenv("POLYMARKET_CLOB_SIGNATURE_TYPE")
+        or os.getenv("POLY_CLOB_SIGNATURE_TYPE")
+        or ""
+    ).strip()
+    if not raw:
+        return None
+    try:
+        v = int(raw, 10)
+    except ValueError:
+        log.warning("polymarket.clob_signature_type_invalid", raw=raw[:20])
+        return None
+    if v not in (0, 1, 2):
+        log.warning("polymarket.clob_signature_type_out_of_range", value=v)
+        return None
+    return v
+
+
+def _collateral_usd_from_allowance_balance_raw(raw: Any) -> float:
+    """CLOB ``balance-allowance`` returns USDC collateral in 6-decimal atomic units (string or number)."""
+    try:
+        x = float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return x / 1_000_000.0
+
+
+def _balance_allowance_response_to_usdc(resp: Any) -> float:
+    if isinstance(resp, dict):
+        raw = resp.get("balance", 0)
+        return max(0.0, _collateral_usd_from_allowance_balance_raw(raw))
+    if isinstance(resp, (int, float)):
+        return max(0.0, _collateral_usd_from_allowance_balance_raw(resp))
+    return 0.0
+
+
+def _signature_types_for_balance_fetch(clob: Any) -> list[int]:
+    """Order of ``signature_type`` values to try for ``get_balance_allowance`` (L2)."""
+    env_st = _clob_signature_type_from_env()
+    if env_st is not None:
+        return [env_st]
+    out: list[int] = []
+    seen: set[int] = set()
+    builder = getattr(clob, "builder", None)
+    default_st = int(getattr(builder, "sig_type", 0)) if builder is not None else 0
+    for st in (default_st, 0, 1, 2):
+        if st not in seen:
+            seen.add(st)
+            out.append(st)
+    return out
 
 
 def kill_switch_threshold_usd() -> float:
@@ -357,11 +416,13 @@ class PolymarketClient:
         try:
             from py_clob_client.client import ClobClient
 
+            _sig = _clob_signature_type_from_env()
             self._clob = ClobClient(
                 host=_CLOB_HOST,
                 chain_id=_POLYGON_CHAIN_ID,
                 key=self._private_key,
                 creds=_build_api_creds(),
+                signature_type=_sig,
                 funder=self._funder,
                 builder_config=_build_builder_config(),
             )
@@ -409,40 +470,73 @@ class PolymarketClient:
         loop = asyncio.get_event_loop()
 
         if self._clob is not None:
-            # Try the preferred SDK method: get_balance_allowance(BalanceAllowanceParams)
+            # L2 ``get_balance_allowance``: balance is USDC micro-units; wrong ``signature_type`` often returns 0.
             fn = getattr(self._clob, "get_balance_allowance", None)
             if fn is not None:
                 try:
                     from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
-                    params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-                    resp = await asyncio.wait_for(
-                        loop.run_in_executor(None, fn, params),
-                        timeout=10.0,
-                    )
-                    if isinstance(resp, dict):
-                        raw = resp.get("balance", 0)
-                        # USDC on Polygon has 6 decimals — value may be in wei
-                        val = float(raw)
-                        if val > 1_000_000:
-                            val = val / 1_000_000
-                        if val > 0:
-                            return val
-                        # Definitive CLOB reading: do not substitute data-api portfolio value.
-                        return 0.0
-                    elif isinstance(resp, (int, float)):
-                        val = float(resp)
-                        if val > 1_000_000:
-                            val = val / 1_000_000
-                        if val > 0:
-                            return val
-                        return 0.0
-                except asyncio.TimeoutError:
-                    log.error("polymarket.get_balance_timeout", method="get_balance_allowance")
-                    raise
                 except ImportError:
-                    pass
-                except Exception as exc:
-                    log.debug("polymarket.get_balance_sdk_miss", method="get_balance_allowance", error=str(exc))
+                    BalanceAllowanceParams = None  # type: ignore[assignment]
+                    AssetType = None  # type: ignore[assignment]
+                if AssetType is not None and BalanceAllowanceParams is not None:
+                    best = 0.0
+                    tried_st: list[int] = []
+                    err_last = ""
+                    for st in _signature_types_for_balance_fetch(self._clob):
+                        tried_st.append(st)
+                        try:
+                            params = BalanceAllowanceParams(
+                                asset_type=AssetType.COLLATERAL,
+                                signature_type=st,
+                            )
+                            resp = await asyncio.wait_for(
+                                loop.run_in_executor(None, fn, params),
+                                timeout=10.0,
+                            )
+                            val = _balance_allowance_response_to_usdc(resp)
+                            if val > best:
+                                best = val
+                        except asyncio.TimeoutError:
+                            log.error(
+                                "polymarket.get_balance_timeout",
+                                method="get_balance_allowance",
+                                signature_type=st,
+                            )
+                            raise
+                        except Exception as exc:
+                            err_last = type(exc).__name__
+                            log.debug(
+                                "polymarket.get_balance_sdk_miss",
+                                method="get_balance_allowance",
+                                signature_type=st,
+                                error=str(exc),
+                            )
+                    # #region agent log
+                    try:
+                        _root = os.path.dirname(
+                            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                        )
+                        _log_path = os.path.join(_root, "debug-105476.log")
+                        _payload = {
+                            "sessionId": "105476",
+                            "hypothesisId": "H_sig_type_balance",
+                            "location": "polymarket_client.get_balance_usdc",
+                            "message": "balance_allowance_probe",
+                            "data": {
+                                "tried_signature_types": tried_st,
+                                "best_usd": round(best, 6),
+                                "env_signature_type": _clob_signature_type_from_env(),
+                                "last_exc_type": err_last or None,
+                            },
+                            "timestamp": int(time.time() * 1000),
+                        }
+                        with open(_log_path, "a", encoding="utf-8") as _f:
+                            _f.write(json.dumps(_payload, ensure_ascii=False) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    if best > 0:
+                        return best
 
             # Legacy fallback: get_balance()
             fn_legacy = getattr(self._clob, "get_balance", None)
@@ -506,7 +600,7 @@ class PolymarketClient:
             raise TradingHalted(
                 f"Kill switch: balance ${balance:.2f} < "
                 f"${thr:.2f} — all trading halted "
-                f"(CLOB collateral for your signing wallet; deposit USDC for trading or set POLY_KILL_SWITCH_MIN_USD=0 for dev)"
+                f"(CLOB collateral for your signing wallet; deposit USDC, set POLYMARKET_CLOB_SIGNATURE_TYPE if you use proxy/Gnosis, or POLY_KILL_SWITCH_MIN_USD=0 for dev)"
             )
 
     async def sync_collateral_allowance_async(self) -> None:
