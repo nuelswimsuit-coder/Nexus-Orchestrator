@@ -244,6 +244,25 @@ export default function NexusOsGodMode() {
         setDbSyncStatus("ok");
         setDbSyncMessage(null);
         setMarketData(data);
+        // #region agent log
+        fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "7ec1ca" },
+          body: JSON.stringify({
+            sessionId: "7ec1ca",
+            location: "NexusOsGodMode.tsx:fetchDashboardData",
+            message: "dashboard json received",
+            data: {
+              portfolio_value: data.portfolio_value ?? null,
+              positions_list_len: (data.portfolio_positions_list ?? []).length,
+              collateral_usdc: data.collateral_usdc ?? null,
+            },
+            timestamp: Date.now(),
+            hypothesisId: "H5",
+            runId: "pre-fix",
+          }),
+        }).catch(() => {});
+        // #endregion
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

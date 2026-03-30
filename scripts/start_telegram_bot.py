@@ -302,6 +302,19 @@ def get_start_menu() -> InlineKeyboardMarkup:
     ])
 
 
+def get_nexus_project_start_menu() -> InlineKeyboardMarkup:
+    """Compact menu for TELEGRAM_NEXUS_BOT_TOKEN polling (callbacks must exist on nexus dispatcher)."""
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(text="🎯 Polymarket", callback_data="poly_menu"),
+        ],
+    ]
+    dash = (DASHBOARD_URL or "").strip()
+    if dash.startswith(("http://", "https://")):
+        rows.append([InlineKeyboardButton(text="🔗 Dashboard", url=dash)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 # ── API helpers ────────────────────────────────────────────────────────────────
 
 async def _api_get(path: str) -> dict | None:
@@ -721,6 +734,28 @@ async def cmd_start(message: Message) -> None:
         parse_mode=ParseMode.MARKDOWN_V2,
         reply_markup=get_start_menu(),
     )
+
+
+async def cmd_start_nexus_project(message: Message) -> None:
+    """``/start`` on the Nexus project bot (separate token + polling) — not the channel bot."""
+    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    if admin_id and str(message.chat.id) != str(admin_id):
+        await message.answer("⛔ גישה נדחתה — מוגבל למנהל בלבד\\.")
+        return
+    name = message.from_user.first_name if message.from_user else "מפעיל"
+    welcome = (
+        "🎯 *Nexus Orchestrator* \\(בוט פרויקט\\)\n\n"
+        f"שלום, {_esc(name)}\\!\n\n"
+        "כאן התראות Git / Polymarket AI ופקודות מסחר\\. "
+        "הפאנל המלא \\(HITL, קלאסטר, Incubator\\) — **בבוט אחושרמוטה** \\(אותו מספר צ'אט\\)\\.\n\n"
+        "שלח `/help` או בחר למטה\\."
+    )
+    await message.answer(
+        welcome,
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=get_nexus_project_start_menu(),
+    )
+
 
 # ── /start Control-Panel Callback Handlers ────────────────────────────────────
 
@@ -3174,8 +3209,11 @@ def register_polymarket_handlers(dp: TgDispatcher) -> None:
     dp.callback_query.register(handle_poly_alert_ignore_permanent, F.data.startswith("poly_ign:"))
 
 
-def register_nexus_poly_message_commands(dp: TgDispatcher) -> None:
-    """Slash commands on the Nexus project bot (alerts + manual /poly_* in same chat)."""
+def register_nexus_project_bot_messages(dp: TgDispatcher) -> None:
+    """Message handlers for TELEGRAM_NEXUS_BOT_TOKEN polling (project / alerts bot)."""
+    dp.message.register(cmd_start_nexus_project, CommandStart())
+    dp.message.register(cmd_dashboard, Command("dashboard"))
+    dp.message.register(cmd_help, Command("help"))
     dp.message.register(cmd_polymarket,    Command("polymarket"))
     dp.message.register(cmd_poly_buy,      Command("poly_buy"))
     dp.message.register(cmd_poly_sell,     Command("poly_sell"))
@@ -3449,7 +3487,7 @@ async def run() -> None:
         poly_alert_use_inline = True
         nexus_poly_dp = TgDispatcher()
         register_polymarket_handlers(nexus_poly_dp)
-        register_nexus_poly_message_commands(nexus_poly_dp)
+        register_nexus_project_bot_messages(nexus_poly_dp)
     elif nexus_alert_tok and nexus_alert_tok == token:
         poly_alert_bot = bot
         poly_alert_use_inline = True

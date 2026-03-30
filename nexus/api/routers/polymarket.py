@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import time
+from pathlib import Path
 from typing import Any, Literal
 
 import httpx
@@ -32,6 +33,7 @@ from nexus.trading.polymarket_client import (
     _CLOB_HOST,
     get_polymarket_clob_funder_address,
 )
+from nexus.trading.wallet_manager import get_polymarket_private_key
 
 _http_client: httpx.AsyncClient | None = None
 
@@ -45,6 +47,29 @@ def _get_http_client() -> httpx.AsyncClient:
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/polymarket", tags=["polymarket"])
+
+# #region agent log
+_DEBUG_LOG_PATH = Path(__file__).resolve().parents[3] / "debug-7ec1ca.log"
+
+
+def _agent_debug_ndjson(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    try:
+        payload = {
+            "sessionId": "7ec1ca",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+            "runId": os.environ.get("NEXUS_DEBUG_RUN_ID", "pre-fix"),
+        }
+        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, default=str) + "\n")
+    except Exception:
+        pass
+
+
+# #endregion
 
 _MANUAL_ORDER_HEADERS = {"X-Nexus-Manual-Order-Enrich": MANUAL_ORDER_ENRICH_REV}
 
@@ -106,6 +131,20 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
             os.getenv("POLYMARKET_PORTFOLIO_ADDRESS", "").strip()
             or os.getenv("POLYMARKET_SIGNER_ADDRESS", "").strip()
         )
+        # #region agent log
+        _agent_debug_ndjson(
+            "H1",
+            "polymarket.py:_portfolio_value",
+            "env and address resolution",
+            {
+                "has_portfolio_env": bool((os.getenv("POLYMARKET_PORTFOLIO_ADDRESS") or "").strip()),
+                "has_signer_env": bool((os.getenv("POLYMARKET_SIGNER_ADDRESS") or "").strip()),
+                "has_wallet_private_key": bool(get_polymarket_private_key()),
+                "has_relayer_key_raw": bool((os.getenv("POLYMARKET_RELAYER_KEY") or "").strip()),
+                "address_len_for_data_api": len(address),
+            },
+        )
+        # #endregion
         if not address:
             return (0.0, 0.0, 0.0, [])
         addr = address.lower()
@@ -122,6 +161,19 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
                 ),
                 return_exceptions=True,
             )
+            # #region agent log
+            _agent_debug_ndjson(
+                "H2",
+                "polymarket.py:_portfolio_value",
+                "data-api http outcomes",
+                {
+                    "value_is_exc": isinstance(value_resp, Exception),
+                    "value_status": getattr(value_resp, "status_code", None),
+                    "pos_is_exc": isinstance(pos_resp, Exception),
+                    "pos_status": getattr(pos_resp, "status_code", None),
+                },
+            )
+            # #endregion
             total_val = 0.0
             if not isinstance(value_resp, Exception) and value_resp.status_code == 200:
                 vdata = value_resp.json()
@@ -156,9 +208,30 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
 
             # Cash = total portfolio value minus open positions
             cash = max(total_val - positions_value, 0.0)
+            # #region agent log
+            _agent_debug_ndjson(
+                "H3",
+                "polymarket.py:_portfolio_value",
+                "parsed portfolio aggregates",
+                {
+                    "total_val": total_val,
+                    "positions_value": positions_value,
+                    "positions_list_len": len(positions_list),
+                    "cash": cash,
+                },
+            )
+            # #endregion
             return (total_val, cash, positions_value, positions_list)
         except Exception as exc:
             log.debug("polymarket_dashboard_portfolio_skip", error=str(exc))
+            # #region agent log
+            _agent_debug_ndjson(
+                "H2",
+                "polymarket.py:_portfolio_value",
+                "portfolio fetch exception",
+                {"exc_type": type(exc).__name__},
+            )
+            # #endregion
         return (0.0, 0.0, 0.0, [])
 
     try:
@@ -175,6 +248,24 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"dashboard aggregate failed: {exc}") from exc
 
     portfolio_val, portfolio_cash, portfolio_positions, portfolio_positions_list = portfolio_tuple
+
+    # #region agent log
+    _agent_debug_ndjson(
+        "H4",
+        "polymarket.py:polymarket_dashboard_json",
+        "dashboard aggregate snapshot",
+        {
+            "portfolio_val": portfolio_val,
+            "clob_balance": bal,
+            "positions_list_len": len(portfolio_positions_list),
+            "collateral_branch": "portfolio"
+            if (portfolio_val is not None and portfolio_val > 0)
+            else "clob"
+            if (bal is not None and bal > 0)
+            else "bot_or_zero",
+        },
+    )
+    # #endregion
 
     buy_pct = 50.0
     sell_pct = 50.0

@@ -30,11 +30,8 @@ POLY_BUILDER_PASSPHRASE      Builder API passphrase
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
-import sys
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -58,32 +55,6 @@ from nexus.trading.wallet_manager import (
 )
 
 log = structlog.get_logger(__name__)
-
-# #region agent log
-def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
-    try:
-        from pathlib import Path
-
-        p = Path(__file__).resolve().parents[2] / "debug-b0363d.log"
-        line = json.dumps(
-            {
-                "sessionId": "b0363d",
-                "runId": os.environ.get("NEXUS_DEBUG_RUN_ID", "pre-fix"),
-                "hypothesisId": hypothesis_id,
-                "location": location,
-                "message": message,
-                "data": data,
-                "timestamp": int(time.time() * 1000),
-            },
-            default=str,
-        )
-        with p.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
-
-
-# #endregion
 
 _CLOB_HOST: str = "https://clob.polymarket.com"
 _POLYGON_CHAIN_ID: int = 137
@@ -109,18 +80,6 @@ _UUID_RELAYER_API_KEY = re.compile(
 def _signing_key_format_error(private_key: str) -> str | None:
     """Return a user-facing message if ``private_key`` cannot be a 32-byte secp256k1 secret."""
     k = normalize_polymarket_private_key_env(private_key or "")
-    # #region agent log
-    _agent_debug_log(
-        "H1",
-        "polymarket_client.py:_signing_key_format_error",
-        "signing_key_shape",
-        {
-            "normalized_len": len(k),
-            "matches_polymarket_relayer_uuid_pattern": bool(k and _UUID_RELAYER_API_KEY.match(k)),
-            "starts_with_0x": k.lower().startswith("0x"),
-        },
-    )
-    # #endregion
     if not k:
         return "POLYMARKET_WALLET_PRIVATE_KEY (or POLYMARKET_RELAYER_KEY / POLY_PRIVATE_KEY) is not set."
     if _UUID_RELAYER_API_KEY.match(k):
@@ -323,33 +282,8 @@ class PolymarketClient:
         return "Polymarket SDK not initialised (py-clob-client missing)"
 
     def _try_init_sdk(self) -> None:
-        # #region agent log
-        pk = (self._private_key or "").strip()
-        _agent_debug_log(
-            "H1",
-            "polymarket_client.py:_try_init_sdk:entry",
-            "sdk_init_start",
-            {
-                "executable": sys.executable,
-                "python_version": sys.version.split()[0],
-                "private_key_len": len(pk),
-                "funder_len": len((self._funder or "").strip()),
-            },
-        )
-        # #endregion
         fmt_err = _signing_key_format_error(self._private_key)
         if fmt_err:
-            # #region agent log
-            _agent_debug_log(
-                "H4",
-                "polymarket_client.py:_try_init_sdk:format_error",
-                "clob_init_skipped_bad_signing_key",
-                {
-                    "relayer_uuid_confusion": "Relayer API Key" in (fmt_err or ""),
-                    "format_error_len": len(fmt_err or ""),
-                },
-            )
-            # #endregion
             self._sdk_init_error = fmt_err
             log.warning("polymarket.signing_key_invalid", detail=fmt_err)
             return
@@ -364,14 +298,6 @@ class PolymarketClient:
                 funder=self._funder,
                 builder_config=_build_builder_config(),
             )
-            # #region agent log
-            _agent_debug_log(
-                "H3",
-                "polymarket_client.py:_try_init_sdk:success",
-                "clob_client_constructed",
-                {"has_clob": self._clob is not None},
-            )
-            # #endregion
             log.info(
                 "polymarket.client_ready",
                 builder_id=self.builder_id,
@@ -380,14 +306,6 @@ class PolymarketClient:
             )
             self._sdk_init_error = None
         except ImportError as exc:
-            # #region agent log
-            _agent_debug_log(
-                "H1",
-                "polymarket_client.py:_try_init_sdk:import_error",
-                "clob_import_failed",
-                {"exc_type": type(exc).__name__, "exc_msg": str(exc)[:400]},
-            )
-            # #endregion
             self._sdk_init_error = (
                 "Polymarket SDK not installed (py-clob-client). "
                 "Run: pip install py-clob-client py-builder-signing-sdk"
@@ -397,14 +315,6 @@ class PolymarketClient:
                 hint="pip install py-clob-client py-builder-signing-sdk",
             )
         except Exception as exc:
-            # #region agent log
-            _agent_debug_log(
-                "H2",
-                "polymarket_client.py:_try_init_sdk:init_exception",
-                "clob_construct_failed",
-                {"exc_type": type(exc).__name__, "exc_msg": str(exc)[:400]},
-            )
-            # #endregion
             msg = str(exc)
             if "32 bytes" in msg and "20 bytes" in msg:
                 self._sdk_init_error = (
@@ -613,14 +523,6 @@ class PolymarketClient:
             return base
 
         if self._clob is None:
-            # #region agent log
-            _agent_debug_log(
-                "H4",
-                "polymarket_client.py:place_order_async:no_clob",
-                "live_buy_blocked",
-                {"paper_mode": paper_mode},
-            )
-            # #endregion
             base.error = self._clob_unavailable_message()
             return base
 
@@ -712,14 +614,6 @@ class PolymarketClient:
             return base
 
         if self._clob is None:
-            # #region agent log
-            _agent_debug_log(
-                "H4",
-                "polymarket_client.py:place_sell_async:no_clob",
-                "live_sell_blocked",
-                {"paper_mode": ep},
-            )
-            # #endregion
             base.error = self._clob_unavailable_message()
             return base
 
