@@ -3,7 +3,7 @@
 #
 # USAGE:
 #   1. Edit API_ID and API_HASH below (from https://my.telegram.org).
-#   2. Run: python 12495623230.py   (from this folder; requires: pip install telethon)
+#   2. Run: python AKBARGAY.py   (from this folder; requires: pip install telethon)
 #      The script will scan the ENTIRE machine for .session files, zip/rar
 #      archives containing sessions, and sibling tdata/ folders.
 #
