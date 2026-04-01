@@ -6449,3 +6449,27 @@ eded the max restart limit (3). Manual intervention required.
 [launcher] spawn [git-sync]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
 [launcher] child process exited pid=24248 label=redis returncode=4294967295.
 [watchdog] redis not in registry — cannot restart.
+[launcher] child process exited pid=2120 label=core returncode=0.
+[launcher] child process exited pid=37396 label=api returncode=1.
+[watchdog] Restarting [api] in 5s (attempt 1/3)…
+[launcher] child process exited pid=37820 label=deployer returncode=3.
+[watchdog] Restarting [deployer] in 5s (attempt 1/3)…
+[watchdog] [api] restarted — pid=37620
+[auto-worker] Redis not reachable after 10 s — skipping auto-spawn.
+[watchdog] [deployer] restarted — pid=38696
+[launcher] child process exited pid=37620 label=api returncode=1.
+[watchdog] Restarting [api] in 10s (attempt 2/3)…
+[launcher] child process exited pid=38696 label=deployer returncode=3.
+[watchdog] Restarting [deployer] in 10s (attempt 2/3)…
+[watchdog] [api] restarted — pid=23976
+[watchdog] [deployer] restarted — pid=38344
+[launcher] child process exited pid=23976 label=api returncode=1.
+[watchdog] Restarting [api] in 15s (attempt 3/3)…
+[launcher] child process exited pid=38344 label=deployer returncode=3.
+[watchdog] Restarting [deployer] in 15s (attempt 3/3)…
+[watchdog] [api] restarted — pid=38044
+[launcher] child process exited pid=38044 label=api returncode=1.
+[WATCHDOG] Service *api* has crashed 3 times and exceeded the max restart limit (3). Manual intervention required.
+[watchdog] [deployer] restarted — pid=38256
+[launcher] child process exited pid=38256 label=deployer returncode=3.
+[WATCHDOG] Service *deployer* has crashed 3 times and exceeded the max restart limit (3). Manual intervention required.
