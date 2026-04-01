@@ -6385,3 +6385,55 @@ eded the max restart limit (3). Manual intervention required.
 [launcher] spawn [git-sync]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
 [auto-worker] No worker heartbeats — auto-spawning local worker…
 [auto-worker] Worker spawned — pid=34944
+
+========================================================================
+[launcher] session start 2026-03-31 20:59:19
+[launcher] EXE=C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe  frozen=False
+========================================================================
+
+╔══════════════════════════════════════════════════════════════════════╗
+║   NEXUS OS — HATAN INDUSTRIES — UNIFIED TERMINAL MULTIPLEXER        ║
+║   Frontend  → http://localhost:3000                                  ║
+║   Deployer  → http://localhost:8002                                  ║
+║   API       → http://localhost:8001                                  ║
+╚══════════════════════════════════════════════════════════════════════╝
+✅ [HATAN INDUSTRIES] ISRAELI SWARM ACTIVE - 5,000 MEMBER SIMULATION RUNNING
+[launcher] spawn redis: ['C:\\Users\\Yarin\\Desktop\\Nexus-Orchestrator\\redis-local\\redis-server.exe']
+[launcher] spawn [core]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [monitor]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [deployer]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [api]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [polymarket]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [telegram-bot]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [frontend]: C:\Program Files\nodejs\npm.CMD ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator\frontend)
+[launcher] spawn [israeli-swarm]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [git-sync]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[auto-worker] No worker heartbeats — auto-spawning local worker…
+[auto-worker] Worker spawned — pid=36016
+[launcher] child process exited pid=5664 label=redis returncode=4294967295.
+[watchdog] redis not in registry — cannot restart.
+[launcher] child process exited pid=36016 label=auto-worker returncode=1.
+[watchdog] Restarting [auto-worker] in 5s (attempt 1/3)…
+[launcher] child process exited pid=31036 label=core returncode=0.
+[watchdog] [auto-worker] restarted — pid=43304
+[launcher] child process exited pid=43304 label=auto-worker returncode=1.
+[watchdog] Restarting [auto-worker] in 10s (attempt 2/3)…
+[watchdog] [auto-worker] restarted — pid=45060
+[launcher] child process exited pid=45060 label=auto-worker returncode=1.
+[watchdog] Restarting [auto-worker] in 15s (attempt 3/3)…
+[watchdog] [auto-worker] restarted — pid=42000
+[launcher] child process exited pid=42000 label=auto-worker returncode=1.
+[WATCHDOG] Service *auto-worker* has crashed 3 times and exceeded the max restart limit (3). Manual intervention required.
+
+========================================================================
+[launcher] session start 2026-04-01 23:02:22
+[launcher] EXE=C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe  frozen=False
+========================================================================
+
+╔══════════════════════════════════════════════════════════════════════╗
+║   NEXUS OS — HATAN INDUSTRIES — UNIFIED TERMINAL MULTIPLEXER        ║
+║   Frontend  → http://localhost:3000                                  ║
+║   Deployer  → http://localhost:8002                                  ║
+║   API       → http://localhost:8001                                  ║
+╚══════════════════════════════════════════════════════════════════════╝
+✅ [HATAN INDUSTRIES] ISRAELI SWARM ACTIVE - 5,000 MEMBER SIMULATION RUNNING

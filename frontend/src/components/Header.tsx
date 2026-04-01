@@ -1112,6 +1112,7 @@ export default function Header() {
     "/sessions":           "nav.sessions",
     "/wallet-ops":         "nav.wallet-ops",
     "/swarm-control":      "nav.swarm-control",
+    "/sentinel-seo":       "nav.sentinel-seo",
     "/vault":              "nav.vault",
     "/market-intel":       "nav.market-intel",
     "/polymarket-deck":    "nav.polymarket-deck",

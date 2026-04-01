@@ -131,6 +131,16 @@ class Settings(BaseSettings):
     # Telefix sessions directory. Override with TELEFIX_SESSIONS_DIR env var.
     telefix_sessions_dir: str = Field(default="")
 
+    # When False, Nexus hides legacy TeleFix bot control (AHU start/stop, etc.).
+    legacy_telefix_bot_enabled: bool = Field(default=True)
+
+    # management.sentinel_seo — session stem (under staged_accounts) for search probes.
+    nexus_seo_probe_session: str = Field(default="")
+    nexus_seo_auto_rename: bool = Field(default=False)
+    nexus_seo_target_title: str = Field(default="")
+    nexus_seo_auto_rename_max: int = Field(default=3, ge=1, le=20)
+    nexus_seo_rename_cooldown_s: float = Field(default=90.0, ge=5.0)
+
     # ── Auto-Deployer — SSH credentials & targets ────────────────────────────
     # Used by DeployerService to SSH into worker laptops and push updates.
     # Store the password in the Vault (NEXUS_SECRET_WORKER_SSH_PASSWORD) for

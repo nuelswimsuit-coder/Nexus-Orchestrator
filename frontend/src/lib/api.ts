@@ -1290,3 +1290,73 @@ export function postPredictionResume(): Promise<{ status: string; message: strin
     method: "POST",
   });
 }
+
+// ── Management dashboard (3-screen) ─────────────────────────────────────────
+
+export interface ManagementRankRow {
+  keyword_phrase: string;
+  current_rank: number | null;
+  last_check: string | null;
+  is_shadowbanned: boolean;
+  updated_at: string | null;
+}
+
+export interface ManagementMemberStats {
+  total_members: number;
+  premium_count: number;
+  deleted_count: number;
+  active_real_count: number;
+  updated_at: string | null;
+}
+
+export interface ManagementGroupRow {
+  id: number;
+  session_owner: string;
+  group_id: number;
+  title: string | null;
+  username: string | null;
+  is_public: boolean;
+  invite_link: string | null;
+  creator_id: number | null;
+  legacy_groups_id: number | null;
+  updated_at: string | null;
+  member_stats: ManagementMemberStats;
+  rank_tracker: ManagementRankRow[];
+}
+
+export interface ManagementGroupsResponse {
+  groups: ManagementGroupRow[];
+}
+
+export interface ManagementScanBody {
+  run_health_scan?: boolean;
+  run_sentinel_seo?: boolean;
+  seo_keyword_phrases?: string[] | null;
+}
+
+export interface ManagementScanResponse {
+  enqueued: { task_type: string; task_id: string; job_id: string | null }[];
+  errors: string[];
+}
+
+export interface ManagementConfigResponse {
+  legacy_telefix_bot_enabled: boolean;
+  nexus_seo_probe_session_configured: boolean;
+  nexus_seo_auto_rename: boolean;
+  nexus_seo_target_title_set: boolean;
+}
+
+export function getManagementGroups(): Promise<ManagementGroupsResponse> {
+  return apiFetch<ManagementGroupsResponse>("/api/management/groups");
+}
+
+export function getManagementConfig(): Promise<ManagementConfigResponse> {
+  return apiFetch<ManagementConfigResponse>("/api/management/config");
+}
+
+export function postManagementScan(body: ManagementScanBody): Promise<ManagementScanResponse> {
+  return apiFetch<ManagementScanResponse>("/api/management/scan", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

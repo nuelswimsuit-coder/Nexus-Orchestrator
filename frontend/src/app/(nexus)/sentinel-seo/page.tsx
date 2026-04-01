@@ -1,17 +1,17 @@
 "use client";
 
-import Incubator from "@/components/management/Incubator";
+import SentinelSEO from "@/components/management/SentinelSEO";
 import PageTransition from "@/components/PageTransition";
 import { useI18n } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
 
-export default function IncubatorPage() {
+export default function SentinelSeoPage() {
   const { t } = useI18n();
   const { tokens } = useTheme();
 
   return (
     <PageTransition>
-      <div style={{ maxWidth: 1280, margin: "0 auto", padding: "2rem 1.5rem" }}>
+      <div style={{ maxWidth: 960, margin: "0 auto", padding: "2rem 1.5rem" }}>
         <h1
           style={{
             fontFamily: "var(--font-mono)",
@@ -23,7 +23,7 @@ export default function IncubatorPage() {
             marginBottom: "0.35rem",
           }}
         >
-          🧬 {t("incubator")}
+          🔎 {t("sentinel_seo")}
         </h1>
         <p
           style={{
@@ -33,9 +33,9 @@ export default function IncubatorPage() {
             marginBottom: "1.25rem",
           }}
         >
-          {t("nav_desc_incubator")}
+          {t("nav_desc_sentinel_seo")}
         </p>
-        <Incubator />
+        <SentinelSEO />
       </div>
     </PageTransition>
   );

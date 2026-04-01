@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -37,7 +37,20 @@ from nexus.shared.config import settings
 
 log = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/ahu", tags=["ahu"])
+
+async def _require_legacy_telefix_bot() -> None:
+    if not settings.legacy_telefix_bot_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Legacy TeleFix bot (AHU) is disabled. Use the management dashboard API at /api/management.",
+        )
+
+
+router = APIRouter(
+    prefix="/ahu",
+    tags=["ahu"],
+    dependencies=[Depends(_require_legacy_telefix_bot)],
+)
 
 # Default folder for merged / imported operator-scanned sessions (Hebrew name on disk)
 KLALI_FOLDER = "כללי"

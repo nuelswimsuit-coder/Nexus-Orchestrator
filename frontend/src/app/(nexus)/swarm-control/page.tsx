@@ -1,5 +1,6 @@
 "use client";
 
+import SwarmCommander from "@/components/management/SwarmCommander";
 import PageTransition from "@/components/PageTransition";
 import SwarmControl from "@/components/SwarmControl";
 import { useI18n } from "@/lib/i18n";
@@ -35,6 +36,7 @@ export default function SwarmControlPage() {
         >
           {t("nav_desc_swarm_control")}
         </p>
+        <SwarmCommander />
         <SwarmControl />
       </div>
     </PageTransition>

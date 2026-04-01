@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
+import { getManagementConfig } from "@/lib/api";
 import { useNexus } from "@/lib/nexus-context";
 import { useStealth } from "@/lib/stealth";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
@@ -22,6 +23,9 @@ interface NavGroup {
   groupLabel: string;
   items: NavItem[];
 }
+
+/** Hidden when LEGACY_TELEFIX_BOT_ENABLED=0 / settings.legacy_telefix_bot_enabled is false. */
+const LEGACY_TELEFIX_HREFS = new Set(["/bot-farm", "/bot-factory", "/group-infiltration"]);
 
 const NAV_GROUPS: NavGroup[] = [
   {
@@ -62,6 +66,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/modules",           icon: "🔧", labelKey: "modules",           descKey: "nav_desc_modules" },
       { href: "/logs-raw",          icon: "📋", labelKey: "logs_raw",          descKey: "nav_desc_logs_raw" },
       { href: "/scrape-browser",    icon: "🕷️", labelKey: "scrape_browser",    descKey: "nav_desc_scrape_browser" },
+      { href: "/sentinel-seo",      icon: "🔎", labelKey: "sentinel_seo",      descKey: "nav_desc_sentinel_seo" },
       { href: "/group-infiltration",icon: "🎯", labelKey: "group_infiltration",descKey: "nav_desc_group_infiltration" },
     ],
   },
@@ -83,11 +88,29 @@ const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap(g => g.items);
 
 export default function Sidebar() {
   const [expanded, setExpanded] = useState(false);
+  const [legacyTelefixBot, setLegacyTelefixBot] = useState(true);
   const pathname  = usePathname();
   const { cluster, hitl } = useNexus();
   const { stealth } = useStealth();
   const { t, isRTL } = useI18n();
   const { isHighContrast, tokens } = useTheme();
+
+  useEffect(() => {
+    getManagementConfig()
+      .then((c) => setLegacyTelefixBot(c.legacy_telefix_bot_enabled))
+      .catch(() => {});
+  }, []);
+
+  const navGroups = useMemo(() => {
+    if (legacyTelefixBot) return NAV_GROUPS;
+    return NAV_GROUPS.map((g) => ({
+      ...g,
+      items: g.items.filter((it) => {
+        const base = it.href.split("?")[0] ?? it.href;
+        return !LEGACY_TELEFIX_HREFS.has(base);
+      }),
+    })).filter((g) => g.items.length > 0);
+  }, [legacyTelefixBot]);
 
   const masterOnline = cluster?.nodes.some(n => n.role === "master" && n.online) ?? false;
   const workerCount  = cluster?.nodes.filter(n => n.role === "worker" && n.online).length ?? 0;
@@ -134,7 +157,7 @@ export default function Sidebar() {
     >
       {/* ── Nav items (grouped) ── */}
       <nav style={{ flex: 1, padding: "0.5rem 0", overflowY: "auto", overflowX: "hidden" }}>
-        {NAV_GROUPS.map(({ groupLabel, items }) => (
+        {navGroups.map(({ groupLabel, items }) => (
           <div key={groupLabel}>
             {/* Group label — only visible when expanded */}
             <AnimatePresence>
@@ -168,7 +191,7 @@ export default function Sidebar() {
               const activeBorder = `2px solid ${stealth ? "#334155" : accentC}`;
 
               return (
-                <Link key={href} href={href} style={{ textDecoration: "none" }}>
+                <Link key={`${groupLabel}-${href}`} href={href} style={{ textDecoration: "none" }}>
                   <div
                     title={expanded ? undefined : t(labelKey)}
                     style={{

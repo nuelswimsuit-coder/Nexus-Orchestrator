@@ -332,39 +332,6 @@ def _build_api_creds() -> Any | None:
     raw_secret = os.getenv("POLYMARKET_API_SECRET")
     api_secret = _normalize_urlsafe_b64_secret_for_hmac(raw_secret)
     api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE")
-    # #region agent log
-    try:
-        _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        _log_path = os.path.join(_root, "debug-105476.log")
-        _rs = "".join((raw_secret or "").strip().split())
-        _dec_ok = False
-        _dec_err = ""
-        if api_secret:
-            try:
-                base64.urlsafe_b64decode(api_secret)
-                _dec_ok = True
-            except Exception as _e:
-                _dec_err = type(_e).__name__
-        _payload = {
-            "sessionId": "105476",
-            "hypothesisId": "H1_padding",
-            "location": "polymarket_client._build_api_creds",
-            "message": "poly_l2_secret_shape",
-            "data": {
-                "stripped_len": len(_rs),
-                "mod4_before_pad": len(_rs) % 4,
-                "norm_len": len(api_secret),
-                "mod4_after_pad": len(api_secret) % 4 if api_secret else None,
-                "decode_ok": _dec_ok,
-                "decode_err_type": _dec_err or None,
-            },
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(_log_path, "a", encoding="utf-8") as _f:
-            _f.write(json.dumps(_payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    # #endregion
     if not all([api_key, api_secret, api_passphrase]):
         log.warning(
             "polymarket.api_creds_incomplete",
@@ -511,30 +478,6 @@ class PolymarketClient:
                                 signature_type=st,
                                 error=str(exc),
                             )
-                    # #region agent log
-                    try:
-                        _root = os.path.dirname(
-                            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                        )
-                        _log_path = os.path.join(_root, "debug-105476.log")
-                        _payload = {
-                            "sessionId": "105476",
-                            "hypothesisId": "H_sig_type_balance",
-                            "location": "polymarket_client.get_balance_usdc",
-                            "message": "balance_allowance_probe",
-                            "data": {
-                                "tried_signature_types": tried_st,
-                                "best_usd": round(best, 6),
-                                "env_signature_type": _clob_signature_type_from_env(),
-                                "last_exc_type": err_last or None,
-                            },
-                            "timestamp": int(time.time() * 1000),
-                        }
-                        with open(_log_path, "a", encoding="utf-8") as _f:
-                            _f.write(json.dumps(_payload, ensure_ascii=False) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
                     if best > 0:
                         return best
 

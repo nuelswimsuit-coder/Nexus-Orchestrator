@@ -45,6 +45,7 @@ from nexus.api.routers import (
     group_infiltration,
     hitl,
     incubator,
+    management_dashboard,
     modules,
     notifications,
     polymarket,
@@ -1422,6 +1423,7 @@ def create_app() -> FastAPI:
     app.include_router(content.router, prefix="/api")
     app.include_router(notifications.router, prefix="/api")
     app.include_router(incubator.router, prefix="/api")
+    app.include_router(management_dashboard.router, prefix="/api")
     app.include_router(evolution.router, prefix="/api")
     app.include_router(deploy.router, prefix="/api")
     app.include_router(config.router, prefix="/api")

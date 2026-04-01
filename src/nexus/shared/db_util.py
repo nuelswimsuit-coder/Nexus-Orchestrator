@@ -39,6 +39,53 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+# Keep in sync with nexus/shared/management_schema.py (src tree is not on the same package path).
+_MANAGEMENT_DDL = """
+CREATE TABLE IF NOT EXISTS group_metadata (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_owner     TEXT NOT NULL,
+    group_id          INTEGER NOT NULL,
+    title             TEXT,
+    username          TEXT,
+    is_public         INTEGER DEFAULT 0,
+    invite_link       TEXT,
+    creator_id        INTEGER,
+    legacy_groups_id  INTEGER,
+    updated_at        TEXT DEFAULT (datetime('now')),
+    UNIQUE(session_owner, group_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_metadata_session ON group_metadata(session_owner);
+CREATE INDEX IF NOT EXISTS idx_group_metadata_username ON group_metadata(username);
+CREATE TABLE IF NOT EXISTS member_stats (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_metadata_id  INTEGER NOT NULL UNIQUE,
+    total_members      INTEGER DEFAULT 0,
+    premium_count      INTEGER DEFAULT 0,
+    deleted_count      INTEGER DEFAULT 0,
+    active_real_count  INTEGER DEFAULT 0,
+    updated_at         TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (group_metadata_id) REFERENCES group_metadata(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_member_stats_gm ON member_stats(group_metadata_id);
+CREATE TABLE IF NOT EXISTS rank_tracker (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_metadata_id  INTEGER NOT NULL,
+    keyword_phrase     TEXT NOT NULL,
+    current_rank       INTEGER,
+    last_check         TEXT,
+    is_shadowbanned    INTEGER DEFAULT 0,
+    updated_at         TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (group_metadata_id) REFERENCES group_metadata(id) ON DELETE CASCADE,
+    UNIQUE(group_metadata_id, keyword_phrase)
+);
+CREATE INDEX IF NOT EXISTS idx_rank_tracker_gm ON rank_tracker(group_metadata_id);
+"""
+
+
+def _apply_management_ddl_sync(conn: sqlite3.Connection) -> None:
+    conn.executescript(_MANAGEMENT_DDL)
+    conn.commit()
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -194,7 +241,7 @@ CREATE TABLE IF NOT EXISTS system_events (
     message    TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
-"""
+""" + _MANAGEMENT_DDL
 
 
 def create_default_db(db_path: Path | None = None) -> sqlite3.Connection:
@@ -459,6 +506,13 @@ def get_telefix_db() -> sqlite3.Connection:
             conn.row_factory = sqlite3.Row
             _connections[key] = conn
             log.debug("db_util.telefix_opened — %s", key)
+        if not getattr(conn, "_nexus_management_ddl_applied", False):
+            try:
+                _apply_management_ddl_sync(conn)
+            except Exception as exc:
+                log.warning("db_util.management_ddl_failed — %s", str(exc))
+            else:
+                setattr(conn, "_nexus_management_ddl_applied", True)
         return conn
 
 

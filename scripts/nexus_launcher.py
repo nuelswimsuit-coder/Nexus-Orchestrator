@@ -265,6 +265,54 @@ def _is_redis_running(host: str = "127.0.0.1", port: int = 6379) -> bool:
     return False
 
 
+def _warn_if_bundled_redis_missing_lan_conf(logf) -> None:
+    """If LAN workers are expected but our bundled redis-server was started without redis.windows-lan.conf, log loudly."""
+    if sys.platform != "win32" or not _redis_listen_lan():
+        return
+    try:
+        import psutil
+    except ImportError:
+        return
+    try:
+        target = _redis_server_path().resolve()
+    except OSError:
+        return
+    if not target.is_file():
+        return
+    script = ROOT / "redis-local" / "start-redis-lan.ps1"
+    for proc in psutil.process_iter():
+        try:
+            if (proc.name() or "").lower() != "redis-server.exe":
+                continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        try:
+            if Path(proc.exe()).resolve() != target:
+                continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue
+        try:
+            cmdline = proc.cmdline()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return
+        has_lan = any("redis.windows-lan.conf" in str(a) for a in (cmdline or []))
+        if not has_lan:
+            msg = (
+                "[launcher] WARN: NEXUS_REDIS_LISTEN_LAN=1 but bundled redis-server was started without "
+                "redis.windows-lan.conf — LAN workers may see resets. Stop redis-server then run: "
+                f'powershell -ExecutionPolicy Bypass -File "{script}"'
+            )
+            _dbg(msg)
+            with _log_lock:
+                logf.write(msg + "\n")
+                logf.flush()
+            with _ring_lock:
+                _log_rings.setdefault("redis", collections.deque(maxlen=_RING_SIZE)).append(
+                    "WARN: Redis not using redis.windows-lan.conf"
+                )
+        return
+
+
 def _kill_port(port: int) -> None:
     if sys.platform != "win32":
         try:
@@ -728,6 +776,7 @@ def main() -> int:
             with _log_lock:
                 logf.write("[launcher] Redis already running — skipping spawn.\n")
                 logf.flush()
+            _warn_if_bundled_redis_missing_lan_conf(logf)
         else:
             # Try default argv first; if 127.0.0.1:6379 is occupied by another
             # process (e.g. Windows svchost/iphlpsvc), fall back to ::1-only.

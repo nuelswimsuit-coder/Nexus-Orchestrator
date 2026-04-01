@@ -20,13 +20,23 @@ _OPERATIONS_CHAT_LINK = os.environ.get(
 )
 
 import structlog
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
+
+from nexus.shared.config import settings
 
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/telefix", tags=["telefix-dashboard"])
+
+
+async def _require_legacy_telefix_writes() -> None:
+    if not settings.legacy_telefix_bot_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Legacy TeleFix bot controls are disabled. Use /api/management/*.",
+        )
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
 _VAULT_DATA = _REPO_ROOT / "vault" / "data"
@@ -141,7 +151,11 @@ class GroupInfiltrationResponse(BaseModel):
     updated_at: str
 
 
-@router.get("/group-infiltration", response_model=GroupInfiltrationResponse)
+@router.get(
+    "/group-infiltration",
+    response_model=GroupInfiltrationResponse,
+    dependencies=[Depends(_require_legacy_telefix_writes)],
+)
 async def get_group_infiltration() -> GroupInfiltrationResponse:
     st = _load_group_state()
     groups = st.get("groups") or []
@@ -181,7 +195,12 @@ class CreateGroupResponse(BaseModel):
     group: GroupInfiltrationRow
 
 
-@router.post("/group-infiltration", response_model=CreateGroupResponse, status_code=201)
+@router.post(
+    "/group-infiltration",
+    response_model=CreateGroupResponse,
+    status_code=201,
+    dependencies=[Depends(_require_legacy_telefix_writes)],
+)
 async def create_group(body: CreateGroupRequest) -> CreateGroupResponse:
     st = _load_group_state()
     groups: list[dict[str, Any]] = list(st.get("groups") or [])
@@ -216,7 +235,11 @@ class DeleteGroupResponse(BaseModel):
     group_id: str
 
 
-@router.delete("/group-infiltration/{group_id}", response_model=DeleteGroupResponse)
+@router.delete(
+    "/group-infiltration/{group_id}",
+    response_model=DeleteGroupResponse,
+    dependencies=[Depends(_require_legacy_telefix_writes)],
+)
 async def delete_group(group_id: str) -> DeleteGroupResponse:
     st = _load_group_state()
     groups: list[dict[str, Any]] = list(st.get("groups") or [])
@@ -240,6 +263,7 @@ class ForceSearchResponse(BaseModel):
 @router.post(
     "/group-infiltration/{group_id}/force-search",
     response_model=ForceSearchResponse,
+    dependencies=[Depends(_require_legacy_telefix_writes)],
 )
 async def force_group_search(group_id: str) -> ForceSearchResponse:
     st = _load_group_state()
@@ -291,7 +315,11 @@ def _mask_token(suffix: str) -> str:
     return f"••••••••{s}"
 
 
-@router.get("/bot-factory", response_model=BotFactoryResponse)
+@router.get(
+    "/bot-factory",
+    response_model=BotFactoryResponse,
+    dependencies=[Depends(_require_legacy_telefix_writes)],
+)
 async def get_bot_factory() -> BotFactoryResponse:
     st = _load_bot_state()
     tokens_in = st.get("tokens") or []
@@ -330,7 +358,11 @@ class BulkBotsResponse(BaseModel):
     message: str
 
 
-@router.post("/bot-factory/bulk", response_model=BulkBotsResponse)
+@router.post(
+    "/bot-factory/bulk",
+    response_model=BulkBotsResponse,
+    dependencies=[Depends(_require_legacy_telefix_writes)],
+)
 async def bot_factory_bulk(body: BulkBotsBody) -> BulkBotsResponse:
     st = _load_bot_state()
     job_id = uuid.uuid4().hex[:12]
@@ -670,7 +702,11 @@ class GroupFactorySettingsPatch(BaseModel):
     groups_per_day: int | None = Field(default=None, ge=1, le=50)
 
 
-@router.get("/group-factory/schedule", response_model=GroupFactoryScheduleResponse)
+@router.get(
+    "/group-factory/schedule",
+    response_model=GroupFactoryScheduleResponse,
+    dependencies=[Depends(_require_legacy_telefix_writes)],
+)
 async def get_group_factory_schedule() -> GroupFactoryScheduleResponse:
     settings = _load_factory_settings()
     state = _load_factory_state()
@@ -725,7 +761,11 @@ async def get_group_factory_schedule() -> GroupFactoryScheduleResponse:
     )
 
 
-@router.patch("/group-factory/schedule", summary="Update group factory settings")
+@router.patch(
+    "/group-factory/schedule",
+    summary="Update group factory settings",
+    dependencies=[Depends(_require_legacy_telefix_writes)],
+)
 async def patch_group_factory_schedule(body: GroupFactorySettingsPatch) -> dict[str, Any]:
     current = _load_factory_settings()
     if body.warmup_days is not None:
@@ -746,7 +786,11 @@ class GroupFactoryActivityResponse(BaseModel):
     updated_at: str | None
 
 
-@router.get("/group-factory/activity", response_model=GroupFactoryActivityResponse)
+@router.get(
+    "/group-factory/activity",
+    response_model=GroupFactoryActivityResponse,
+    dependencies=[Depends(_require_legacy_telefix_writes)],
+)
 async def get_group_factory_activity() -> GroupFactoryActivityResponse:
     raw = _read_json(_GROUP_FACTORY_ACTIVITY, {})
     entries = raw.get("entries") if isinstance(raw.get("entries"), list) else []
@@ -756,7 +800,11 @@ async def get_group_factory_activity() -> GroupFactoryActivityResponse:
     )
 
 
-@router.post("/group-factory/start", summary="Arm group factory automation (UI + settings flag)")
+@router.post(
+    "/group-factory/start",
+    summary="Arm group factory automation (UI + settings flag)",
+    dependencies=[Depends(_require_legacy_telefix_writes)],
+)
 async def post_group_factory_start() -> dict[str, Any]:
     current = _load_factory_settings()
     current["automation_armed"] = True
@@ -816,6 +864,12 @@ def _ensure_telefix_db() -> Path:
             "CREATE TABLE IF NOT EXISTS system_events "
             "(id INTEGER PRIMARY KEY, event TEXT, ts TEXT)"
         )
+        try:
+            from nexus.shared.management_schema import MANAGEMENT_DDL
+
+            conn.executescript(MANAGEMENT_DDL)
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         log.info("telefix_db_created_empty", path=str(fallback))
