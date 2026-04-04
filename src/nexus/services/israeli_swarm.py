@@ -67,6 +67,7 @@ _GROUP_LINK = os.getenv("SWARM_GROUP_LINK", "")
 # Written by POST /api/swarm/start — must be readable here so UI link works without env restart.
 _REDIS_SWARM_STATUS_KEY = "nexus:swarm:israeli:status"
 _REDIS_SWARM_TARGET_KEY = "nexus:swarm:israeli:target_group"
+_REDIS_LAST_ENGINE_ERROR_KEY = "nexus:swarm:israeli:last_engine_error"
 
 
 def _redis_sync_get(key: str) -> str | None:
@@ -81,6 +82,55 @@ def _redis_sync_get(key: str) -> str | None:
             r.close()
     except Exception:
         return None
+
+
+def _redis_sync_set(key: str, value: str, ex: int = 7200) -> None:
+    try:
+        import redis as redis_sync
+
+        r = redis_sync.Redis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            r.set(key, value[:2000], ex=ex)
+        finally:
+            r.close()
+    except Exception:
+        pass
+
+
+def _publish_engine_error(detail: str) -> None:
+    """Surface failures to GET /api/swarm/live-feed (dashboard banner)."""
+    ts = datetime.now(timezone.utc).isoformat()
+    _redis_sync_set(_REDIS_LAST_ENGINE_ERROR_KEY, f"{ts} | {detail}")
+
+
+def _clear_engine_error() -> None:
+    try:
+        import redis as redis_sync
+
+        r = redis_sync.Redis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            r.delete(_REDIS_LAST_ENGINE_ERROR_KEY)
+        finally:
+            r.close()
+    except Exception:
+        pass
+
+
+def _vault_session_inventory_hint() -> str:
+    """Explain common mismatch: JSON metadata without Telethon .session files."""
+    try:
+        n_sess = len(list(_VAULT_SESSIONS.glob("*.session")))
+        n_json = len(list(_VAULT_SESSIONS.glob("*.json")))
+    except OSError:
+        return "לא ניתן לקרוא את vault/sessions"
+    if n_sess == 0 and n_json > 0:
+        return (
+            f"נמצאו {n_json} קבצי JSON אבל 0 קבצי .session — "
+            "Telethon דורש קובץ session בינארי (למשל 9725….session) באותה תיקייה"
+        )
+    if n_sess == 0:
+        return "אין קבצי *.session ב-vault/sessions (הוסף סשנים או ZIP ל-vault/incoming)"
+    return ""
 
 
 def _redis_swarm_status_allows_send() -> bool:
@@ -315,7 +365,9 @@ class CommunityEngine:
 
         group_link = effective_swarm_group_link()
         if not group_link:
-            log.debug("[COMMUNITY] No group link — set in UI (Start Swarm) or SWARM_GROUP_LINK")
+            msg = "חסר קישור קבוצה — לחץ Start Swarm בדשבורד או הגדר SWARM_GROUP_LINK"
+            log.warning("[COMMUNITY] %s", msg)
+            _publish_engine_error(msg)
             return
 
         sessions = list(_VAULT_SESSIONS.glob("*.session"))
@@ -328,7 +380,9 @@ class CommunityEngine:
                 except Exception as exc:
                     log.warning("[COMMUNITY] Harvester scan error: %s", exc)
         if not sessions:
-            log.debug("[COMMUNITY] Still no sessions after harvester scan — waiting")
+            hint = _vault_session_inventory_hint()
+            log.warning("[COMMUNITY] %s", hint or "אין סשנים זמינים")
+            _publish_engine_error(hint or "אין קבצי .session ב-vault/sessions")
             return
 
         topic = random.choice(_TOPICS)
