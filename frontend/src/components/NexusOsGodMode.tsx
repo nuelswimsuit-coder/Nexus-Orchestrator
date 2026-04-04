@@ -50,7 +50,7 @@ import {
   Line,
   ReferenceLine,
 } from "recharts";
-import { API_BASE, apiWsBase, triggerPanic, swrFetcher } from "@/lib/api";
+import { API_BASE, apiSseBase, apiWsBase, triggerPanic, swrFetcher } from "@/lib/api";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -4109,8 +4109,16 @@ function RedisBrokerStatus() {
     let cancelled = false;
     const check = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/system/redis-ping`, { signal: AbortSignal.timeout(3000) });
-        if (!cancelled) setStatus(res.ok ? "online" : "offline");
+        // Hit FastAPI directly (same origin as SSE) — Next rewrite can mask real broker state.
+        const res = await fetch(`${apiSseBase()}/api/system/redis-ping`, {
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) {
+          if (!cancelled) setStatus("offline");
+          return;
+        }
+        const data = (await res.json()) as { ok?: boolean };
+        if (!cancelled) setStatus(data.ok === true ? "online" : "offline");
       } catch {
         if (!cancelled) setStatus("offline");
       }

@@ -130,9 +130,30 @@ BTN_PROFIT    = "💰 Profit Report"
 BTN_TASKS     = "🛠️ Active Tasks"
 BTN_INCUBATOR = "🧬 Evolution Engine"
 
+
+def _resolved_admin_chat_id() -> str:
+    """Same resolution as start_master: env first, then pydantic settings."""
+    v = (os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
+    if v:
+        return v
+    cfg = getattr(settings, "telegram_admin_chat_id", None)
+    return (str(cfg).strip() if cfg else "")
+
+
+def _remote_prompt_user_id() -> int:
+    """Numeric id for Remote Prompt filter; avoids int('') crash when admin chat is unset/invalid."""
+    raw = _resolved_admin_chat_id()
+    if not raw:
+        return 7849455058
+    try:
+        return int(raw)
+    except ValueError:
+        return 7849455058
+
+
 # ── Remote Prompt Bridge ──────────────────────────────────────────────────────
 _PROMPTS_FILE = Path(__file__).resolve().parent.parent / "INCOMING_PROMPTS.md"
-_JACOB_USER_ID = int(os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "7849455058"))
+_JACOB_USER_ID = _remote_prompt_user_id()
 
 # Users currently in "cursor prompt input" mode (waiting for next message as prompt)
 _cursor_prompt_mode: set[int] = set()
@@ -717,7 +738,7 @@ async def _acquire_bot_lock() -> None:
 
 async def cmd_start(message: Message) -> None:
     """Show the primary control-panel inline menu and welcome message (admin only)."""
-    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    admin_id = _resolved_admin_chat_id()
     if admin_id and str(message.chat.id) != str(admin_id):
         await message.answer("⛔ גישה נדחתה — ממשק זה מוגבל למנהל המערכת בלבד\\.")
         return
@@ -738,7 +759,7 @@ async def cmd_start(message: Message) -> None:
 
 async def cmd_start_nexus_project(message: Message) -> None:
     """``/start`` on the Nexus project bot (separate token + polling) — not the channel bot."""
-    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    admin_id = _resolved_admin_chat_id()
     if admin_id and str(message.chat.id) != str(admin_id):
         await message.answer("⛔ גישה נדחתה — מוגבל למנהל בלבד\\.")
         return
@@ -960,7 +981,7 @@ async def handle_panic_stop(callback: CallbackQuery) -> None:
 
 async def handle_panic_confirm(callback: CallbackQuery) -> None:
     """Execute the PANIC after user confirms."""
-    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    admin_id = _resolved_admin_chat_id()
     if admin_id and str(callback.from_user.id) != str(admin_id):
         await callback.answer("⛔ גישה נדחתה — פעולה זו מוגבלת למנהל המערכת בלבד\\.", show_alert=True)
         return
@@ -1568,7 +1589,7 @@ async def handle_poly_sell_prompt(callback: CallbackQuery) -> None:
 
 async def cmd_set_deposit(message: Message) -> None:
     """Set total deposited amount: /set_deposit <amount>"""
-    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    admin_id = _resolved_admin_chat_id()
     if admin_id and str(message.chat.id) != str(admin_id):
         await message.answer("⛔ גישה נדחתה\\.")
         return
@@ -1595,7 +1616,7 @@ async def cmd_set_deposit(message: Message) -> None:
 
 async def cmd_set_withdrawn(message: Message) -> None:
     """Set total withdrawn amount: /set_withdrawn <amount>"""
-    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    admin_id = _resolved_admin_chat_id()
     if admin_id and str(message.chat.id) != str(admin_id):
         await message.answer("⛔ גישה נדחתה\\.")
         return
@@ -1621,7 +1642,7 @@ async def cmd_set_withdrawn(message: Message) -> None:
 
 async def cmd_polymarket(message: Message) -> None:
     """Show the Polymarket control panel via /polymarket command."""
-    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    admin_id = _resolved_admin_chat_id()
     if admin_id and str(message.chat.id) != str(admin_id):
         await message.answer("⛔ גישה נדחתה\\.")
         return
@@ -1635,7 +1656,7 @@ async def cmd_polymarket(message: Message) -> None:
 
 async def cmd_poly_buy(message: Message) -> None:
     """Execute a BUY YES order: /poly_buy <token_id> <amount> or /poly_buy cx <amount>"""
-    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    admin_id = _resolved_admin_chat_id()
     if admin_id and str(message.chat.id) != str(admin_id):
         await message.answer("⛔ גישה נדחתה\\.")
         return
@@ -1721,7 +1742,7 @@ async def cmd_poly_buy(message: Message) -> None:
 
 async def cmd_poly_sell(message: Message) -> None:
     """Execute a SELL order: /poly_sell <token_id> <amount>"""
-    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    admin_id = _resolved_admin_chat_id()
     if admin_id and str(message.chat.id) != str(admin_id):
         await message.answer("⛔ גישה נדחתה\\.")
         return
@@ -2721,7 +2742,7 @@ async def cmd_help(message: Message) -> None:
 
 async def cmd_killswitch(message: Message) -> None:
     """Emergency Kill Switch — stops all autonomous incubator projects instantly."""
-    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    admin_id = _resolved_admin_chat_id()
     if admin_id and str(message.chat.id) != str(admin_id):
         await message.answer("⛔ Unauthorized\\. Kill Switch is admin\\-only\\.")
         return
@@ -2839,7 +2860,7 @@ async def cmd_terminate_nexus_now(message: Message) -> None:
 
 async def cmd_godmode_on(message: Message) -> None:
     """Enable GOD MODE via Telegram."""
-    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    admin_id = _resolved_admin_chat_id()
     if admin_id and str(message.chat.id) != str(admin_id):
         await message.answer("⛔ Unauthorized\\.")
         return
@@ -2862,7 +2883,7 @@ async def cmd_godmode_on(message: Message) -> None:
 
 async def cmd_godmode_off(message: Message) -> None:
     """Disable GOD MODE via Telegram."""
-    admin_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    admin_id = _resolved_admin_chat_id()
     if admin_id and str(message.chat.id) != str(admin_id):
         await message.answer("⛔ Unauthorized\\.")
         return
@@ -3525,7 +3546,7 @@ async def run() -> None:
     # ── Start Polymarket AI alert loop (every 5 minutes) ──────────────────────
     # Scheduled pushes use TELEGRAM_NEXUS_BOT_TOKEN when set (project bot), not the channel bot.
     nexus_alert_tok = (os.environ.get("TELEGRAM_NEXUS_BOT_TOKEN") or "").strip()
-    admin_chat_id = (os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
+    admin_chat_id = _resolved_admin_chat_id()
     nexus_admin_chat = (os.environ.get("TELEGRAM_NEXUS_ADMIN_CHAT_ID") or "").strip()
     poly_alert_target_chat = nexus_admin_chat or admin_chat_id
 

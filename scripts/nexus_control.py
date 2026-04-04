@@ -455,6 +455,16 @@ async def _dispatch_via_dispatcher(tasks: list[Any]) -> list[str]:
     except Exception:
         pass
 
+    vault.register_task_secrets(
+        "swarm",
+        [
+            "TELEFIX_API_ID",
+            "TELEFIX_API_HASH",
+            "GEMINI_API_KEY",
+            "OPENAI_API_KEY",
+        ],
+    )
+
     guard = ResourceGuard(cpu_cap_percent=80, ram_cap_mb=4096)
     dispatcher = Dispatcher(
         redis_settings=RedisSettings.from_dsn(settings.redis_url),

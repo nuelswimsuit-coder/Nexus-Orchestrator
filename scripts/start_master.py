@@ -271,6 +271,14 @@ async def run() -> None:
             "TELEFIX_API_HASH",
         ])
 
+    # Community Factory — Telethon + Gemini/OpenAI when Master dispatches swarm.* tasks
+    vault.register_task_secrets("swarm", [
+        "TELEFIX_API_ID",
+        "TELEFIX_API_HASH",
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+    ])
+
     log.info("vault_ready", summary=vault.audit_summary())
 
     # ── 4. Notifications ───────────────────────────────────────────────────────
@@ -283,6 +291,7 @@ async def run() -> None:
     tg_chat_id = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "") or settings.telegram_admin_chat_id
     tg_url     = os.environ.get("TELEGRAM_DASHBOARD_URL", "") or settings.telegram_dashboard_url
 
+    tg_provider = None
     if tg_token and tg_chat_id:
         tg_provider = TelegramProvider(
             bot_token=tg_token,
@@ -307,13 +316,22 @@ async def run() -> None:
             admin_chat_id=tg_chat_id,
             node_id=settings.node_id,
         )
+    elif tg_token:
+        log.warning(
+            "telegram_outbound_disabled_no_admin_chat",
+            hint=(
+                "TELEGRAM_ADMIN_CHAT_ID is unset — outbound alerts/boot notify are off. "
+                "Command Center polling still starts so /start works once you set the chat id for ACL."
+            ),
+        )
+    else:
+        log.warning(
+            "telegram_notifications_disabled",
+            hint="Set TELEGRAM_BOT_TOKEN (and TELEGRAM_ADMIN_CHAT_ID for alerts) in .env",
+        )
 
-        # ── Telegram Command Center (inline polling) ───────────────────────────
-        # Import the fully-wired start_bot_polling coroutine from the bot script
-        # and run it as a background task in this event loop.  This means the
-        # bot responds to /start and menu buttons without a separate process.
-        # The ProcessSupervisor (term_timeout_s=3) is available for any caller
-        # that needs to hard-kill a stale bot worker PID before restarting.
+    # ── Telegram Command Center (polling) — needs token only ───────────────────
+    if tg_token:
         try:
             _bot_mod = _importlib.import_module("start_telegram_bot")
             asyncio.create_task(
@@ -323,21 +341,15 @@ async def run() -> None:
             log.info(
                 "telegram_command_center_live",
                 hint="INFO: Telegram Command Center is now LIVE and listening.",
-                chat_id=tg_chat_id,
+                chat_id=tg_chat_id or "(no admin chat — set TELEGRAM_ADMIN_CHAT_ID for alerts)",
                 supervisor_term_timeout_s=supervisor.term_timeout_s,
             )
         except Exception as _bot_exc:
             log.warning(
                 "telegram_command_center_failed",
                 error=str(_bot_exc),
-                hint="Bot polling could not start — notifications still work.",
+                hint="Bot polling could not start.",
             )
-    else:
-        tg_provider = None
-        log.warning(
-            "telegram_notifications_disabled",
-            hint="Set TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_CHAT_ID in .env",
-        )
 
     # ── WhatsApp ───────────────────────────────────────────────────────────────
     # If WhatsApp is mock (no Evolution/Twilio credentials) but Telegram IS
