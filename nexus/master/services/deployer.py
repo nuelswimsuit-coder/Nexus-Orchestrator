@@ -540,11 +540,13 @@ class DeployerService:
                 lambda: self._run_heal(ssh, heal_cmd),
             )
             if exit_code != 0:
-                await self._emit(node_id, "installing_deps", "error",
-                                 f"pip install exited {exit_code} — {stdout_tail[-200:]}")
-            else:
-                await self._emit(node_id, "installing_deps", "done",
-                                 "Dependencies installed")
+                pip_msg = f"pip install exited {exit_code} — {stdout_tail[-200:]}"
+                await self._emit(node_id, "installing_deps", "error", pip_msg)
+                await self._emit(node_id, "error", "error", pip_msg)
+                return f"error: {pip_msg}"
+
+            await self._emit(node_id, "installing_deps", "done",
+                             "Dependencies installed")
 
             await self._emit(node_id, "restarting", "done",
                              "start_worker.py launched in background")

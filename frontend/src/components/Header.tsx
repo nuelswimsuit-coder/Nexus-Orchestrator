@@ -167,6 +167,8 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
 
   const streamsRef  = useRef<Map<string, EventSource>>(new Map());
   const termRef     = useRef<HTMLDivElement>(null);
+  /** Prevents double DONE/ERROR when both SSE and status poll see the same terminal state. */
+  const deploySettledRef = useRef(false);
 
   useEffect(() => { setHeaderMounted(true); }, []);
 
@@ -241,17 +243,27 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
               return [...prev, uploadLine];
             });
           }
-          if (ev.status === "running" || ev.step === "done" || ev.step === "error" || ev.status === "done") {
+          if (
+            ev.status === "running"
+            || ev.status === "error"
+            || ev.step === "done"
+            || ev.step === "error"
+            || ev.status === "done"
+          ) {
             addLine(tag, text, color);
           }
         }
 
-        if (ev.step === "done" || ev.step === "error") {
+        const failed = ev.status === "error" || ev.step === "error";
+        const succeeded = ev.step === "done" && ev.status === "done";
+        if (failed || succeeded) {
           es.close();
           streamsRef.current.delete(node_id);
+          if (deploySettledRef.current) return;
+          deploySettledRef.current = true;
           setTimeout(() => setDeployingNode(node_id, false), 4000);
           if (streamsRef.current.size === 0) {
-            setPhase(ev.step === "error" ? "error" : "done");
+            setPhase(failed ? "error" : "done");
           }
         }
       } catch {}
@@ -264,10 +276,15 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
       if (streamsRef.current.size === 0) {
         getDeployStatus().then(st => {
           const ev = st.nodes[node_id];
-          if (ev?.step === "done") {
+          if (!ev || deploySettledRef.current) return;
+          const failed = ev.status === "error" || ev.step === "error";
+          const ok = ev.step === "done" && ev.status === "done";
+          if (ok) {
+            deploySettledRef.current = true;
             addLine("DONE", ev.detail || "Deployment complete ✓", "#22c55e");
             setPhase("done");
-          } else if (ev?.step === "error") {
+          } else if (failed) {
+            deploySettledRef.current = true;
             addLine("ERROR", ev.detail || "Deployment failed", "#ef4444");
             setPhase("error");
           }
@@ -282,6 +299,7 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
     setPhase("running");
     setLines([]);
     setErrMsg("");
+    deploySettledRef.current = false;
     setModalOpen(true);
     streamsRef.current.forEach(es => es.close());
     streamsRef.current.clear();
@@ -314,22 +332,26 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
       // Also open worker_linux stream directly (it's always the target)
       setTimeout(() => openStream("worker_linux"), 1200);
 
-      // Fallback polling every 10s — catches cases where SSE misses the done event
+      // Poll /api/deploy/status every 2s — catches SSE failures (proxy/CORS) and missed terminals
       let _pollCount = 0;
       const statusPoll = setInterval(async () => {
         _pollCount++;
         try {
           const st = await getDeployStatus();
           const ev = st.nodes["worker_linux"];
-          if (ev?.step === "done" || ev?.step === "error") {
+          if (!ev) return;
+          const failed = ev.status === "error" || ev.step === "error";
+          const ok = ev.step === "done" && ev.status === "done";
+          if (ok || failed) {
+            if (deploySettledRef.current) return;
+            deploySettledRef.current = true;
             clearInterval(statusPoll);
             if (streamsRef.current.size > 0) {
-              // SSE is still open but backend is done — close it and update UI
               streamsRef.current.forEach(s => s.close());
               streamsRef.current.clear();
               setDeployingNode("worker_linux", false);
             }
-            if (ev.step === "done") {
+            if (ok) {
               addLine("DONE", ev.detail || "Deployment complete ✓", "#22c55e");
               setPhase("done");
             } else {
@@ -338,8 +360,8 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
             }
           }
         } catch {}
-        if (_pollCount >= 72) clearInterval(statusPoll); // stop after 12 min
-      }, 10_000);
+        if (_pollCount >= 360) clearInterval(statusPoll); // ~12 min at 2s
+      }, 2_000);
 
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

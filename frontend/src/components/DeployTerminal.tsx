@@ -20,7 +20,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_BASE, apiSseBase, triggerSync } from "@/lib/api";
+import { API_BASE, apiSseBase, getDeployStatus, triggerSync } from "@/lib/api";
 import { useNexus } from "@/lib/nexus-context";
 import type { DeployPhase } from "@/lib/nexus-context";
 import type { DeployProgressEvent } from "@/lib/api";
@@ -121,6 +121,7 @@ export default function DeployTerminal() {
   const termRef  = useRef<HTMLDivElement>(null);
   const esRef    = useRef<EventSource | null>(null);
   const phaseRef = useRef<DeployPhase>("idle");
+  const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Keep context + local ref in sync
   const setPhase = useCallback((p: DeployPhase) => {
@@ -140,7 +141,13 @@ export default function DeployTerminal() {
   }, [lines]);
 
   // Cleanup on unmount
-  useEffect(() => () => { esRef.current?.close(); }, []);
+  useEffect(
+    () => () => {
+      esRef.current?.close();
+      if (statusPollRef.current) clearInterval(statusPollRef.current);
+    },
+    [],
+  );
 
   const openSSEStream = useCallback(() => {
     // Close any existing stream first
@@ -157,12 +164,14 @@ export default function DeployTerminal() {
         // Always add a line for every event (both running and terminal)
         addLine(evToLine(ev));
 
-        if (ev.step === "done" || ev.step === "error") {
+        const failed = ev.status === "error" || ev.step === "error";
+        const succeeded = ev.step === "done" && ev.status === "done";
+        if (failed || succeeded) {
           es.close();
           esRef.current = null;
           setUploadProg(null);
           setTimeout(() => setDeployingNode("worker_linux", false), 4000);
-          setPhase(ev.step === "error" ? "error" : "done");
+          setPhase(failed ? "error" : "done");
         }
       } catch {}
     };
@@ -181,6 +190,11 @@ export default function DeployTerminal() {
   const handleSync = useCallback(async () => {
     if (phaseRef.current === "running") return;
 
+    if (statusPollRef.current) {
+      clearInterval(statusPollRef.current);
+      statusPollRef.current = null;
+    }
+
     // Reset state
     setPhase("running");
     setLines([]);
@@ -196,6 +210,45 @@ export default function DeployTerminal() {
     try {
       const res = await triggerSync();
       addLine(makeLine("JOB", "#475569", res.job_id));
+
+      let pollCount = 0;
+      statusPollRef.current = setInterval(async () => {
+        pollCount++;
+        try {
+          const st = await getDeployStatus();
+          const ev = st.nodes["worker_linux"];
+          if (!ev) return;
+          const failed = ev.status === "error" || ev.step === "error";
+          const ok = ev.step === "done" && ev.status === "done";
+          if (!ok && !failed) return;
+          if (phaseRef.current !== "running") return;
+          if (statusPollRef.current) {
+            clearInterval(statusPollRef.current);
+            statusPollRef.current = null;
+          }
+          esRef.current?.close();
+          esRef.current = null;
+          setUploadProg(null);
+          setDeployingNode("worker_linux", false);
+          if (ok) {
+            addLine(
+              makeLine("DONE", "#22c55e", ev.detail || "Deployment complete ✓"),
+            );
+            setPhase("done");
+          } else {
+            addLine(
+              makeLine("ERROR", "#ef4444", ev.detail || "Deployment failed"),
+            );
+            setPhase("error");
+          }
+        } catch {
+          /* ignore */
+        }
+        if (pollCount >= 360 && statusPollRef.current) {
+          clearInterval(statusPollRef.current);
+          statusPollRef.current = null;
+        }
+      }, 2_000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setErrMsg(msg);

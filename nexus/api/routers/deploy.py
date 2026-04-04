@@ -178,7 +178,10 @@ async def stream_progress(
                     # Stop streaming once terminal step is reached
                     try:
                         ev = json.loads(raw)
-                        if ev.get("step") in ("done", "error") and ev.get("status") in ("done", "error"):
+                        # Close on any error status (e.g. installing_deps + error) or final done/done.
+                        if ev.get("status") == "error":
+                            return
+                        if ev.get("step") == "done" and ev.get("status") == "done":
                             return
                     except Exception:
                         pass
