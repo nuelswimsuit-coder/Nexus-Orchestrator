@@ -4,6 +4,10 @@ API-layer Pydantic models.
 These are the request/response bodies for the HTTP API.  They are kept
 separate from nexus/shared/schemas.py (the wire contract between master and
 workers) to allow the API surface to evolve independently.
+
+This module lives alongside the ``nexus.api.schemas`` package so the package
+``__init__`` can re-export these names without a ``schemas.py`` / ``schemas/``
+import shadow conflict.
 """
 
 from __future__ import annotations
