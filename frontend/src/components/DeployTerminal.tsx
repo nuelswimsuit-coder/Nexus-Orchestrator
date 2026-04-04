@@ -20,7 +20,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_BASE, triggerSync } from "@/lib/api";
+import { API_BASE, apiSseBase, triggerSync } from "@/lib/api";
 import { useNexus } from "@/lib/nexus-context";
 import type { DeployPhase } from "@/lib/nexus-context";
 import type { DeployProgressEvent } from "@/lib/api";
@@ -146,7 +146,7 @@ export default function DeployTerminal() {
     // Close any existing stream first
     esRef.current?.close();
 
-    const es = new EventSource(`${API_BASE}/api/deploy/progress/worker_linux`);
+    const es = new EventSource(`${apiSseBase()}/api/deploy/progress/worker_linux`);
     esRef.current = es;
     setDeployingNode("worker_linux", true);
 

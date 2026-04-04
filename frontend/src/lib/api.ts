@@ -20,6 +20,14 @@ export function apiWsBase(): string {
   return _SERVER_API_BASE.replace(/^https/, "wss").replace(/^http/, "ws");
 }
 
+/**
+ * Origin for Server-Sent Events. Always the real API host (never same-origin "").
+ * Next.js dev rewrites buffer streaming responses, so EventSource must hit FastAPI directly.
+ */
+export function apiSseBase(): string {
+  return _SERVER_API_BASE;
+}
+
 // ── Generic fetch helper ──────────────────────────────────────────────────────
 
 function _resolveApiUrl(path: string): string {
@@ -816,7 +824,7 @@ export function getDeployStatus(): Promise<DeployStatusResponse> {
  * Returns an EventSource — caller is responsible for closing it.
  */
 export function openDeployProgressStream(node_id: string): EventSource {
-  return new EventSource(`${API_BASE}/api/deploy/progress/${node_id}`);
+  return new EventSource(`${apiSseBase()}/api/deploy/progress/${node_id}`);
 }
 
 // ── Paper Trading ─────────────────────────────────────────────────────────────
