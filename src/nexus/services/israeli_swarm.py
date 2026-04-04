@@ -103,19 +103,6 @@ def _publish_engine_error(detail: str) -> None:
     _redis_sync_set(_REDIS_LAST_ENGINE_ERROR_KEY, f"{ts} | {detail}")
 
 
-def _clear_engine_error() -> None:
-    try:
-        import redis as redis_sync
-
-        r = redis_sync.Redis.from_url(_REDIS_URL, decode_responses=True)
-        try:
-            r.delete(_REDIS_LAST_ENGINE_ERROR_KEY)
-        finally:
-            r.close()
-    except Exception:
-        pass
-
-
 def _vault_session_inventory_hint() -> str:
     """Explain common mismatch: JSON metadata without Telethon .session files."""
     try:
@@ -425,6 +412,9 @@ class CommunityEngine:
                 or ""
             ).strip()
             if not api_id or not api_hash:
+                msg = "חסר TELEGRAM_API_ID/HASH או TELEFIX_API_ID/HASH ב-.env"
+                log.warning("[COMMUNITY] %s", msg)
+                _publish_engine_error(msg)
                 return False
 
             session_path = str(session_file.with_suffix(""))
@@ -445,9 +435,13 @@ class CommunityEngine:
                 return True
 
         except ImportError:
-            log.debug("[COMMUNITY] telethon not installed — message not sent")
+            msg = "חבילת telethon לא מותקנת בסביבת israeli-swarm"
+            log.warning("[COMMUNITY] %s", msg)
+            _publish_engine_error(msg)
         except Exception as exc:
-            log.debug("[COMMUNITY] Send failed for %s: %s", session_file.stem, exc)
+            err = f"{session_file.stem}: {exc}"
+            log.warning("[COMMUNITY] Send failed — %s", err)
+            _publish_engine_error(err[:500])
         return False
 
     async def _push_join_event(self, phone: str, group_link: str) -> None:
@@ -539,6 +533,7 @@ class CommunityEngine:
             # Increment running counters for the live stats panel
             await r.incr("nexus:swarm:israeli:verified_count")
             await r.incr("nexus:swarm:israeli:written_count")
+            await r.delete(_REDIS_LAST_ENGINE_ERROR_KEY)
             await r.aclose()
             log.info("[COMMUNITY] Verification broadcast: phone=%s verified=1 written=1", phone)
         except Exception as exc:

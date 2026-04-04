@@ -6787,6 +6787,8 @@ interface SwarmFeedData {
   written_count?: number;
   total_sessions?: number;
   recent_messages?: SwarmRecentMessage[];
+  /** Set by israeli_swarm when Telethon / config fails (Redis). */
+  last_engine_error?: string;
 }
 
 function SwarmBotCard({ bot }: { bot: SwarmBot }) {
@@ -6926,7 +6928,9 @@ function LiveSwarmView() {
       {/* Stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
-          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">סשנים בדיסק</div>
+          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">
+            סשנים בדיסק (‎.session)
+          </div>
           <div className="text-2xl font-black text-purple-400">{feed?.total_sessions ?? 0}</div>
         </div>
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
@@ -6985,6 +6989,14 @@ function LiveSwarmView() {
         </div>
         {statusMsg && (
           <div className="text-[12px] text-slate-400 font-mono">{statusMsg}</div>
+        )}
+        {feed?.last_engine_error?.trim() && (
+          <div className="rounded-xl border border-amber-500/50 bg-amber-950/40 px-4 py-3 text-[12px] text-amber-100/95 leading-relaxed font-mono">
+            <span className="font-black text-amber-400 uppercase tracking-widest text-[10px] block mb-1">
+              מנוע israeli_swarm — שגיאה אחרונה
+            </span>
+            {feed.last_engine_error}
+          </div>
         )}
       </div>
 
@@ -7070,9 +7082,13 @@ function LiveSwarmView() {
       {feed && feed.bots.length === 0 && recentMessages.length === 0 && (
         <div className="bg-slate-900/40 border border-slate-800 rounded-2xl px-6 py-12 text-center space-y-2">
           <div className="text-4xl">🤖</div>
-          <div className="text-slate-400 font-black text-sm">הנחיל לא פעיל</div>
-          <div className="text-slate-600 text-[12px]">
-            הפעל את הנחיל עם קישור לקבוצה כדי להתחיל
+          <div className="text-slate-400 font-black text-sm">
+            {swarmRunning ? "הנחיל מסומן כרץ — אין עדיין פעילות בפיד" : "הנחיל לא פעיל"}
+          </div>
+          <div className="text-slate-600 text-[12px] max-w-lg mx-auto leading-relaxed">
+            {swarmRunning
+              ? "אם המונה למעלה מראה סשנים אבל אין הודעות: ודא שב-vault/sessions יש קבצי ‎.session של Telethon (לא רק JSON), ש־TELEFIX/TELEGRAM API מוגדרים, ושתהליך israeli-swarm רץ מאותו פרויקט. השגיאה האחרונה מופיעה למעלה אם המנוע דיווח."
+              : "הפעל את הנחיל עם קישור לקבוצה כדי להתחיל"}
           </div>
         </div>
       )}

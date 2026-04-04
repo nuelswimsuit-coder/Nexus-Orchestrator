@@ -361,6 +361,7 @@ _ISRAELI_VERIFIED_KEY = "nexus:swarm:israeli:verified_count"
 _ISRAELI_WRITTEN_KEY = "nexus:swarm:israeli:written_count"
 _ISRAELI_EVENTS_KEY = "nexus:swarm:israeli:events"
 _ISRAELI_STATUS_KEY = "nexus:swarm:israeli:status"
+_ISRAELI_LAST_ENGINE_ERROR_KEY = "nexus:swarm:israeli:last_engine_error"
 
 
 class SwarmStartBody(BaseModel):
@@ -377,6 +378,7 @@ async def get_live_feed(redis: RedisDep) -> dict[str, Any]:
     verified_raw = await redis.get(_ISRAELI_VERIFIED_KEY)
     written_raw = await redis.get(_ISRAELI_WRITTEN_KEY)
     status_raw = await redis.get(_ISRAELI_STATUS_KEY)
+    last_engine_err_raw = await redis.get(_ISRAELI_LAST_ENGINE_ERROR_KEY)
     events_raw: list[str] = await redis.lrange(_ISRAELI_EVENTS_KEY, -20, -1)
 
     last_message = ""
@@ -457,6 +459,14 @@ async def get_live_feed(redis: RedisDep) -> dict[str, Any]:
         except Exception:
             pass
 
+    last_engine_error = ""
+    if last_engine_err_raw:
+        last_engine_error = (
+            last_engine_err_raw.decode("utf-8", errors="replace")
+            if isinstance(last_engine_err_raw, bytes)
+            else str(last_engine_err_raw)
+        )
+
     return {
         "total_in_group": len(bots),
         "active_talkers": active_talkers,
@@ -469,6 +479,7 @@ async def get_live_feed(redis: RedisDep) -> dict[str, Any]:
         "written_count": written_count,
         "total_sessions": total_sessions,
         "recent_messages": recent_messages,
+        "last_engine_error": last_engine_error,
     }
 
 
