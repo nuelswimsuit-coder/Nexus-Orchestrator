@@ -64,6 +64,40 @@ _TELEFIX_DB = pathlib.Path(
 _REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 _GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 _GROUP_LINK = os.getenv("SWARM_GROUP_LINK", "")
+# Written by POST /api/swarm/start — must be readable here so UI link works without env restart.
+_REDIS_SWARM_STATUS_KEY = "nexus:swarm:israeli:status"
+_REDIS_SWARM_TARGET_KEY = "nexus:swarm:israeli:target_group"
+
+
+def _redis_sync_get(key: str) -> str | None:
+    try:
+        import redis as redis_sync
+
+        r = redis_sync.Redis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            v = r.get(key)
+            return str(v) if v is not None else None
+        finally:
+            r.close()
+    except Exception:
+        return None
+
+
+def _redis_swarm_status_allows_send() -> bool:
+    """Legacy: if status key unset, keep sending. Dashboard stop sets 'stopped'."""
+    raw = _redis_sync_get(_REDIS_SWARM_STATUS_KEY)
+    if raw is None or not str(raw).strip():
+        return True
+    return str(raw).strip().lower() == "running"
+
+
+def effective_swarm_group_link() -> str:
+    """Prefer target from API/UI (Redis); fall back to SWARM_GROUP_LINK env."""
+    r = _redis_sync_get(_REDIS_SWARM_TARGET_KEY)
+    if r and r.strip():
+        return r.strip()
+    return (_GROUP_LINK or "").strip()
+
 
 # ── Hebrew dialogue topics & slang pool ───────────────────────────────────────
 
@@ -255,7 +289,10 @@ class CommunityEngine:
             target=self._loop, name="israeli-swarm-community", daemon=True
         )
         self._thread.start()
-        log.info("[COMMUNITY] Community engine started — group: %s", _GROUP_LINK or "(not set)")
+        log.info(
+            "[COMMUNITY] Community engine started — group: %s",
+            effective_swarm_group_link() or "(not set — use UI Start or SWARM_GROUP_LINK)",
+        )
 
     def stop(self) -> None:
         self._stop.set()
@@ -272,6 +309,15 @@ class CommunityEngine:
             self._stop.wait(timeout=delay)
 
     async def _cycle(self) -> None:
+        if not _redis_swarm_status_allows_send():
+            log.debug("[COMMUNITY] Swarm paused — Redis status is not 'running'")
+            return
+
+        group_link = effective_swarm_group_link()
+        if not group_link:
+            log.debug("[COMMUNITY] No group link — set in UI (Start Swarm) or SWARM_GROUP_LINK")
+            return
+
         sessions = list(_VAULT_SESSIONS.glob("*.session"))
         if not sessions:
             log.info("[COMMUNITY] No sessions in vault/sessions — triggering immediate harvester scan")
@@ -298,16 +344,16 @@ class CommunityEngine:
         )
 
         # Attempt Telethon send if available
-        sent = await self._try_send_telethon(session_file, message)
+        sent = await self._try_send_telethon(session_file, message, group_link)
         if sent:
             self.messages_sent += 1
             await self._push_redis_event(phone, topic, message)
             await self._mark_verified_written(phone)
 
     async def _try_send_telethon(
-        self, session_file: pathlib.Path, message: str
+        self, session_file: pathlib.Path, message: str, group_link: str
     ) -> bool:
-        if not _GROUP_LINK:
+        if not group_link:
             return False
         try:
             from telethon import TelegramClient  # type: ignore[import]
@@ -316,26 +362,32 @@ class CommunityEngine:
                 UserBannedInChannelError,
             )
 
-            api_id = int(os.getenv("TELEGRAM_API_ID", "0"))
-            api_hash = os.getenv("TELEGRAM_API_HASH", "")
+            api_id = int(os.getenv("TELEGRAM_API_ID", "0") or "0")
+            if not api_id:
+                api_id = int(os.getenv("TELEFIX_API_ID", "0") or "0")
+            api_hash = (
+                os.getenv("TELEGRAM_API_HASH", "")
+                or os.getenv("TELEFIX_API_HASH", "")
+                or ""
+            ).strip()
             if not api_id or not api_hash:
                 return False
 
             session_path = str(session_file.with_suffix(""))
             async with TelegramClient(session_path, api_id, api_hash) as client:
                 try:
-                    await client.get_entity(_GROUP_LINK)
+                    await client.get_entity(group_link)
                 except Exception:
                     await client(
                         __import__(
                             "telethon.tl.functions.channels",
                             fromlist=["JoinChannelRequest"],
-                        ).JoinChannelRequest(_GROUP_LINK)
+                        ).JoinChannelRequest(group_link)
                     )
                     self.bots_joined += 1
-                    await self._push_join_event(session_file.stem)
+                    await self._push_join_event(session_file.stem, group_link)
 
-                await client.send_message(_GROUP_LINK, message)
+                await client.send_message(group_link, message)
                 return True
 
         except ImportError:
@@ -344,7 +396,7 @@ class CommunityEngine:
             log.debug("[COMMUNITY] Send failed for %s: %s", session_file.stem, exc)
         return False
 
-    async def _push_join_event(self, phone: str) -> None:
+    async def _push_join_event(self, phone: str, group_link: str) -> None:
         try:
             import redis.asyncio as aioredis  # type: ignore[import]
             r = await aioredis.from_url(_REDIS_URL, decode_responses=True)
@@ -352,7 +404,7 @@ class CommunityEngine:
                 "event": "swarm_join_success",
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "phone": phone,
-                "group": _GROUP_LINK,
+                "group": group_link,
                 "engine": "israeli_swarm",
             }, ensure_ascii=False)
             await r.rpush("nexus:swarm:israeli:events", payload)
@@ -524,13 +576,14 @@ def get_swarm_stats() -> dict[str, Any]:
         except Exception as exc:
             log.debug("[STATS] telefix.db read error: %s", exc)
 
+    gl = effective_swarm_group_link()
     status = "NO_SESSIONS" if total_sessions == 0 else "IDLE"
-    if total_sessions > 0 and _GROUP_LINK:
+    if total_sessions > 0 and gl:
         status = "ACTIVE"
 
     return {
         "total_sessions": total_sessions,
-        "group_link": _GROUP_LINK or "—",
+        "group_link": gl or "—",
         "conversation_status": status,
         "verified": verified,
         "written": written,
