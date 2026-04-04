@@ -6713,3 +6713,11 @@ eded the max restart limit (3). Manual intervention required.
 [watchdog] [deployer] restarted — pid=6192
 [launcher] child process exited pid=21144 label=api returncode=1.
 [watchdog] Restarting [api] in 15s (attempt 3/3)…
+[launcher] child process exited pid=6192 label=deployer returncode=3.
+[watchdog] Restarting [deployer] in 15s (attempt 3/3)…
+[watchdog] [api] restarted — pid=37472
+[launcher] child process exited pid=37472 label=api returncode=1.
+[WATCHDOG] Service *api* has crashed 3 times and exceeded the max restart limit (3). Manual intervention required.
+[watchdog] [deployer] restarted — pid=11656
+[launcher] child process exited pid=11656 label=deployer returncode=3.
+[WATCHDOG] Service *deployer* has crashed 3 times and exceeded the max restart limit (3). Manual intervention required.
