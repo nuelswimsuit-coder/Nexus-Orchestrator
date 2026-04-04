@@ -87,6 +87,7 @@ from aiogram import Bot, F  # noqa: E402
 from aiogram import Dispatcher as TgDispatcher  # noqa: E402
 from aiogram.client.default import DefaultBotProperties  # noqa: E402
 from aiogram.enums import ParseMode  # noqa: E402
+from aiogram.exceptions import TelegramBadRequest  # noqa: E402
 from aiogram.filters import Command, CommandStart  # noqa: E402
 from aiogram.types import (  # noqa: E402
     CallbackQuery,
@@ -138,6 +139,43 @@ def _resolved_admin_chat_id() -> str:
         return v
     cfg = getattr(settings, "telegram_admin_chat_id", None)
     return (str(cfg).strip() if cfg else "")
+
+
+def _nexus_project_admin_chat_id() -> str:
+    """Chat/user id allowed on TELEGRAM_NEXUS_BOT_TOKEN bot; falls back to main admin."""
+    v = (os.environ.get("TELEGRAM_NEXUS_ADMIN_CHAT_ID") or "").strip()
+    return v if v else _resolved_admin_chat_id()
+
+
+def _admin_chat_for_tg_bot(bot: Bot | None) -> str:
+    """Main channel bot uses TELEGRAM_ADMIN_CHAT_ID; Nexus project bot uses NEXUS admin when set."""
+    nexus_tok = (os.environ.get("TELEGRAM_NEXUS_BOT_TOKEN") or "").strip()
+    tok = (getattr(bot, "token", None) or "").strip()
+    if nexus_tok and tok == nexus_tok:
+        return _nexus_project_admin_chat_id()
+    return _resolved_admin_chat_id()
+
+
+def _telegram_admin_allowed(
+    *,
+    chat_id: int | None,
+    user_id: int | None,
+    admin_chat_id: str,
+) -> bool:
+    """
+    Allow when admin id is unset (open), or when chat or user matches.
+
+    Private chat: chat_id == user_id. In groups, chat_id is the group; operators often set
+    TELEGRAM_ADMIN_CHAT_ID to their numeric user id — then we must match from_user too.
+    """
+    aid = (admin_chat_id or "").strip()
+    if not aid:
+        return True
+    if chat_id is not None and str(chat_id) == aid:
+        return True
+    if user_id is not None and str(user_id) == aid:
+        return True
+    return False
 
 
 def _remote_prompt_user_id() -> int:
@@ -428,6 +466,22 @@ def _esc(text: str) -> str:
     """Escape text for MarkdownV2."""
     import re
     return re.sub(r"([_\*\[\]\(\)~`>#+\-=|{}.!\\])", r"\\\1", str(text))
+
+
+async def _answer_markdown_v2_or_plain(message: Message, text: str, **kwargs: object) -> None:
+    """Send MarkdownV2; on parse errors still reply so /start never looks \"dead\"."""
+    try:
+        await message.answer(text, parse_mode=ParseMode.MARKDOWN_V2, **kwargs)  # type: ignore[arg-type]
+    except TelegramBadRequest as exc:
+        log.warning("telegram_markdown_rejected", error=str(exc))
+        rm = kwargs.get("reply_markup")
+        await message.answer(
+            "Nexus Orchestrator — מרכז פיקוד\n\n"
+            "התקבלה בקשת /start. אם אין הודעה מעוצבת למעלה, טלגרם דחה את מצב Markdown.\n"
+            "הכפתורים למטה עדיין פעילים.\n\n"
+            "/help — רשימת פקודות",
+            reply_markup=rm,  # type: ignore[arg-type]
+        )
 
 
 def _manual_order_err_text(err: str | None) -> str:
@@ -739,8 +793,18 @@ async def _acquire_bot_lock() -> None:
 async def cmd_start(message: Message) -> None:
     """Show the primary control-panel inline menu and welcome message (admin only)."""
     admin_id = _resolved_admin_chat_id()
-    if admin_id and str(message.chat.id) != str(admin_id):
-        await message.answer("⛔ גישה נדחתה — ממשק זה מוגבל למנהל המערכת בלבד\\.")
+    uid = message.from_user.id if message.from_user else None
+    if not _telegram_admin_allowed(chat_id=message.chat.id, user_id=uid, admin_chat_id=admin_id):
+        try:
+            await message.answer(
+                "⛔ גישה נדחתה — ממשק זה מוגבל למנהל המערכת בלבד\\.",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+        except TelegramBadRequest:
+            await message.answer(
+                "גישה נדחתה — ממשק זה מוגבל למנהל בלבד. "
+                "בדוק TELEGRAM_ADMIN_CHAT_ID (מזהה צ'אט פרטי עם הבוט או מזהה המשתמש שלך מ-@userinfobot)."
+            )
         return
 
     name = message.from_user.first_name if message.from_user else "מפעיל"
@@ -750,18 +814,24 @@ async def cmd_start(message: Message) -> None:
         "המערכת הופעלה בהצלחה — כל המעבדים מחוברים ופעילים\\.\n"
         "בחר פעולה מממשק הפקודות \\(ChatOps\\):"
     )
-    await message.answer(
+    await _answer_markdown_v2_or_plain(
+        message,
         welcome,
-        parse_mode=ParseMode.MARKDOWN_V2,
         reply_markup=get_start_menu(),
     )
 
 
 async def cmd_start_nexus_project(message: Message) -> None:
     """``/start`` on the Nexus project bot (separate token + polling) — not the channel bot."""
-    admin_id = _resolved_admin_chat_id()
-    if admin_id and str(message.chat.id) != str(admin_id):
-        await message.answer("⛔ גישה נדחתה — מוגבל למנהל בלבד\\.")
+    admin_id = _nexus_project_admin_chat_id()
+    uid = message.from_user.id if message.from_user else None
+    if not _telegram_admin_allowed(chat_id=message.chat.id, user_id=uid, admin_chat_id=admin_id):
+        try:
+            await message.answer("⛔ גישה נדחתה — מוגבל למנהל בלבד\\.", parse_mode=ParseMode.MARKDOWN_V2)
+        except TelegramBadRequest:
+            await message.answer(
+                "גישה נדחתה. הגדר TELEGRAM_NEXUS_ADMIN_CHAT_ID או TELEGRAM_ADMIN_CHAT_ID למזהה הצ'אט שלך."
+            )
         return
     name = message.from_user.first_name if message.from_user else "מפעיל"
     welcome = (
@@ -771,9 +841,9 @@ async def cmd_start_nexus_project(message: Message) -> None:
         "הפאנל המלא \\(HITL, קלאסטר, Incubator\\) — **בבוט אחושרמוטה**\\.\n\n"
         "שלח `/help` או בחר למטה\\."
     )
-    await message.answer(
+    await _answer_markdown_v2_or_plain(
+        message,
         welcome,
-        parse_mode=ParseMode.MARKDOWN_V2,
         reply_markup=get_nexus_project_start_menu(),
     )
 
@@ -982,7 +1052,9 @@ async def handle_panic_stop(callback: CallbackQuery) -> None:
 async def handle_panic_confirm(callback: CallbackQuery) -> None:
     """Execute the PANIC after user confirms."""
     admin_id = _resolved_admin_chat_id()
-    if admin_id and str(callback.from_user.id) != str(admin_id):
+    cid = callback.message.chat.id if callback.message else None
+    uid = callback.from_user.id if callback.from_user else None
+    if not _telegram_admin_allowed(chat_id=cid, user_id=uid, admin_chat_id=admin_id):
         await callback.answer("⛔ גישה נדחתה — פעולה זו מוגבלת למנהל המערכת בלבד\\.", show_alert=True)
         return
 
@@ -1589,8 +1661,9 @@ async def handle_poly_sell_prompt(callback: CallbackQuery) -> None:
 
 async def cmd_set_deposit(message: Message) -> None:
     """Set total deposited amount: /set_deposit <amount>"""
-    admin_id = _resolved_admin_chat_id()
-    if admin_id and str(message.chat.id) != str(admin_id):
+    admin_id = _admin_chat_for_tg_bot(message.bot)
+    uid = message.from_user.id if message.from_user else None
+    if not _telegram_admin_allowed(chat_id=message.chat.id, user_id=uid, admin_chat_id=admin_id):
         await message.answer("⛔ גישה נדחתה\\.")
         return
     parts = (message.text or "").split()
@@ -1616,8 +1689,9 @@ async def cmd_set_deposit(message: Message) -> None:
 
 async def cmd_set_withdrawn(message: Message) -> None:
     """Set total withdrawn amount: /set_withdrawn <amount>"""
-    admin_id = _resolved_admin_chat_id()
-    if admin_id and str(message.chat.id) != str(admin_id):
+    admin_id = _admin_chat_for_tg_bot(message.bot)
+    uid = message.from_user.id if message.from_user else None
+    if not _telegram_admin_allowed(chat_id=message.chat.id, user_id=uid, admin_chat_id=admin_id):
         await message.answer("⛔ גישה נדחתה\\.")
         return
     parts = (message.text or "").split()
@@ -1642,8 +1716,9 @@ async def cmd_set_withdrawn(message: Message) -> None:
 
 async def cmd_polymarket(message: Message) -> None:
     """Show the Polymarket control panel via /polymarket command."""
-    admin_id = _resolved_admin_chat_id()
-    if admin_id and str(message.chat.id) != str(admin_id):
+    admin_id = _admin_chat_for_tg_bot(message.bot)
+    uid = message.from_user.id if message.from_user else None
+    if not _telegram_admin_allowed(chat_id=message.chat.id, user_id=uid, admin_chat_id=admin_id):
         await message.answer("⛔ גישה נדחתה\\.")
         return
     await message.answer(
@@ -1656,8 +1731,9 @@ async def cmd_polymarket(message: Message) -> None:
 
 async def cmd_poly_buy(message: Message) -> None:
     """Execute a BUY YES order: /poly_buy <token_id> <amount> or /poly_buy cx <amount>"""
-    admin_id = _resolved_admin_chat_id()
-    if admin_id and str(message.chat.id) != str(admin_id):
+    admin_id = _admin_chat_for_tg_bot(message.bot)
+    uid = message.from_user.id if message.from_user else None
+    if not _telegram_admin_allowed(chat_id=message.chat.id, user_id=uid, admin_chat_id=admin_id):
         await message.answer("⛔ גישה נדחתה\\.")
         return
 
@@ -1742,8 +1818,9 @@ async def cmd_poly_buy(message: Message) -> None:
 
 async def cmd_poly_sell(message: Message) -> None:
     """Execute a SELL order: /poly_sell <token_id> <amount>"""
-    admin_id = _resolved_admin_chat_id()
-    if admin_id and str(message.chat.id) != str(admin_id):
+    admin_id = _admin_chat_for_tg_bot(message.bot)
+    uid = message.from_user.id if message.from_user else None
+    if not _telegram_admin_allowed(chat_id=message.chat.id, user_id=uid, admin_chat_id=admin_id):
         await message.answer("⛔ גישה נדחתה\\.")
         return
 
@@ -2743,7 +2820,8 @@ async def cmd_help(message: Message) -> None:
 async def cmd_killswitch(message: Message) -> None:
     """Emergency Kill Switch — stops all autonomous incubator projects instantly."""
     admin_id = _resolved_admin_chat_id()
-    if admin_id and str(message.chat.id) != str(admin_id):
+    uid = message.from_user.id if message.from_user else None
+    if not _telegram_admin_allowed(chat_id=message.chat.id, user_id=uid, admin_chat_id=admin_id):
         await message.answer("⛔ Unauthorized\\. Kill Switch is admin\\-only\\.")
         return
 
@@ -2861,7 +2939,8 @@ async def cmd_terminate_nexus_now(message: Message) -> None:
 async def cmd_godmode_on(message: Message) -> None:
     """Enable GOD MODE via Telegram."""
     admin_id = _resolved_admin_chat_id()
-    if admin_id and str(message.chat.id) != str(admin_id):
+    uid = message.from_user.id if message.from_user else None
+    if not _telegram_admin_allowed(chat_id=message.chat.id, user_id=uid, admin_chat_id=admin_id):
         await message.answer("⛔ Unauthorized\\.")
         return
     try:
@@ -2884,7 +2963,8 @@ async def cmd_godmode_on(message: Message) -> None:
 async def cmd_godmode_off(message: Message) -> None:
     """Disable GOD MODE via Telegram."""
     admin_id = _resolved_admin_chat_id()
-    if admin_id and str(message.chat.id) != str(admin_id):
+    uid = message.from_user.id if message.from_user else None
+    if not _telegram_admin_allowed(chat_id=message.chat.id, user_id=uid, admin_chat_id=admin_id):
         await message.answer("⛔ Unauthorized\\.")
         return
     try:
