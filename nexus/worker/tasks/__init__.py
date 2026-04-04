@@ -42,6 +42,11 @@ except Exception:
     pass
 
 try:
+    from nexus.worker.tasks import swarm as _swarm_factory  # noqa: F401 — community factory
+except Exception:
+    pass
+
+try:
     from nexus.worker.tasks import retention_monitor as _retention_monitor  # noqa: F401
 except Exception:
     pass

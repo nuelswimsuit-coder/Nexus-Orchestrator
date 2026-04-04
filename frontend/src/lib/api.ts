@@ -1360,3 +1360,60 @@ export function postManagementScan(body: ManagementScanBody): Promise<Management
     body: JSON.stringify(body),
   });
 }
+
+// ── Community Factory (swarm) ────────────────────────────────────────────────
+
+export interface CommunityFactoryStatusResponse {
+  phase: string | null;
+  state: Record<string, unknown>;
+  total_groups: number;
+  total_sessions: number;
+  owners_count: number;
+  members_count: number;
+  active_sessions: number;
+  messages_sent: number;
+  joins_ok: number;
+  joins_failed: number;
+  join_attempts: number;
+  flood_waits: number;
+  bans: number;
+  error_rate: number;
+  banned_count: number;
+  metrics: Record<string, unknown>;
+}
+
+export interface CommunityFactoryInitiateBody {
+  sessions_dir?: string;
+  phases?: string[];
+  dry_run?: boolean;
+  reset?: boolean;
+  max_joins_per_tick?: number;
+  converse_chain_limit?: number;
+}
+
+export interface CommunityFactoryInitiateResponse {
+  ok: boolean;
+  task_id?: string | null;
+  job_id?: string | null;
+  task_type?: string;
+  parameters?: Record<string, unknown>;
+  dry_run?: boolean;
+  total_sessions?: number;
+  owners?: number;
+  members?: number;
+  roles?: { owners: string[]; members: string[] };
+  sessions_dir?: string;
+}
+
+export function getCommunityFactoryStatus(): Promise<CommunityFactoryStatusResponse> {
+  return apiFetch<CommunityFactoryStatusResponse>("/api/swarm/community-factory/status");
+}
+
+export function postCommunityFactoryInitiate(
+  body: CommunityFactoryInitiateBody,
+): Promise<CommunityFactoryInitiateResponse> {
+  return apiFetch<CommunityFactoryInitiateResponse>("/api/swarm/initiate", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

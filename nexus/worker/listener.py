@@ -51,6 +51,7 @@ import nexus.worker.tasks.auto_scrape  # noqa: F401 — registers telegram.auto_
 import nexus.worker.tasks.scale  # noqa: F401 — registers nexus.scale_worker
 import nexus.worker.tasks.content_factory  # noqa: F401 — registers telegram.content_factory
 import nexus.worker.tasks.group_warmer  # noqa: F401 — registers swarm.group_warmer
+import nexus.worker.tasks.swarm  # noqa: F401 — registers swarm.community_factory.*
 import nexus.worker.tasks.incubator_spawn  # noqa: F401 — registers nexus.incubator.*
 import nexus.worker.tasks.account_mapper  # noqa: F401 — registers account_mapper.map
 import nexus.worker.tasks.health_check  # noqa: F401 — registers management.group_health_scan

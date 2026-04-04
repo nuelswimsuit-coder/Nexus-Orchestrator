@@ -5,12 +5,14 @@ Swarm Social Synthesis — dashboard API for community identity + group registry
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
 import structlog
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from nexus.api.dependencies import RedisDep
+from nexus.shared.config import settings
 
 log = structlog.get_logger(__name__)
 
@@ -492,3 +494,165 @@ async def stop_swarm(redis: RedisDep) -> dict[str, Any]:
     await redis.set(_ISRAELI_STATUS_KEY, "stopped")
     log.info("swarm_stop_requested")
     return {"ok": True, "status": "stopped"}
+
+
+# ── Community Factory (Israeli Swarm) — allocate / create / join / chat ───────
+
+FACTORY_ROLES_KEY = "nexus:swarm:factory:roles"
+FACTORY_GROUPS_KEY = "nexus:swarm:factory:groups"
+FACTORY_STATE_KEY = "nexus:swarm:factory:state"
+FACTORY_BANNED_KEY = "nexus:swarm:factory:banned"
+FACTORY_COOLDOWNS_KEY = "nexus:swarm:factory:cooldowns"
+FACTORY_METRICS_KEY = "nexus:swarm:factory:metrics"
+
+
+class CommunityFactoryInitiateBody(BaseModel):
+    sessions_dir: str = Field(default="", description="Directory of *.session files; default vault/sessions")
+    phases: list[str] = Field(
+        default_factory=lambda: ["allocate", "create", "join", "chat"],
+        description="allocate | create | join | chat",
+    )
+    dry_run: bool = Field(default=False, description="Compute roles only; do not write Redis or enqueue")
+    reset: bool = Field(default=False, description="Clear factory Redis keys before run")
+    max_joins_per_tick: int = Field(default=1, ge=1, le=50)
+    converse_chain_limit: int = Field(default=5000, ge=1, le=1_000_000)
+
+
+@router.post("/initiate", summary="Start Community Factory pipeline (enqueue bootstrap task)")
+async def community_factory_initiate(
+    body: CommunityFactoryInitiateBody,
+    redis: RedisDep,
+) -> dict[str, Any]:
+    """
+    Enqueues ``swarm.community_factory.bootstrap`` on the ARQ worker queue.
+    Requires a running worker with Telethon sessions and API credentials.
+    """
+    try:
+        import arq
+        from arq.connections import RedisSettings
+
+        from nexus.shared.schemas import TaskPayload
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=f"ARQ not available: {exc}") from exc
+
+    params: dict[str, Any] = {
+        "sessions_dir": body.sessions_dir.strip(),
+        "phases": [str(p).lower() for p in body.phases],
+        "dry_run": body.dry_run,
+        "reset": body.reset,
+        "max_joins_per_tick": body.max_joins_per_tick,
+        "converse_chain_limit": body.converse_chain_limit,
+    }
+
+    if body.dry_run:
+        # Run allocation logic synchronously via a lightweight inline import
+        from nexus.worker.tasks.swarm import _discover_session_bases, _resolve_sessions_dir, _split_roles
+
+        d = _resolve_sessions_dir(body.sessions_dir.strip() or None)
+        bases = _discover_session_bases(d)
+        owners, members = _split_roles(bases)
+        return {
+            "ok": True,
+            "dry_run": True,
+            "task_id": None,
+            "sessions_dir": str(d),
+            "total_sessions": len(bases),
+            "owners": len(owners),
+            "members": len(members),
+            "roles": {"owners": owners, "members": members},
+        }
+
+    task_id = str(uuid.uuid4())
+    task = TaskPayload(
+        task_id=task_id,
+        task_type="swarm.community_factory.bootstrap",
+        parameters=params,
+        project_id="community-factory",
+        priority=3,
+        job_expires_seconds=900,
+    )
+
+    try:
+        arq_pool = await arq.create_pool(
+            RedisSettings.from_dsn(settings.redis_url),
+            default_queue_name="nexus:tasks",
+        )
+        job_ttl = int(task.job_expires_seconds or 900)
+        job = await arq_pool.enqueue_job(
+            "execute_task",
+            task_payload=task.model_dump_for_wire(),
+            _job_id=task_id,
+            _queue_name="nexus:tasks",
+            _expires=job_ttl,
+        )
+        await arq_pool.aclose()
+    except Exception as exc:
+        log.error("community_factory_initiate_enqueue_failed", error=str(exc))
+        raise HTTPException(status_code=502, detail=f"Failed to enqueue task: {exc}") from exc
+
+    log.info("community_factory_initiate_enqueued", task_id=task_id, job_id=getattr(job, "job_id", None))
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "job_id": getattr(job, "job_id", None),
+        "task_type": task.task_type,
+        "parameters": {k: v for k, v in params.items() if k != "__redis__"},
+    }
+
+
+@router.get("/community-factory/status", summary="Community Factory metrics and state")
+async def community_factory_status(redis: RedisDep) -> dict[str, Any]:
+    roles_raw = await redis.get(FACTORY_ROLES_KEY)
+    groups_raw = await redis.get(FACTORY_GROUPS_KEY)
+    state_raw = await redis.get(FACTORY_STATE_KEY)
+    metrics_raw = await redis.get(FACTORY_METRICS_KEY)
+    banned_raw = await redis.get(FACTORY_BANNED_KEY)
+
+    def _loads(raw: str | bytes | None) -> Any:
+        if not raw:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    roles = _loads(roles_raw)
+    groups = _loads(groups_raw)
+    state = _loads(state_raw)
+    metrics = _loads(metrics_raw)
+    banned = _loads(banned_raw)
+
+    if not isinstance(metrics, dict):
+        metrics = {}
+
+    owners_n = len(roles.get("owners", [])) if isinstance(roles, dict) else 0
+    members_n = len(roles.get("members", [])) if isinstance(roles, dict) else 0
+    total_sessions = owners_n + members_n
+    groups_n = len(groups) if isinstance(groups, list) else 0
+
+    join_attempts = int(metrics.get("join_attempts", 0) or 0)
+    floods = int(metrics.get("flood_waits", 0) or 0)
+    bans = int(metrics.get("bans", 0) or 0)
+    err_denom = max(1, join_attempts)
+    error_rate = round((floods + bans) / err_denom, 6)
+
+    return {
+        "phase": (state or {}).get("phase") if isinstance(state, dict) else None,
+        "state": state if isinstance(state, dict) else {},
+        "total_groups": groups_n,
+        "total_sessions": total_sessions,
+        "owners_count": owners_n,
+        "members_count": members_n,
+        "active_sessions": int(metrics.get("active_sessions", total_sessions)),
+        "messages_sent": int(metrics.get("messages_sent", 0) or 0),
+        "joins_ok": int(metrics.get("joins_ok", 0) or 0),
+        "joins_failed": int(metrics.get("joins_failed", 0) or 0),
+        "join_attempts": join_attempts,
+        "flood_waits": floods,
+        "bans": bans,
+        "error_rate": error_rate,
+        "banned_count": len(banned) if isinstance(banned, list) else 0,
+        "metrics": metrics,
+    }
