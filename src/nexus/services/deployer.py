@@ -2218,6 +2218,10 @@ class DeployerService:
         if node_id == "worker_windows":
             return "Windows"
         if node_id == "worker_linux":
+            # Same Windows box often registers as worker_linux via WORKER_IP=127.0.0.1;
+            # Linux/bash paths would fail here — treat as Windows local deploy.
+            if sys.platform == "win32":
+                return "Windows"
             return "Linux"
         return "Windows" if sys.platform == "win32" else "Linux"
 
