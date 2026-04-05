@@ -50,6 +50,7 @@ import time
 import threading
 import zipfile
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import Any, Literal
 
 log = logging.getLogger("hatan.israeli_swarm")
@@ -689,9 +690,17 @@ async def _fetch_group_transcript_and_meta(
         msgs = await client.get_messages(target, limit=limit)
         lines: list[str] = []
         meta_newest_first: list[dict[str, Any]] = []
+        try:
+            from nexus.services.tg_message_text import telethon_display_text
+        except Exception:
+            telethon_display_text = None  # type: ignore[assignment,misc]
+
         for m in reversed([x for x in msgs if x]):
-            raw = (getattr(m, "message", None) or getattr(m, "raw_text", None) or "") or ""
-            text = str(raw).strip()
+            if telethon_display_text is not None:
+                text = telethon_display_text(m).strip()
+            else:
+                raw = (getattr(m, "message", None) or getattr(m, "raw_text", None) or "") or ""
+                text = str(raw).strip()
             if not text:
                 continue
             sid = int(getattr(m, "id", 0) or 0)
@@ -727,6 +736,8 @@ async def _generate_community_message(
     role: Literal["opener", "replier"] = "opener",
     anchor_preview: str | None = None,
     forced_reply_to: int | None = None,
+    news_digest: str = "",
+    anchor_headline: str = "",
 ) -> tuple[str, int | None]:
     """Short colloquial Hebrew line; reply_to is forced for replier role (Redis thread)."""
     angle = random.choice(_NEWS_ANGLES)
@@ -736,6 +747,9 @@ async def _generate_community_message(
     if not _GEMINI_KEY:
         text = random.choice(_FALLBACK_CHAT_LINES)
         return _finalize_swarm_llm_line(text), reply_out
+
+    nd = (news_digest or "").strip()
+    ah = (anchor_headline or "").strip()
 
     if role == "opener":
         user_obj: dict[str, Any] = {
@@ -759,6 +773,14 @@ async def _generate_community_message(
             "task": "תגובה קצרצרה בשרשור למה שכתוב למעלה.",
             "output_contract": 'החזר אך ורק JSON: {"text":"..."}',
         }
+    if nd:
+        user_obj["real_news_last_24h"] = nd[:6000]
+        user_obj["news_grounding_rule"] = (
+            "חובה להתייחס לכותרת אמיתית אחת מהרשימה (פרפרזה בסדר). "
+            "אל תמציא אירוע שלא מופיע שם."
+        )
+    if ah:
+        user_obj["preferred_anchor_headline"] = ah[:400]
     user_payload = json.dumps(user_obj, ensure_ascii=False)
 
     try:
@@ -1024,6 +1046,28 @@ class CommunityEngine:
                     if transcript or meta_nf:
                         break
 
+            news_digest_str = ""
+            news_anchor_str = ""
+            news_image_url: str | None = None
+            try:
+                from nexus.services.recent_news_digest import build_tick_news_bundle
+
+                _nb = await build_tick_news_bundle()
+                news_digest_str = _nb.digest_text
+                news_anchor_str = _nb.anchor_title
+                news_image_url = _nb.image_url
+            except Exception as exc:
+                log.debug("[COMMUNITY] news bundle skipped: %s", exc)
+
+            shared_photo: bytes | None = None
+            if news_image_url and random.random() < 0.5:
+                try:
+                    from nexus.services.recent_news_digest import download_image_bytes
+
+                    shared_photo = await download_image_bytes(news_image_url)
+                except Exception:
+                    shared_photo = None
+
             used_stems: set[str] = set()
             any_sent = False
             has_api = bool(
@@ -1072,6 +1116,8 @@ class CommunityEngine:
                     role="replier" if role == "replier" else "opener",
                     anchor_preview=anchor_txt,
                     forced_reply_to=forced_reply,
+                    news_digest=news_digest_str,
+                    anchor_headline=news_anchor_str,
                 )
                 log.info(
                     "[COMMUNITY] Bot %s role=%s → msg=%s reply_to=%s",
@@ -1082,8 +1128,15 @@ class CommunityEngine:
                 )
                 who_try = f"{sf} {sl}".strip() or phone
                 _rpush_israeli_attempt_sync(phone, who_try)
+                photo_bytes: bytes | None = None
+                if shared_photo and random.random() < 0.55:
+                    photo_bytes = shared_photo
                 sent, new_mid = await self._try_send_telethon(
-                    session_file, message, group_link, reply_to=reply_to
+                    session_file,
+                    message,
+                    group_link,
+                    reply_to=reply_to,
+                    photo_bytes=photo_bytes,
                 )
                 if sent:
                     any_sent = True
@@ -1114,6 +1167,7 @@ class CommunityEngine:
         group_link: str,
         *,
         reply_to: int | None = None,
+        photo_bytes: bytes | None = None,
     ) -> tuple[bool, int | None]:
         if not group_link:
             return False, None
@@ -1165,9 +1219,22 @@ class CommunityEngine:
                         target = await _ensure_swarm_target_entity(client, group_link)
                         async with client.action(target, "typing"):
                             await asyncio.sleep(random.uniform(2.0, 8.0))
-                        sent = await client.send_message(
-                            target, message, reply_to=reply_to if reply_to else None
-                        )
+                        if photo_bytes:
+                            try:
+                                sent = await client.send_file(
+                                    target,
+                                    file=BytesIO(photo_bytes),
+                                    caption=message[:1024],
+                                    reply_to=reply_to if reply_to else None,
+                                )
+                            except Exception:
+                                sent = await client.send_message(
+                                    target, message, reply_to=reply_to if reply_to else None
+                                )
+                        else:
+                            sent = await client.send_message(
+                                target, message, reply_to=reply_to if reply_to else None
+                            )
                         mid_raw = getattr(sent, "id", None)
                         mid = int(mid_raw) if mid_raw is not None else None
                         return True, mid

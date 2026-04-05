@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from nexus.services.session_vault import discover_meta_paths_from_session_sqlite, vault_candidate_roots
+from nexus.services.tg_message_text import telethon_display_text, telethon_media_kind_and_hint
 
 
 def first_authorized_session_path_stem() -> str | None:
@@ -117,23 +118,22 @@ async def fetch_group_messages_telethon(
             mid = int(getattr(m, "id", 0) or 0)
             if not mid:
                 continue
-            raw = (getattr(m, "message", None) or getattr(m, "raw_text", None) or "") or ""
-            text = str(raw).strip()
-            if not text:
-                text = "[מדיה / ללא טקסט]"
+            text = telethon_display_text(m)
+            media_kind, _hint = telethon_media_kind_and_hint(m)
             dt = getattr(m, "date", None)
             ts_iso = dt.isoformat() if dt else ""
             sender = await _sender_label(m)
-            out.append(
-                {
-                    "message_id": mid,
-                    "date": ts_iso,
-                    "text": text,
-                    "sender_label": sender,
-                    "out": bool(getattr(m, "out", False)),
-                    "reply_to_msg_id": _reply_to_id(m),
-                }
-            )
+            row: dict[str, Any] = {
+                "message_id": mid,
+                "date": ts_iso,
+                "text": text,
+                "sender_label": sender,
+                "out": bool(getattr(m, "out", False)),
+                "reply_to_msg_id": _reply_to_id(m),
+            }
+            if media_kind:
+                row["media_kind"] = media_kind
+            out.append(row)
         return out
     finally:
         await client.disconnect()

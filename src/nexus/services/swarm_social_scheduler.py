@@ -74,6 +74,7 @@ class SwarmSocialScheduler:
             return
 
         now = datetime.now(timezone.utc)
+        pending: list[Any] = []
         for group_key, cfg in groups.items():
             if not isinstance(cfg, dict):
                 continue
@@ -104,27 +105,42 @@ class SwarmSocialScheduler:
                 except Exception:
                     pass
 
-            lock_key = f"{SWARM_LOCK_PREFIX}{group_key}"
-            got = await self._redis.set(lock_key, "1", nx=True, ex=900)
-            if not got:
-                continue
+            pending.append(self._dispatch_group_warmer(group_key, cfg, int(gid), sessions))
 
-            task = TaskPayload(
-                task_type="swarm.group_warmer",
-                parameters={
-                    "group_key": str(group_key),
-                    "group_id": int(gid),
-                    "sessions": sessions,
-                    "timezone": str(cfg.get("timezone", "UTC") or "UTC"),
-                    "action": "tick",
-                    "group_title": str(cfg.get("group_title", "") or ""),
-                    "engagement_mode": str(cfg.get("engagement_mode", "") or ""),
-                },
-                project_id="swarm-social",
-            )
-            try:
-                job_id = await self._dispatcher.dispatch(task)
-                log.info("swarm_group_warmer_dispatched", group_key=group_key, job_id=job_id)
-            except Exception as exc:
-                log.error("swarm_group_warmer_dispatch_failed", group_key=group_key, error=str(exc))
-                await self._redis.delete(lock_key)
+        if pending:
+            await asyncio.gather(*pending)
+
+    async def _dispatch_group_warmer(
+        self,
+        group_key: str,
+        cfg: dict[str, Any],
+        gid: int,
+        sessions: list[Any],
+    ) -> None:
+        lock_key = f"{SWARM_LOCK_PREFIX}{group_key}"
+        got = await self._redis.set(lock_key, "1", nx=True, ex=900)
+        if not got:
+            return
+
+        task = TaskPayload(
+            task_type="swarm.group_warmer",
+            parameters={
+                "group_key": str(group_key),
+                "group_id": gid,
+                "sessions": sessions,
+                "timezone": str(cfg.get("timezone", "UTC") or "UTC"),
+                "action": "tick",
+                "group_title": str(cfg.get("group_title", "") or ""),
+                "engagement_mode": str(cfg.get("engagement_mode", "") or ""),
+                "turns_per_tick": cfg.get("turns_per_tick"),
+                "intra_turn_min_s": cfg.get("intra_turn_min_s"),
+                "intra_turn_max_s": cfg.get("intra_turn_max_s"),
+            },
+            project_id="swarm-social",
+        )
+        try:
+            job_id = await self._dispatcher.dispatch(task)
+            log.info("swarm_group_warmer_dispatched", group_key=group_key, job_id=job_id)
+        except Exception as exc:
+            log.error("swarm_group_warmer_dispatch_failed", group_key=group_key, error=str(exc))
+            await self._redis.delete(lock_key)

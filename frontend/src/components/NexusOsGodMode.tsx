@@ -6974,7 +6974,25 @@ interface TgUiMessage {
   sender_label: string;
   out: boolean;
   reply_to_msg_id?: number | null;
+  /** From API when message is mainly media (photo, video, etc.) */
+  media_kind?: string | null;
 }
+
+const TG_MEDIA_KIND_HE: Record<string, string> = {
+  photo: "תמונה",
+  image: "תמונה",
+  video: "סרטון",
+  voice: "קול",
+  audio: "אודיו",
+  file: "קובץ",
+  document: "מסמך",
+  geo: "מיקום",
+  contact: "איש קשר",
+  poll: "סקר",
+  webpage: "קישור",
+  unsupported: "מדיה",
+  unknown: "מדיה",
+};
 
 interface WarmerDashRow {
   group_key: string;
@@ -7199,6 +7217,14 @@ function SwarmTelegramChatPanel(props: {
                 <span className={`text-[10px] font-black uppercase ${m.out ? "text-cyan-300/90" : "text-slate-400"}`}>
                   {m.sender_label}
                 </span>
+                {m.media_kind && (
+                  <span
+                    className="text-[9px] px-1.5 py-0.5 rounded-md bg-slate-950/80 border border-slate-700/60 text-slate-400 font-bold shrink-0"
+                    dir="rtl"
+                  >
+                    {TG_MEDIA_KIND_HE[m.media_kind] ?? m.media_kind}
+                  </span>
+                )}
                 {m.date && (
                   <span className="text-[9px] text-slate-500 font-mono mr-auto" dir="ltr">
                     {(() => {

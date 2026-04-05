@@ -8,10 +8,12 @@ activity waves are applied when computing ``next_run_at`` (see scheduler).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import random
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import Any
 
 import structlog
@@ -22,6 +24,8 @@ from nexus.modules.community_vibe import (
     compose_chatter_line,
     refresh_emerging_topic,
 )
+from nexus.services.recent_news_digest import TickNewsBundle, build_tick_news_bundle, download_image_bytes
+from nexus.services.tg_message_text import telethon_display_text
 from nexus.worker.task_registry import registry
 
 log = structlog.get_logger(__name__)
@@ -35,16 +39,44 @@ DAY_START_H = 7
 DAY_END_H = 22
 
 
+def _norm_engagement_mode(mode: str) -> str:
+    return (mode or "").strip().lower().replace("-", "_")
+
+
 def _next_interval_seconds(tz_name: str, engagement_mode: str = "") -> int:
     """
-    Default: random 5–45 minutes, scaled by local day/night activity wave.
+    Time until the *next scheduler tick* for this group (after all turns in the
+    current job complete).
 
-    ``high`` / ``high_engagement`` / ``high-engagement``: AI chatter every 10–20 minutes
-    (fixed band, ignores day/night stretch).
+    Defaults are shorter than legacy (roughly 1–20+ min, day/night scaled).
+    ``slow`` / ``organic`` / ``legacy``: old ~5–45+ minute bands.
+
+    ``max`` / ``maximum`` / ``aggressive``: ~1.5–4 min between bursts.
+    ``conversation`` / ``burst`` / ``multi`` / ``simultaneous``: ~2–6 min.
+    ``high`` / ``high_engagement``: ~4–9 min (fixed, no day/night stretch).
     """
-    em = (engagement_mode or "").strip().lower().replace("-", "_")
+    em = _norm_engagement_mode(engagement_mode)
+    if em in ("max", "maximum", "aggressive"):
+        return random.randint(90, 240)
+    if em in ("conversation", "burst", "multi", "simultaneous"):
+        return random.randint(120, 360)
     if em in ("high", "high_engagement"):
-        return random.randint(600, 1200)
+        return random.randint(240, 540)
+    if em in ("slow", "organic", "legacy"):
+        try:
+            from zoneinfo import ZoneInfo
+
+            tz = ZoneInfo(tz_name.strip() or "UTC")
+        except Exception:
+            tz = timezone.utc
+        now = datetime.now(tz)
+        hour = now.hour
+        base = random.randint(300, 2700)
+        if DAY_START_H <= hour < DAY_END_H:
+            mult = random.uniform(0.5, 1.0)
+        else:
+            mult = random.uniform(1.1, 2.5)
+        return max(120, int(base * mult))
     try:
         from zoneinfo import ZoneInfo
 
@@ -53,12 +85,41 @@ def _next_interval_seconds(tz_name: str, engagement_mode: str = "") -> int:
         tz = timezone.utc
     now = datetime.now(tz)
     hour = now.hour
-    base = random.randint(300, 2700)
+    base = random.randint(90, 1200)
     if DAY_START_H <= hour < DAY_END_H:
-        mult = random.uniform(0.5, 1.0)
+        mult = random.uniform(0.55, 1.0)
     else:
-        mult = random.uniform(1.1, 2.5)
-    return max(120, int(base * mult))
+        mult = random.uniform(1.0, 1.75)
+    return max(60, int(base * mult))
+
+
+def _effective_turns_per_tick(parameters: dict[str, Any], engagement_mode: str, n_personas: int) -> int:
+    raw = parameters.get("turns_per_tick")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            return max(1, min(8, int(raw)))
+        except (TypeError, ValueError):
+            pass
+    em = _norm_engagement_mode(engagement_mode)
+    if em in ("conversation", "burst", "multi", "simultaneous"):
+        return max(2, min(5, n_personas)) if n_personas > 1 else 1
+    return 1
+
+
+def _intra_turn_delay_bounds(engagement_mode: str, parameters: dict[str, Any]) -> tuple[float, float]:
+    lo_raw, hi_raw = parameters.get("intra_turn_min_s"), parameters.get("intra_turn_max_s")
+    if lo_raw is not None and hi_raw is not None:
+        try:
+            lo, hi = float(lo_raw), float(hi_raw)
+            lo = max(5.0, lo)
+            hi = max(lo, hi)
+            return (lo, hi)
+        except (TypeError, ValueError):
+            pass
+    em = _norm_engagement_mode(engagement_mode)
+    if em in ("conversation", "burst", "multi", "simultaneous", "max", "maximum", "aggressive"):
+        return (12.0, 55.0)
+    return (20.0, 85.0)
 
 
 def _iso_now() -> str:
@@ -117,7 +178,7 @@ def _format_transcript_from_messages(
         if getattr(m, "sender", None):
             uname = getattr(m.sender, "username", "") or ""
         label = f"@{uname}" if uname else f"user:{uid}"
-        text = (getattr(m, "message", None) or "").replace("\n", " ").strip()
+        text = telethon_display_text(m).replace("\n", " ").strip()
         if not text:
             continue
         lines.append(f"{label}: {text}")
@@ -151,8 +212,9 @@ async def _try_edit_group_about(client: Any, entity: Any, about: str) -> bool:
 @registry.register("swarm.group_warmer")
 async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
     """
-    One tick: optionally reclassify (24h), refresh topic, send one AI line from a
-    rotating session, persist ``next_run_at`` for the master scheduler.
+    One tick: optionally reclassify (24h), refresh topic, then one or more AI lines
+    from rotating sessions (multi-turn “conversation” when configured), persist
+    ``next_run_at`` for the master scheduler.
 
     Parameters
     ----------
@@ -162,6 +224,9 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
     timezone     : IANA tz for activity waves (default UTC)
     action       : "tick" | "classify_only"
     group_title  : optional hint when entity title missing
+    engagement_mode : e.g. ``conversation`` (multi-speaker default), ``max``, ``high``, ``slow``
+    turns_per_tick : optional int 1–8; overrides auto turn count for conversation modes
+    intra_turn_min_s / intra_turn_max_s : delay between lines in the same job (seconds)
     """
     redis = parameters.get("__redis__")
     group_key = str(parameters.get("group_key", "")).strip()
@@ -275,52 +340,107 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                 hooks = [hooks]
             hooks = [str(h) for h in hooks][:5]
 
-            rot = int(state.get("rotation_index", 0)) % len(personas)
-            state["rotation_index"] = (rot + 1) % len(personas)
-            speaker = personas[rot]
-            session_path = str(speaker.get("session_path") or accounts[rot].get("session_path", "")).strip()
-            if not session_path:
-                session_path = reader_path
-
             handles = []
             for p in personas:
                 u = str(p.get("username", "")).lstrip("@")
                 if u:
                     handles.append(u)
-            sp_u = str(speaker.get("username", "")).lstrip("@")
-            other_handles = [h for h in handles if h != sp_u]
 
-            line = await compose_chatter_line(
-                api_key,
-                emerging_identity=state["emerging_identity"],
-                topic=topic,
-                hooks=hooks,
-                transcript=transcript,
-                speaker=speaker,
-                other_handles=[f"@{h}" for h in other_handles],
-                message_index_map=id_map,
-            )
-            text = str(line.get("text", "")).strip()
-            reply_id = line.get("reply_to_id")
-            if reply_id is not None:
-                try:
-                    reply_id = int(reply_id)
-                except Exception:
-                    reply_id = None
-            valid_ids = {m["id"] for m in id_map}
-            if reply_id not in valid_ids:
-                reply_id = None
+            turns = _effective_turns_per_tick(parameters, engagement_mode, len(personas))
+            intra_lo, intra_hi = _intra_turn_delay_bounds(engagement_mode, parameters)
+            try:
+                news_bundle = await build_tick_news_bundle()
+            except Exception as exc:
+                log.warning("warmer_news_bundle_failed", error=str(exc))
+                news_bundle = TickNewsBundle(
+                    digest_text="",
+                    anchor_title="",
+                    anchor_link="",
+                    image_url=None,
+                )
+            message_ids: list[int | None] = []
+            sent_media = False
 
-            message_id = None
-            if text and action == "tick":
-                async with TelegramClient(session_path, api_id, api_hash) as poster:
-                    post_entity = await poster.get_entity(int(group_id))
-                    sent = await poster.send_message(
-                        post_entity,
-                        text,
-                        reply_to=reply_id if reply_id else None,
+            for turn_i in range(turns):
+                if turn_i > 0:
+                    await asyncio.sleep(random.uniform(intra_lo, intra_hi))
+                    msgs = await client.get_messages(entity, limit=45)
+                    transcript, id_map, tail_text = _format_transcript_from_messages(
+                        [m for m in msgs if m],
                     )
-                    message_id = int(sent.id) if sent else None
+
+                rot = int(state.get("rotation_index", 0)) % len(personas)
+                state["rotation_index"] = (rot + 1) % len(personas)
+                speaker = personas[rot]
+                session_path = str(speaker.get("session_path") or accounts[rot].get("session_path", "")).strip()
+                if not session_path:
+                    session_path = reader_path
+
+                sp_u = str(speaker.get("username", "")).lstrip("@")
+                other_handles = [h for h in handles if h != sp_u]
+
+                nd = news_bundle.digest_text if turn_i == 0 else ""
+                ah = news_bundle.anchor_title if turn_i == 0 else ""
+                line = await compose_chatter_line(
+                    api_key,
+                    emerging_identity=state["emerging_identity"],
+                    topic=topic,
+                    hooks=hooks,
+                    transcript=transcript,
+                    speaker=speaker,
+                    other_handles=[f"@{h}" for h in other_handles],
+                    message_index_map=id_map,
+                    news_digest=nd,
+                    anchor_headline=ah,
+                )
+                text = str(line.get("text", "")).strip()
+                reply_id = line.get("reply_to_id")
+                if reply_id is not None:
+                    try:
+                        reply_id = int(reply_id)
+                    except Exception:
+                        reply_id = None
+                valid_ids = {m["id"] for m in id_map}
+                if reply_id not in valid_ids:
+                    reply_id = None
+
+                message_id: int | None = None
+                if text and action == "tick":
+                    photo_bytes: bytes | None = None
+                    if turn_i == 0 and news_bundle.image_url and random.random() < 0.55:
+                        photo_bytes = await download_image_bytes(news_bundle.image_url)
+                    async with TelegramClient(session_path, api_id, api_hash) as poster:
+                        post_entity = await poster.get_entity(int(group_id))
+                        try:
+                            if photo_bytes:
+                                sent = await poster.send_file(
+                                    post_entity,
+                                    file=BytesIO(photo_bytes),
+                                    caption=text[:1024],
+                                    reply_to=reply_id if reply_id else None,
+                                )
+                                sent_media = True
+                            else:
+                                sent = await poster.send_message(
+                                    post_entity,
+                                    text,
+                                    reply_to=reply_id if reply_id else None,
+                                )
+                            message_id = int(sent.id) if sent else None
+                        except Exception as exc:
+                            log.warning("warmer_send_failed", error=str(exc))
+                            try:
+                                sent = await poster.send_message(
+                                    post_entity,
+                                    text,
+                                    reply_to=reply_id if reply_id else None,
+                                )
+                                message_id = int(sent.id) if sent else None
+                            except Exception as exc2:
+                                log.warning("warmer_send_fallback_failed", error=str(exc2))
+                message_ids.append(message_id)
+
+            message_id = message_ids[0] if message_ids else None
 
             delay_s = _next_interval_seconds(tz_name, engagement_mode)
             next_run = datetime.now(timezone.utc).timestamp() + delay_s
@@ -333,9 +453,13 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                 "status": "completed",
                 "phase": "tick",
                 "message_id": message_id,
+                "message_ids": message_ids,
+                "turns": turns,
                 "speaker_archetype": speaker.get("archetype"),
                 "next_delay_s": delay_s,
                 "topic": topic,
+                "sent_media": sent_media,
+                "news_anchor": news_bundle.anchor_title[:200] if news_bundle.anchor_title else "",
             }
     finally:
         await release_lock()

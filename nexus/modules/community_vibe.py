@@ -192,6 +192,8 @@ async def compose_chatter_line(
     speaker: dict[str, Any],
     other_handles: list[str],
     message_index_map: list[dict[str, Any]],
+    news_digest: str = "",
+    anchor_headline: str = "",
 ) -> dict[str, Any]:
     """
     Produce one chat line with optional reply and @mentions.
@@ -202,21 +204,29 @@ async def compose_chatter_line(
         "You write one authentic Telegram group message. "
         "Use natural emoji and slang matching the speaker's voice. "
         "Respond to others when it fits; @mention usernames from the list (with @). "
+        "If news_from_last_24h is non-empty, you MUST react to one specific real headline "
+        "from that list (paraphrase OK, stay grounded in what is written there). "
+        "Do not invent fake breaking stories that are not implied by the digest. "
+        "Keep it short like a real chat line (often <= 280 chars). "
         "Output ONLY JSON: {\"text\":\"message\",\"reply_to_id\":null or integer,"
         "\"mention_usernames\":[\"without@\"]}"
     )
-    user = json.dumps(
-        {
-            "emerging_identity": emerging_identity,
-            "discussion_topic": topic,
-            "in_universe_hooks": hooks,
-            "recent_transcript": transcript[-6000:],
-            "speaker_persona": speaker,
-            "other_participant_handles": other_handles,
-            "message_ids_newest_first": message_index_map[:25],
-        },
-        ensure_ascii=False,
-    )
+    user_obj: dict[str, Any] = {
+        "emerging_identity": emerging_identity,
+        "discussion_topic": topic,
+        "in_universe_hooks": hooks,
+        "recent_transcript": transcript[-6000:],
+        "speaker_persona": speaker,
+        "other_participant_handles": other_handles,
+        "message_ids_newest_first": message_index_map[:25],
+    }
+    nd = (news_digest or "").strip()
+    if nd:
+        user_obj["news_from_last_24h"] = nd[:8000]
+    ah = (anchor_headline or "").strip()
+    if ah:
+        user_obj["preferred_anchor_headline"] = ah[:500]
+    user = json.dumps(user_obj, ensure_ascii=False)
     try:
         return await _gemini_json(api_key, sys_prompt, user, temperature=0.92, max_tokens=256)
     except Exception as exc:
