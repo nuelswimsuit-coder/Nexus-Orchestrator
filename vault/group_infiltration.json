@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-04-05T15:24:17Z",
+  "updated_at": "2026-04-05T21:30:50Z",
   "groups": [
     {
       "id": "g1",
@@ -35,23 +35,25 @@
       "id": "g479fc1b9",
       "name_he": "דגכ עדגכעדג יעגכי בהננ",
       "is_private": true,
-      "in_search": false,
+      "in_search": true,
       "joined_at": "2026-04-05T10:40:59Z",
       "telegram_link": null,
       "notes": null,
       "created_on_telegram": false,
-      "initial_warmup_days": 1
+      "initial_warmup_days": 1,
+      "force_searched_at": "2026-04-05T21:30:49Z"
     },
     {
       "id": "ga3ec43d6",
       "name_he": "hgfdg dfsg יעכג יכע יעכג",
       "is_private": true,
-      "in_search": false,
+      "in_search": true,
       "joined_at": "2026-04-05T15:24:17Z",
       "telegram_link": null,
       "notes": null,
       "created_on_telegram": false,
-      "initial_warmup_days": 1
+      "initial_warmup_days": 1,
+      "force_searched_at": "2026-04-05T21:30:50Z"
     }
   ]
 }

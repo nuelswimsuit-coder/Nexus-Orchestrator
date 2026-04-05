@@ -49,7 +49,22 @@
       "ts": "2026-04-05T16:59:06.690711+00:00",
       "level": "info",
       "message": "מפעל הקבוצות הופעל: דגל automation_armed=true נשמר. לולאת GroupFactory ברקע רצה בתהליך המאסטר (אם פעיל)."
+    },
+    {
+      "ts": "2026-04-05T21:30:44.201632+00:00",
+      "level": "info",
+      "message": "מפעל הקבוצות הופעל: דגל automation_armed=true נשמר. לולאת GroupFactory ברקע רצה בתהליך המאסטר (אם פעיל)."
+    },
+    {
+      "ts": "2026-04-05T21:30:49.274268+00:00",
+      "level": "info",
+      "message": "Force Search: סומן in_search — דגכ עדגכעדג יעגכי בהננ"
+    },
+    {
+      "ts": "2026-04-05T21:30:50.108907+00:00",
+      "level": "info",
+      "message": "Force Search: סומן in_search — hgfdg dfsg יעכג יכע יעכג"
     }
   ],
-  "updated_at": "2026-04-05T16:59:06.690711+00:00"
+  "updated_at": "2026-04-05T21:30:50.108907+00:00"
 }
