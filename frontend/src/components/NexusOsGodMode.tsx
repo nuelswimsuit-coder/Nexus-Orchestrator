@@ -50,6 +50,8 @@ import {
   Line,
   ReferenceLine,
 } from "recharts";
+import DOMPurify from "isomorphic-dompurify";
+import { marked } from "marked";
 import { API_BASE, apiSseBase, apiWsBase, triggerPanic, swrFetcher } from "@/lib/api";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -6910,7 +6912,97 @@ function DecisionNode({
   );
 }
 
-// ── Live Swarm View ──────────────────────────────────────────────────────────
+// ── Live Swarm View — rich text + terminal styling ───────────────────────────
+
+let _swarmPurifyHooksInstalled = false;
+function _ensureSwarmPurifyHooks() {
+  if (_swarmPurifyHooksInstalled) return;
+  _swarmPurifyHooksInstalled = true;
+  DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    if (node.tagName === "A" && node instanceof Element) {
+      const href = node.getAttribute("href") ?? "";
+      if (/^\s*javascript:/i.test(href) || /^\s*data:/i.test(href)) {
+        node.removeAttribute("href");
+        return;
+      }
+      node.setAttribute("target", "_blank");
+      node.setAttribute("rel", "noopener noreferrer");
+    }
+  });
+}
+
+function _looksLikeMarkup(s: string): boolean {
+  return /<[a-z][\s\S]*>/i.test(s);
+}
+
+function _swarmRichTextToSafeHtml(raw: string): string {
+  _ensureSwarmPurifyHooks();
+  const t = raw ?? "";
+  if (!t.trim()) return "";
+  let dirty: string;
+  if (_looksLikeMarkup(t)) {
+    dirty = t;
+  } else {
+    try {
+      dirty = marked.parse(t, { async: false, breaks: true, gfm: true }) as string;
+    } catch {
+      return "";
+    }
+  }
+  return DOMPurify.sanitize(dirty, {
+    ALLOWED_TAGS: [
+      "a",
+      "b",
+      "strong",
+      "i",
+      "em",
+      "u",
+      "code",
+      "pre",
+      "br",
+      "p",
+      "span",
+      "ul",
+      "ol",
+      "li",
+      "blockquote",
+    ],
+    ALLOWED_ATTR: ["href", "title", "target", "rel", "class"],
+  });
+}
+
+function SwarmRichMessageBody({
+  text,
+  className = "",
+}: {
+  text: string;
+  className?: string;
+}) {
+  const html = useMemo(() => _swarmRichTextToSafeHtml(text), [text]);
+  if (!html.trim()) {
+    return <span className="text-slate-500">—</span>;
+  }
+  return (
+    <div
+      className={`swarm-rich-message whitespace-pre-wrap break-words [overflow-wrap:anywhere] [&_a]:text-cyan-400 [&_a]:underline [&_a]:underline-offset-2 [&_a]:decoration-cyan-500/50 [&_a:hover]:text-cyan-300 [&_p]:my-1 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_code]:rounded [&_code]:bg-slate-950/90 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-purple-200/95 [&_code]:text-[0.92em] [&_pre]:my-1 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:border [&_pre]:border-slate-700/60 [&_pre]:bg-slate-950/80 [&_pre]:p-2 [&_ul]:my-1 [&_ol]:my-1 ${className}`}
+      // eslint-disable-next-line react/no-danger
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
+function _swarmLogLineClass(line: string): string {
+  if (/(\[שגיאה\])|(\[error\])/i.test(line)) {
+    return "text-rose-400/95 [text-shadow:0_0_10px_rgba(251,113,133,0.35)]";
+  }
+  if (/(\[הצלחה\])|(\[success\])/i.test(line)) {
+    return "text-emerald-400 [text-shadow:0_0_10px_rgba(52,211,153,0.45)]";
+  }
+  if (/\[מנוע\]/.test(line)) {
+    return "text-purple-400/95 [text-shadow:0_0_10px_rgba(192,132,252,0.35)]";
+  }
+  return "text-slate-400/90";
+}
 
 interface SwarmBot {
   phone: string;
@@ -7082,8 +7174,8 @@ function SwarmBotCard({ bot }: { bot: SwarmBot }) {
         )}
       </div>
       {bot.last_message && (
-        <div className="text-[11px] text-slate-500 line-clamp-2 leading-relaxed">
-          {bot.last_message}
+        <div className="max-h-[3.25rem] overflow-hidden text-[11px] leading-relaxed">
+          <SwarmRichMessageBody text={bot.last_message} className="text-slate-400" />
         </div>
       )}
       <div className="flex items-center justify-between mt-auto">
@@ -7207,26 +7299,33 @@ function SwarmTelegramChatPanel(props: {
             className={`flex w-full ${m.out ? "justify-start" : "justify-end"}`}
           >
             <div
-              className={`max-w-[min(92%,28rem)] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed shadow-md ${
+              className={`max-w-[min(92%,28rem)] rounded-[1.15rem] px-3.5 py-2.5 shadow-[0_8px_28px_rgba(0,0,0,0.35)] ring-1 backdrop-blur-sm ${
                 m.out
-                  ? "bg-cyan-950/50 border border-cyan-600/35 text-cyan-50 rounded-br-md"
-                  : "bg-slate-800/90 border border-slate-600/40 text-slate-100 rounded-bl-md"
+                  ? "bg-gradient-to-br from-cyan-950/55 to-slate-950/40 border border-cyan-500/30 text-cyan-50 rounded-br-md ring-cyan-400/15"
+                  : "bg-gradient-to-br from-slate-800/95 to-slate-900/80 border border-slate-600/40 text-slate-100 rounded-bl-md ring-white/[0.06]"
               }`}
             >
-              <div className="flex items-center gap-2 mb-1 flex-wrap">
-                <span className={`text-[10px] font-black uppercase ${m.out ? "text-cyan-300/90" : "text-slate-400"}`}>
-                  {m.sender_label}
-                </span>
-                {m.media_kind && (
+              <div className="flex items-start justify-between gap-2 gap-y-1 mb-1.5">
+                <div className="flex flex-wrap items-center gap-1.5 min-w-0">
                   <span
-                    className="text-[9px] px-1.5 py-0.5 rounded-md bg-slate-950/80 border border-slate-700/60 text-slate-400 font-bold shrink-0"
-                    dir="rtl"
+                    className={`text-[11px] font-black tracking-tight ${m.out ? "text-cyan-300" : "text-fuchsia-300 [text-shadow:0_0_12px_rgba(217,70,239,0.35)]"}`}
                   >
-                    {TG_MEDIA_KIND_HE[m.media_kind] ?? m.media_kind}
+                    {m.sender_label}
                   </span>
-                )}
+                  {m.media_kind && (
+                    <span
+                      className="text-[9px] px-1.5 py-0.5 rounded-md bg-slate-950/80 border border-slate-700/60 text-slate-400 font-bold shrink-0"
+                      dir="rtl"
+                    >
+                      {TG_MEDIA_KIND_HE[m.media_kind] ?? m.media_kind}
+                    </span>
+                  )}
+                </div>
                 {m.date && (
-                  <span className="text-[9px] text-slate-500 font-mono mr-auto" dir="ltr">
+                  <span
+                    className="text-[9px] text-slate-500 font-[family-name:var(--font-jetbrains)] shrink-0 tabular-nums pt-0.5"
+                    dir="ltr"
+                  >
                     {(() => {
                       try {
                         return new Date(m.date).toLocaleString("he-IL", {
@@ -7242,9 +7341,15 @@ function SwarmTelegramChatPanel(props: {
                   </span>
                 )}
               </div>
-              <div className="text-[13px] whitespace-pre-wrap break-words">{m.text}</div>
+              <SwarmRichMessageBody
+                text={m.text}
+                className={`text-[13px] ${m.out ? "text-cyan-50/95" : "text-slate-100/95"}`}
+              />
               {m.reply_to_msg_id != null && m.reply_to_msg_id > 0 && (
-                <div className="mt-1.5 text-[9px] text-slate-500 font-mono" dir="ltr">
+                <div
+                  className="mt-1.5 text-[9px] text-slate-500 font-[family-name:var(--font-jetbrains)]"
+                  dir="ltr"
+                >
                   ↩ reply to #{m.reply_to_msg_id}
                 </div>
               )}
@@ -7278,6 +7383,7 @@ function LiveSwarmView() {
   const [tgErr, setTgErr] = useState<string | null>(null);
   const [tgLoading, setTgLoading] = useState(false);
   const [tgCached, setTgCached] = useState(false);
+  const liveFeedEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     return () => {
@@ -7506,8 +7612,13 @@ function LiveSwarmView() {
   );
   const warmerNextSec = _useRemainingSeconds(warmerRow?.next_run_at ?? null);
 
+  useEffect(() => {
+    if (swarmTab !== "feed") return;
+    liveFeedEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [recentMessages, swarmTab]);
+
   return (
-    <div className="space-y-6" dir="rtl">
+    <div className="space-y-4" dir="rtl">
       {feed?.redis_degraded && (
         <div className="sticky top-0 z-20 rounded-2xl border border-rose-500/50 bg-rose-950/50 px-4 py-3 text-[12px] text-rose-100/95 leading-relaxed shadow-lg shadow-black/20 backdrop-blur-sm space-y-2">
           <span className="font-black text-rose-400 uppercase tracking-widest text-[10px] block mb-1">
@@ -7551,9 +7662,11 @@ function LiveSwarmView() {
         </div>
         {swarmRunning && (
           <div className="mr-auto flex flex-col items-end gap-1">
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl">
-              <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
-              <span className="text-[11px] font-black text-emerald-400 uppercase tracking-widest">LIVE</span>
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-emerald-400/40 bg-emerald-500/[0.12] shadow-[0_0_20px_rgba(52,211,153,0.35),inset_0_0_12px_rgba(52,211,153,0.08)]">
+              <div className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.95)] animate-pulse" />
+              <span className="text-[11px] font-black uppercase tracking-[0.2em] text-emerald-300 [text-shadow:0_0_14px_rgba(52,211,153,0.75)]">
+                LIVE
+              </span>
             </div>
             {engineHb.text && (
               <div
@@ -7568,46 +7681,69 @@ function LiveSwarmView() {
         )}
       </div>
 
-      {/* Stats row */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
-          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">
+      {/* Stats row — tactical grid + metric glow */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">
+        <div className="rounded-2xl border border-purple-500/25 bg-gradient-to-br from-slate-950/80 to-purple-950/20 p-3 sm:p-3.5 shadow-[0_0_28px_rgba(168,85,247,0.12)]">
+          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1">
             סשני טלגרם מסריקה (‎.session)
           </div>
-          <div className="text-2xl font-black text-purple-400">
+          <div className="text-2xl font-black tabular-nums text-purple-300 [text-shadow:0_0_18px_rgba(192,132,252,0.45)]">
             {feed?.tg_session_files_on_disk ?? feed?.total_sessions ?? 0}
           </div>
         </div>
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
-          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">בקבוצה</div>
-          <div className="text-2xl font-black text-indigo-400">{feed?.total_in_group ?? 0}</div>
+        <div className="rounded-2xl border border-indigo-500/20 bg-gradient-to-br from-slate-950/80 to-indigo-950/15 p-3 sm:p-3.5 shadow-[0_0_24px_rgba(99,102,241,0.1)]">
+          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1">בקבוצה</div>
+          <div className="text-2xl font-black tabular-nums text-indigo-300 [text-shadow:0_0_16px_rgba(129,140,248,0.4)]">
+            {feed?.total_in_group ?? 0}
+          </div>
         </div>
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
-          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">בוטים פעילים</div>
-          <div className="text-2xl font-black text-cyan-400">{feed?.active_talkers ?? 0}</div>
+        <div className="rounded-2xl border border-cyan-500/25 bg-gradient-to-br from-slate-950/80 to-cyan-950/15 p-3 sm:p-3.5 shadow-[0_0_24px_rgba(34,211,238,0.12)]">
+          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1">בוטים פעילים</div>
+          <div className="text-2xl font-black tabular-nums text-cyan-300 [text-shadow:0_0_16px_rgba(34,211,238,0.4)]">
+            {feed?.active_talkers ?? 0}
+          </div>
         </div>
-        <div className="bg-slate-900/60 border border-emerald-500/30 rounded-2xl p-4">
-          <div className="text-[9px] text-emerald-500/70 font-bold uppercase tracking-widest mb-1.5">✅ Verified</div>
-          <div className="text-2xl font-black text-emerald-400">{feed?.verified_count ?? 0}</div>
+        <div className="rounded-2xl border border-emerald-500/35 bg-gradient-to-br from-slate-950/80 to-emerald-950/20 p-3 sm:p-3.5 shadow-[0_0_22px_rgba(52,211,153,0.14)]">
+          <div className="text-[9px] text-emerald-500/75 font-bold uppercase tracking-widest mb-1">✅ Verified</div>
+          <div className="text-2xl font-black tabular-nums text-emerald-300 [text-shadow:0_0_18px_rgba(52,211,153,0.45)]">
+            {feed?.verified_count ?? 0}
+          </div>
         </div>
-        <div className="bg-slate-900/60 border border-amber-500/30 rounded-2xl p-4">
-          <div className="text-[9px] text-amber-500/70 font-bold uppercase tracking-widest mb-1.5">✍️ Written</div>
-          <div className="text-2xl font-black text-amber-400">{feed?.written_count ?? 0}</div>
+        <div className="rounded-2xl border border-amber-500/35 bg-gradient-to-br from-slate-950/80 to-amber-950/15 p-3 sm:p-3.5 shadow-[0_0_22px_rgba(251,191,36,0.12)]">
+          <div className="text-[9px] text-amber-500/75 font-bold uppercase tracking-widest mb-1">✍️ Written</div>
+          <div className="text-2xl font-black tabular-nums text-amber-300 [text-shadow:0_0_16px_rgba(251,191,36,0.4)]">
+            {feed?.written_count ?? 0}
+          </div>
         </div>
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
-          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">הודעה אחרונה</div>
-          <div className="text-xs font-black text-slate-300 truncate">{feed?.last_message || "—"}</div>
-          {(feed?.last_sender_display_name || feed?.last_sender_phone) && (
-            <div className="text-[10px] text-purple-400/90 font-bold truncate mt-0.5">
-              {feed?.last_sender_display_name || feed?.last_sender_phone}
+        <div className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-950/90 to-slate-900/50 p-3 sm:p-3.5 col-span-2 sm:col-span-1 lg:col-span-1 min-h-0">
+          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1">הודעה אחרונה</div>
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              {(feed?.last_sender_display_name || feed?.last_sender_phone) && (
+                <div className="text-[10px] font-black text-fuchsia-400 [text-shadow:0_0_10px_rgba(232,121,249,0.35)] truncate mb-1">
+                  {feed?.last_sender_display_name || feed?.last_sender_phone}
+                </div>
+              )}
+              <div className="max-h-[4.5rem] overflow-hidden text-[11px] leading-snug">
+                {feed?.last_message ? (
+                  <SwarmRichMessageBody text={feed.last_message} className="text-slate-300" />
+                ) : (
+                  <span className="text-slate-500 font-bold">—</span>
+                )}
+              </div>
             </div>
-          )}
-          <div className="text-[9px] text-slate-600 mt-1">{lastMsgTime}</div>
+            <span
+              className="text-[9px] text-slate-500 font-[family-name:var(--font-jetbrains)] shrink-0 tabular-nums pt-0.5"
+              dir="ltr"
+            >
+              {lastMsgTime}
+            </span>
+          </div>
         </div>
       </div>
 
       {/* Control panel */}
-      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 space-y-4">
+      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 sm:p-5 space-y-3">
         <div className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">הפעלת נחיל</div>
         <div className="flex gap-3">
           <input
@@ -7676,7 +7812,7 @@ function LiveSwarmView() {
       </div>
 
       {/* Telegram-style live chat snapshot (Israeli + Warmer) */}
-      <div className="rounded-2xl border border-slate-800/80 bg-slate-950/50 p-5 space-y-4">
+      <div className="rounded-2xl border border-slate-800/80 bg-slate-950/50 p-4 space-y-3">
         <div className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
           צ׳אט קבוצה (לייב · סנופשוט טלגרם)
         </div>

@@ -8,6 +8,7 @@ Redis namespace: nexus:swarm:factory:*
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -39,11 +40,17 @@ KEY_BANNED = "nexus:swarm:factory:banned"
 KEY_COOLDOWNS = "nexus:swarm:factory:cooldowns"
 KEY_METRICS = "nexus:swarm:factory:metrics"
 KEY_PROFILE_GATE = "nexus:swarm:factory:profile_gate"
+KEY_RECENT_OUTGOING = "nexus:swarm:factory:recent_outgoing"
 THREAD_KEY_PREFIX = "nexus:swarm:factory:thread:"
 ACTIVE_TOPIC_KEY_PREFIX = "nexus:swarm:factory:active_topic:"
 THREAD_ID_CAP = 5
 RECENT_GROUP_MSG_CAP = 15
 RECENT_GROUP_MSG_MAX_CHARS = 180
+RECENT_OUTGOING_CAP = 200
+RECENT_OUTGOING_PROMPT_LINES = 40
+
+_RICH_ACTION_TYPES = frozenset({"text", "text_with_emoji", "sticker", "gif", "image"})
+_DEFAULT_STICKER_PACKS = ["AnimatedEmojies", "HotCherry"]
 
 # When Redis is unavailable, avoid re-running profile checks every tick (Latin names stay "non_israeli" per heuristic).
 _factory_profile_verified_local: set[str] = set()

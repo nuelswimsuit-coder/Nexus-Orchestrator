@@ -346,6 +346,9 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
             if (deploySettledRef.current) return;
             deploySettledRef.current = true;
             clearInterval(statusPoll);
+            // #region agent log
+            fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "58e788" }, body: JSON.stringify({ sessionId: "58e788", location: "Header.tsx:statusPoll:settle", message: "header poll terminal", data: { ok, failed, streamsSize: streamsRef.current.size }, timestamp: Date.now(), hypothesisId: "H1", runId: "pre-fix" }) }).catch(() => {});
+            // #endregion
             if (streamsRef.current.size > 0) {
               streamsRef.current.forEach(s => s.close());
               streamsRef.current.clear();
