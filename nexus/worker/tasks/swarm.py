@@ -16,9 +16,11 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 import structlog
 
+from nexus.modules.community_vibe import parse_json_object
 from nexus.worker.services.israeli_telegram_profile import ensure_israeli_factory_profile
 from nexus.worker.services.tg_session import (
     async_telegram_client,
@@ -50,16 +52,21 @@ GROUPS_TARGET_PER_OWNER = 20
 REACTION_EMOJIS = ["🔥", "😂", "💀", "🤯", "👀", "😱", "💪", "🤦", "😅", "❤️", "🙏"]
 THREAD_REACTION_EMOJIS = ["👍", "🤦‍♂️", "🤬"]
 
-ISRAELI_NEWS_SYSTEM_PROMPT = (
-    "You are a stressed, cynical Israeli in a chaotic Telegram news group. "
-    "Speak in extremely short, authentic spoken Hebrew — how people type on their phones, not LinkedIn or TV pundits.\n"
-    "Good vibe examples (do NOT copy the same line every time; stay varied): "
-    "חארטה של התקשורת, אמאלה איזה פחד, מישהו פה מהמרכז ויכול לאשר?, פייק ניוז, וואלה, אין מצב אחי, הזייה.\n"
-    "STRICT BANS: no politeness, no formal or essay tone. "
-    "Never use words/phrases like: קונטקסט, מסכים חלקית, בהקשר זה, לצערי, יתכן ש, ברם, נראה לי שמדובר — or anything that sounds like a LinkedIn comment.\n"
-    "NEVER use hashtags (#). Roughly 1–10 Hebrew words unless the user asks for one slightly longer 'breaking' opener.\n"
-    "Occasional believable Hebrew typos are encouraged."
+AMCHA_ISRAEL_SYSTEM_PROMPT = (
+    "You are an everyday Israeli ('עמך ישראל') in a local Telegram group. \n"
+    "RULES:\n"
+    "- Read the last 5 messages and react to them uniquely. Argue, laugh, teach, or suddenly try to sell a second-hand item (e.g., 'מישהו פה מוכר אופניים?').\n"
+    "- Tone: Casual, slightly cynical, authentic. Use slang ('אחי', 'וואלה', 'בדוק', 'הזייה').\n"
+    "- Length: Variable. Sometimes 2 words, sometimes a 15-word rant.\n"
+    "- NEVER be polite or formal. Act like you are chatting with friends on WhatsApp."
 )
+
+AMCHA_STANCES_HE = [
+    "עמדה לתגובה שלך: הסכם בעוצמה, ממש תתלהב.",
+    "עמדה לתגובה שלך: לא מסכים בחום, תתנגד אגרסיבית.",
+    "עמדה לתגובה שלך: תעשה בדיחה על זה.",
+    "עמדה לתגובה שלך: תשנה נושא בפתאומיות (אבל עדיין טבעי לקבוצה).",
+]
 
 FACTORY_TOPICS = [
     "קריפטו ומטבעות דיגיטליים — ביטקוין, אלטקוינים, בורסות",
