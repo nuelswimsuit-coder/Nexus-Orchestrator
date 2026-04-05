@@ -615,7 +615,20 @@ class CommunityEngine:
             session_path = str(session_file.with_suffix(""))
 
             async def _run_client() -> bool:
-                async with TelegramClient(session_path, api_id, api_hash) as client:
+                # Telethon's ``async with TelegramClient`` calls ``start()``, which prompts
+                # for phone/OTP via ``input()`` — headless israeli-swarm has no TTY → EOFError.
+                client = TelegramClient(session_path, api_id, api_hash)
+                await client.connect()
+                try:
+                    if not await client.is_user_authorized():
+                        detail = (
+                            f"{session_file.stem}: סשן טלגרם לא מחובר או פג תוקף — "
+                            "לא ניתן לבקש קוד SMS/סיסמה ברקע (אין טרמינל). "
+                            "התחבר מחדש אינטראקטיבית (למשל דרך כלי סשן) והחלף את ‎.session ב־vault."
+                        )
+                        log.warning("[COMMUNITY] %s", detail)
+                        _publish_engine_error(detail)
+                        return False
                     try:
                         await client.get_entity(group_link)
                     except Exception:
@@ -630,6 +643,8 @@ class CommunityEngine:
 
                     await client.send_message(group_link, message)
                     return True
+                finally:
+                    await client.disconnect()
 
             try:
                 return await asyncio.wait_for(_run_client(), timeout=timeout_s)

@@ -1340,8 +1340,10 @@ function GroupFactoryView() {
     if (g.invite_link) inviteByTitle.set(g.title, g.invite_link);
   }
 
-  // רק קבוצות מ־API (managed_groups + קישור + בעלות סשן); מצב חימום מ־vault לפי id
-  const rows = dbGroups.map((g) => {
+  const dbIdSet = new Set(dbGroups.map((g) => String(g.id)));
+
+  // שורות מ־telefix.db (managed_groups + סינון factory בשרת) + מצב חימום מ־vault לפי id
+  const rowsFromDb = dbGroups.map((g) => {
     const warmup = warmupGroups.find((w) => w.id === String(g.id));
     const wd = warmup?.warmup_days ?? 0;
     const inSearch = warmup?.in_search ?? false;
@@ -1356,6 +1358,26 @@ function GroupFactoryView() {
       ownerSession: g.owner_session ?? null,
     };
   });
+
+  // קבוצות שנוצרו מ"צור קבוצה חדשה" נשמרות ב־vault בלבד עד סנכרון ל־managed_groups — הצג גם אותן
+  const rowsFromVaultOnly = warmupGroups
+    .filter((w) => !dbIdSet.has(String(w.id)))
+    .map((w) => {
+      const wd = w.warmup_days ?? 0;
+      const inSearch = w.in_search ?? false;
+      return {
+        id: String(w.id),
+        name: w.name_he,
+        invite: pickGroupInviteLink(undefined, w, inviteByTitle),
+        days: wd,
+        status: inSearch ? "READY" : wd >= 14 ? "FAILED_RETRY" : "WARMING",
+        search: inSearch,
+        isPrivate: false,
+        ownerSession: null as string | null,
+      };
+    });
+
+  const rows = [...rowsFromDb, ...rowsFromVaultOnly];
 
   const totalReady = rows.filter((r) => r.status === "READY").length;
   const totalWarming = rows.filter((r) => r.status === "WARMING").length;
@@ -1378,9 +1400,9 @@ function GroupFactoryView() {
               מפעל קבוצות - חדירה לחיפוש
             </h3>
             <p className="text-slate-500 text-sm mt-1">
-              מוצגות רק קבוצות מ־managed_groups ב־telefix.db עם קישור t.me, שבעלותן (
-              <span className="text-slate-400">owner_session</span>) תואמת סשן טלגרם (מסריקת הצי) או טלפון בטבלת{" "}
-              <span className="text-slate-400">sessions</span>. חימום ואינדוקס: vault/group_infiltration.json
+              קבוצות מ־<span className="text-slate-400">managed_groups</span> ב־telefix.db (עם קישור t.me ובעלות סשן מזוהה){" "}
+              <span className="text-slate-600">וגם</span> קבוצות ממעקב ה־vault (
+              <span className="text-slate-400">group_infiltration.json</span>) שלא הועתקו עדיין ל־DB. חימום ו־in_search מה־vault.
             </p>
             {scheduleSettings?.automation_armed && (
               <p className="text-emerald-500/90 text-xs font-bold mt-2 flex items-center gap-2">
@@ -1525,8 +1547,9 @@ function GroupFactoryView() {
               <Users size={40} className="mx-auto mb-3 opacity-30" />
               <div className="font-bold text-slate-400">אין קבוצות אמיתיות להצגה</div>
               <div className="text-sm mt-1 max-w-xl mx-auto leading-relaxed">
-                נדרשים: קישור ציבורי (t.me), רשומה ב־managed_groups, ו־owner_session שתואם לסשן טלגרם מהסריקה או לטלפון
-                בטבלת sessions. אפשר ליצור קבוצה חדשה מהמפעל או לסנכרן את הבוט.
+                אין קבוצות ב־telefix.db שעוברות את סינון המפעל, ואין רשומות במעקב ה־vault. ליצירה מהירה השתמש ב&quot;צור קבוצה חדשה&quot;
+                (נשמר ב־vault). לרשימה מלאה מ־DB: ודא <span className="text-slate-500">managed_groups</span> + קישור t.me +{" "}
+                <span className="text-slate-500">owner_session</span> שתואם לסשן מהסריקה או לטלפון ב־sessions.
               </div>
               {factoryGroupsHint && (
                 <div className="text-xs text-amber-500/90 mt-4 max-w-lg mx-auto leading-relaxed font-semibold">
