@@ -11,10 +11,11 @@ import asyncio
 import json
 import os
 import random
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 
@@ -34,10 +35,42 @@ KEY_STATE = "nexus:swarm:factory:state"
 KEY_BANNED = "nexus:swarm:factory:banned"
 KEY_COOLDOWNS = "nexus:swarm:factory:cooldowns"
 KEY_METRICS = "nexus:swarm:factory:metrics"
+KEY_PROFILE_GATE = "nexus:swarm:factory:profile_gate"
+THREAD_KEY_PREFIX = "nexus:swarm:factory:thread:"
+THREAD_ID_CAP = 5
 
 GROUPS_TARGET_PER_OWNER = 20
 REACTION_EMOJIS = ["🔥", "😂", "💀", "🤯", "👀", "😱", "💪", "🤦", "😅", "❤️", "🙏"]
 REACTION_TL_EMOJIS = ["👍", "❤️", "🔥", "🙏", "😂", "👀"]
+THREAD_REACTION_EMOJIS = ["👍", "🤦‍♂️", "🤬"]
+
+ISRAELI_DISPLAY_NAMES = [
+    "Yossi",
+    "Avi C.",
+    "Rotem",
+    "Shir",
+    "Kobi_88",
+    "David",
+    "Noam",
+    "Tomer",
+    "Lior_77",
+    "Maya S.",
+    "Guy",
+    "Dana",
+    "Itai",
+    "Omer",
+    "Nir",
+]
+
+ISRAELI_NEWS_SYSTEM_PROMPT = (
+    "You are an Israeli Telegram user in a local news/politics group. \n"
+    "RULES:\n"
+    "1. Write in extremely casual, modern colloquial Hebrew slang (e.g., 'אמאלה', 'הזייה', 'אין מצב', 'אחי', 'וואלה', 'פיגוע פלילי'). \n"
+    "2. NEVER use hashtags (#). Real people don't use them in chats.\n"
+    "3. Keep it short (1-10 words). People type fast on phones.\n"
+    "4. Occasional minor Hebrew typos are encouraged to simulate human typing.\n"
+    "5. Do not sound poetic, formal, or like a translated article. Express cynical, stressed, or typical Israeli attitudes towards news."
+)
 
 FACTORY_TOPICS = [
     "קריפטו ומטבעות דיגיטליים — ביטקוין, אלטקוינים, בורסות",
@@ -47,13 +80,6 @@ FACTORY_TOPICS = [
     "קניות אונליין — משלוחים, מבצעים, אתרים",
     "יד שנייה — יד2, מרקטפלייס, טיפים לקנייה",
 ]
-
-_GEMINI_SYSTEM = (
-    "אתה משתתף בקבוצת טלגרם ישראלית. כתוב הודעה קצרה אחת (עד שני משפטים) בעברית ישראלית "
-    "מודרנית: סלנג (וואלה, אחי, מטורף, חזק), לפעמים קיצור או טעות הקלדה קטנה, לא רשמי. "
-    "התאם את הטון לנושא שהמשתמש נותן. אל תזכיר שאתה בוט. החזר רק JSON: {\"text\":\"ההודעה\"}"
-)
-
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[3]
