@@ -7165,30 +7165,6 @@ function LiveSwarmView() {
       const data = (await res.json()) as SwarmFeedData;
       setFeed(data);
       setSwarmRunning(data.is_running ?? false);
-      // #region agent log
-      fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Debug-Session-Id": "fd2e46",
-        },
-        body: JSON.stringify({
-          sessionId: "fd2e46",
-          location: "NexusOsGodMode.tsx:LiveSwarmView:fetchFeed",
-          message: "live_feed_client",
-          hypothesisId: "H1-H5",
-          data: {
-            ok: res.ok,
-            is_running: data.is_running,
-            engine_last_seen_ts: data.engine_last_seen_ts ?? null,
-            redis_degraded: data.redis_degraded ?? null,
-            total_sessions: data.total_sessions ?? null,
-            tg_session_files_on_disk: data.tg_session_files_on_disk ?? null,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
     } catch {
       /* ignore */
     }

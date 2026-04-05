@@ -8,6 +8,7 @@ on disk (vault); Redis keys under ``nexus:sessions:*`` are optional fleet cache 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -19,11 +20,16 @@ from typing import Any
 from urllib.parse import urlparse
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from nexus.api.dependencies import RedisDep
 from nexus.shared.config import settings
 from nexus.shared import redis_util
+from nexus.services.tg_group_snapshot import (
+    fetch_group_messages_cached,
+    fetch_group_messages_telethon,
+    first_authorized_session_path_stem,
+)
 from nexus.services.tg_session_disk import (
     count_live_telethon_session_files,
     inventory_rows_for_local_machine,
@@ -90,6 +96,14 @@ async def swarm_dashboard(redis: RedisDep) -> dict[str, Any]:
         st_raw = await redis.get(f"{SWARM_STATE_PREFIX}{key}")
         comm = json.loads(comm_raw) if comm_raw else {}
         st = json.loads(st_raw) if st_raw else {}
+        personas = st.get("personas") if isinstance(st.get("personas"), list) else []
+        try:
+            rot = int(st.get("rotation_index", 0) or 0)
+        except (TypeError, ValueError):
+            rot = 0
+        next_speaker: dict[str, Any] | None = None
+        if personas:
+            next_speaker = personas[rot % len(personas)]
         row = {
             "group_key": key,
             "config": cfg,
@@ -100,6 +114,10 @@ async def swarm_dashboard(redis: RedisDep) -> dict[str, Any]:
             "next_run_at": st.get("next_run_at"),
             "last_topic": st.get("last_topic"),
             "last_classify_at": st.get("last_classify_at"),
+            "personas": personas,
+            "rotation_index": rot,
+            "next_speaker": next_speaker,
+            "transcript_tail_preview": (str(st.get("transcript_tail") or ""))[:2000],
         }
         out.append(row)
 
@@ -514,16 +532,6 @@ async def _ensure_israeli_swarm_process(request: Request, redis: Any) -> None:
         log.warning("israeli_swarm_auto_spawn_failed", error=str(exc))
         return
     log.info("israeli_swarm_auto_spawned_from_api", script=str(script))
-    # #region agent log
-    _agent_debug_fd2e46(
-        {
-            "location": "nexus/api/routers/swarm.py:_ensure_israeli_swarm_process",
-            "message": "auto_spawned_israeli_swarm",
-            "hypothesisId": "H1-fix",
-            "data": {"script": str(script)},
-        }
-    )
-    # #endregion
 
 
 def _safe_redis_url_for_ui(url: str) -> str:
@@ -727,8 +735,6 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
         )
 
     engine_last_seen_ts = 0.0
-    hb_parse_exc_name = ""
-    hb_txt = ""
     if heartbeat_raw:
         hb_txt = (
             heartbeat_raw.decode("utf-8", errors="replace")
@@ -740,10 +746,8 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
                 engine_last_seen_ts = datetime.fromisoformat(hb_txt).replace(
                     tzinfo=timezone.utc
                 ).timestamp()
-            except Exception as _hb_exc:
-                hb_parse_exc_name = type(_hb_exc).__name__
-
-    engine_last_seen_ts_before_degraded = engine_last_seen_ts
+            except Exception:
+                pass
 
     redis_degraded = _api_redis_is_degraded(request)
     broker_reachable: bool | None = None
@@ -767,36 +771,6 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
         engine_last_seen_ts = 0.0
         _banner = _SWARM_DEGRADED_MSG
         last_engine_error = f"{_banner} | {last_engine_error}" if last_engine_error else _banner
-
-    # #region agent log
-    _ru = urlparse(settings.redis_url)
-    _status_norm = (
-        (status_raw or "").strip().lower()
-        if isinstance(status_raw, str)
-        else str(status_raw or b"").strip().lower()
-    )
-    _agent_debug_fd2e46(
-        {
-            "location": "nexus/api/routers/swarm.py:get_live_feed",
-            "message": "live_feed_snapshot",
-            "hypothesisId": "H1-H5",
-            "data": {
-                "redis_degraded": redis_degraded,
-                "is_running": is_running,
-                "status_normalized": _status_norm[:24],
-                "heartbeat_key_nonempty": bool(heartbeat_raw),
-                "heartbeat_sample": hb_txt[:100],
-                "engine_ts_parsed": engine_last_seen_ts,
-                "engine_ts_before_degraded": engine_last_seen_ts_before_degraded,
-                "hb_parse_exc": hb_parse_exc_name,
-                "redis_host": _ru.hostname,
-                "redis_db_index": _redis_db_index_for_log(),
-                "total_sessions": total_sessions,
-                "tg_session_files_on_disk": tg_session_files_on_disk,
-            },
-        }
-    )
-    # #endregion
 
     return {
         "total_in_group": len(bots),
@@ -899,6 +873,123 @@ async def stop_swarm(request: Request, redis: RedisDep) -> dict[str, Any]:
         topic="api_stop",
     )
     return {"ok": True, "status": "stopped"}
+
+
+def _telegram_api_creds() -> tuple[int, str]:
+    api_id = int(os.getenv("TELEGRAM_API_ID", "0") or os.getenv("TELEFIX_API_ID", "0") or "0")
+    api_hash = (os.getenv("TELEGRAM_API_HASH", "") or os.getenv("TELEFIX_API_HASH", "")).strip()
+    return api_id, api_hash
+
+
+@router.get("/israeli/group-messages", summary="Recent Telegram messages for Live AI Swarm target group")
+async def israeli_group_messages(
+    request: Request,
+    redis: RedisDep,
+    limit: int = Query(50, ge=1, le=100),
+) -> dict[str, Any]:
+    if _api_redis_is_degraded(request):
+        raise HTTPException(status_code=503, detail=_SWARM_DEGRADED_MSG)
+    from src.nexus.services.israeli_swarm import effective_swarm_group_link
+
+    group = (effective_swarm_group_link() or "").strip()
+    if not group:
+        raise HTTPException(
+            status_code=400,
+            detail="No swarm target group — set via Start Swarm in UI or SWARM_GROUP_LINK / Redis target key",
+        )
+    api_id, api_hash = _telegram_api_creds()
+    if not api_id or not api_hash:
+        raise HTTPException(
+            status_code=503,
+            detail="Missing TELEGRAM_API_ID/TELEGRAM_API_HASH or TELEFIX_* in environment",
+        )
+    stem = first_authorized_session_path_stem()
+    if not stem:
+        raise HTTPException(
+            status_code=400,
+            detail="No authorized Telethon session pair in vault (need .session + valid .json with api_id/api_hash)",
+        )
+    h = hashlib.sha256(group.encode("utf-8")).hexdigest()[:16]
+    cache_key = f"nexus:swarm:tg_snap:israeli:{h}:{limit}"
+
+    async def _produce() -> list[dict[str, Any]]:
+        return await fetch_group_messages_telethon(stem, api_id, api_hash, group, limit=limit)
+
+    messages, cached = await fetch_group_messages_cached(
+        redis,
+        cache_key=cache_key,
+        ttl_seconds=25,
+        producer=_produce,
+    )
+    return {
+        "ok": True,
+        "target_preview": group[:80] + ("…" if len(group) > 80 else ""),
+        "messages": messages,
+        "cached": cached,
+        "count": len(messages),
+    }
+
+
+@router.get(
+    "/warmer/{group_key}/group-messages",
+    summary="Recent Telegram messages for a registered warmer group",
+)
+async def warmer_group_messages(
+    group_key: str,
+    request: Request,
+    redis: RedisDep,
+    limit: int = Query(50, ge=1, le=100),
+) -> dict[str, Any]:
+    if _api_redis_is_degraded(request):
+        raise HTTPException(status_code=503, detail=_SWARM_DEGRADED_MSG)
+    raw = await redis.get(SWARM_GROUPS_KEY)
+    groups: dict[str, Any] = {}
+    if raw:
+        try:
+            txt = raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
+            groups = json.loads(txt)
+        except Exception:
+            groups = {}
+    if not isinstance(groups, dict) or group_key not in groups:
+        raise HTTPException(status_code=404, detail=f"Unknown warmer group_key: {group_key}")
+    cfg = groups[group_key]
+    if not isinstance(cfg, dict):
+        raise HTTPException(status_code=400, detail="Invalid group registry entry")
+    try:
+        gid = int(cfg.get("group_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Warmer group config missing valid group_id")
+    sessions = list(cfg.get("sessions") or [])
+    if not sessions:
+        raise HTTPException(status_code=400, detail="Warmer group has no sessions")
+    reader = str((sessions[0] or {}).get("session_path", "") or "").strip()
+    if not reader:
+        raise HTTPException(status_code=400, detail="session_path empty for first session")
+    api_id, api_hash = _telegram_api_creds()
+    if not api_id or not api_hash:
+        raise HTTPException(
+            status_code=503,
+            detail="Missing TELEGRAM_API_ID/TELEGRAM_API_HASH or TELEFIX_* in environment",
+        )
+    cache_key = f"nexus:swarm:tg_snap:warmer:{group_key}:{limit}"
+
+    async def _produce() -> list[dict[str, Any]]:
+        return await fetch_group_messages_telethon(reader, api_id, api_hash, gid, limit=limit)
+
+    messages, cached = await fetch_group_messages_cached(
+        redis,
+        cache_key=cache_key,
+        ttl_seconds=25,
+        producer=_produce,
+    )
+    return {
+        "ok": True,
+        "group_key": group_key,
+        "group_id": gid,
+        "messages": messages,
+        "cached": cached,
+        "count": len(messages),
+    }
 
 
 # ── Community Factory (Israeli Swarm) — allocate / create / join / chat ───────

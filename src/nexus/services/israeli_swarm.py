@@ -55,8 +55,6 @@ from typing import Any, Literal
 
 log = logging.getLogger("hatan.israeli_swarm")
 _HEARTBEAT_REDIS_WARNED = False
-_AGENT_FD2E46_HB_OK = False
-_AGENT_FD2E46_HB_FAIL = False
 
 # ── Path resolution ────────────────────────────────────────────────────────────
 
@@ -211,78 +209,16 @@ def _redis_sync_get(key: str) -> str | None:
 
 
 def _redis_sync_set(key: str, value: str, ex: int = 7200) -> None:
-    global _HEARTBEAT_REDIS_WARNED, _AGENT_FD2E46_HB_OK, _AGENT_FD2E46_HB_FAIL
+    global _HEARTBEAT_REDIS_WARNED
     try:
         import redis as redis_sync
 
         r = redis_sync.Redis.from_url(_REDIS_URL, decode_responses=True)
         try:
             r.set(key, value[:2000], ex=ex)
-            if key == _ISRAELI_HEARTBEAT_KEY and not _AGENT_FD2E46_HB_OK:
-                _AGENT_FD2E46_HB_OK = True
-                # #region agent log
-                try:
-                    import json as _json
-                    from pathlib import Path as _Path
-                    from urllib.parse import urlparse as _urlparse
-
-                    _root = _Path(__file__).resolve().parents[3]
-                    _host = _urlparse(_REDIS_URL).hostname or "?"
-                    _line = (
-                        _json.dumps(
-                            {
-                                "sessionId": "fd2e46",
-                                "timestamp": int(time.time() * 1000),
-                                "location": "israeli_swarm.py:_redis_sync_set",
-                                "message": "heartbeat_redis_set_ok",
-                                "hypothesisId": "H1-H2",
-                                "data": {"redis_host": _host, "key": key},
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-                    with open(_root / "debug-fd2e46.log", "a", encoding="utf-8") as _df:
-                        _df.write(_line)
-                except Exception:
-                    pass
-                # #endregion
         finally:
             r.close()
     except Exception as exc:
-        if key == _ISRAELI_HEARTBEAT_KEY and not _AGENT_FD2E46_HB_FAIL:
-            _AGENT_FD2E46_HB_FAIL = True
-            # #region agent log
-            try:
-                import json as _json
-                from pathlib import Path as _Path
-                from urllib.parse import urlparse as _urlparse
-
-                _root = _Path(__file__).resolve().parents[3]
-                _host = _urlparse(_REDIS_URL).hostname or "?"
-                _line = (
-                    _json.dumps(
-                        {
-                            "sessionId": "fd2e46",
-                            "timestamp": int(time.time() * 1000),
-                            "location": "israeli_swarm.py:_redis_sync_set",
-                            "message": "heartbeat_redis_set_fail",
-                            "hypothesisId": "H2",
-                            "data": {
-                                "redis_host": _host,
-                                "exc_type": type(exc).__name__,
-                                "exc_detail": str(exc)[:240],
-                            },
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-                with open(_root / "debug-fd2e46.log", "a", encoding="utf-8") as _df:
-                    _df.write(_line)
-            except Exception:
-                pass
-            # #endregion
         if key == _ISRAELI_HEARTBEAT_KEY and not _HEARTBEAT_REDIS_WARNED:
             log.warning(
                 "[COMMUNITY] Redis heartbeat write failed — broker unreachable or wrong REDIS_URL "
