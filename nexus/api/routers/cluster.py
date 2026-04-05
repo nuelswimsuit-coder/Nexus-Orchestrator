@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from time import perf_counter
+from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Request
@@ -45,6 +47,7 @@ from nexus.api.schemas import (
 )
 from nexus.api.services.telefix_bridge import get_fleet_group_assets
 from nexus.shared.config import settings
+from nexus.shared.redis_util import LINUX_FLEET_REDIS_HOST, redis_host_is_loopback
 from nexus.shared.fleet_redis import (
     FLEET_SCAN_CHANNEL,
     FLEET_SCAN_STATUS_KEY,
@@ -155,6 +158,34 @@ def _node_health_status(online: bool, probe_ms: float) -> str:
     return "ok"
 
 
+def _normalize_lan_ip(ip: str) -> str:
+    return (ip or "").strip().lower().strip("[]")
+
+
+def _fleet_master_lan_ips_for_labels() -> set[str]:
+    """
+    LAN IPs that identify the fleet master host for /cluster/health display_label.
+
+    Includes the documented Linux fleet stub (10.100.102.8), non-loopback
+    MASTER_IP / REDIS_HOST, and the hostname from settings.redis_url so a
+    hybrid Windows master (Redis on [::1] but heartbeat local_ip is LAN) still
+    shows the master label.
+    """
+    ips: set[str] = {_normalize_lan_ip(LINUX_FLEET_REDIS_HOST)}
+    for key in ("MASTER_IP", "REDIS_HOST"):
+        raw = (os.environ.get(key) or "").strip()
+        if raw and not redis_host_is_loopback(raw):
+            ips.add(_normalize_lan_ip(raw))
+    try:
+        host = urlparse(settings.redis_url).hostname
+        if host and not redis_host_is_loopback(host):
+            ips.add(_normalize_lan_ip(host))
+    except Exception:
+        pass
+    ips.discard("")
+    return ips
+
+
 async def _load_target_heatmap(redis: Redis) -> list[TargetHeatCell]:
     cells = [
         TargetHeatCell(id="btc_regulation", label="BTC Regulation", intensity=12.0),
@@ -227,12 +258,14 @@ async def get_cluster_health(redis: RedisDep) -> ClusterHealthResponse:
 
     parsed.sort(key=lambda t: (t[0].role != NodeRole.MASTER, t[0].node_id))
 
+    master_lan_ips = _fleet_master_lan_ips_for_labels()
     nodes_out: list[ClusterHealthNode] = []
     for hb, st, probe_ms in parsed:
         is_master = hb.role == NodeRole.MASTER
         os_lower = (hb.os_info or "").lower()
         is_windows = "windows" in os_lower
-        if is_master:
+        on_master_host = _normalize_lan_ip(hb.local_ip or "") in master_lan_ips
+        if is_master or on_master_host:
             label = "מחשב מאסטר עובד ומנהל בהתאמה"
         else:
             label = "לפטופ ווינדוס עובד" if is_windows else "לפטופ לינוקס עובד"

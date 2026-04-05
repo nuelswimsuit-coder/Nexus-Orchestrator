@@ -294,6 +294,90 @@ def effective_swarm_group_link() -> str:
     return (_GROUP_LINK or "").strip()
 
 
+def _swarm_private_invite_hash(link: str) -> str | None:
+    """Invite hash for ``t.me/+…`` / ``joinchat/…`` / leading ``+`` only."""
+    s = (link or "").strip()
+    if "/+" in s:
+        h = s.split("/+")[-1].split("?")[0].strip()
+        return h or None
+    low = s.lower()
+    if "joinchat/" in low:
+        h = s.split("joinchat/")[-1].split("?")[0].strip()
+        return h or None
+    if s.startswith("+"):
+        h = s[1:].strip()
+        return h or None
+    return None
+
+
+def _swarm_public_username_from_link(link: str) -> str | None:
+    """Public supergroup username from ``https://t.me/name`` (not ``+`` invites)."""
+    s = link.strip()
+    for prefix in (
+        "https://t.me/",
+        "http://t.me/",
+        "https://telegram.me/",
+        "http://telegram.me/",
+    ):
+        if len(s) >= len(prefix) and s[: len(prefix)].lower() == prefix.lower():
+            rest = s[len(prefix) :].split("/")[0].split("?")[0].strip()
+            if not rest or rest.startswith("+") or "joinchat" in rest.lower():
+                return None
+            return rest.lstrip("@") or None
+    if s.startswith("@"):
+        tail = s[1:].split("/")[0].split("?")[0].strip()
+        if tail.startswith("+") or not tail:
+            return None
+        return tail
+    if s and "/" not in s and not s.lower().startswith("http"):
+        return s.lstrip("@") or None
+    return None
+
+
+async def _ensure_swarm_target_entity(client: Any, group_link: str) -> Any:
+    """
+    Join the target supergroup/channel when required and return an entity for
+    ``send_message``. The previous code passed a raw URL into ``JoinChannelRequest``
+    (expects InputChannel) and often skipped a real join → *You can't write in this chat*.
+    """
+    from telethon import errors
+    from telethon.tl.functions.channels import JoinChannelRequest
+    from telethon.tl.functions.messages import ImportChatInviteRequest
+    from telethon.tl.types import Channel
+
+    t = group_link.strip()
+    priv = _swarm_private_invite_hash(t)
+    if priv:
+        try:
+            res = await client(ImportChatInviteRequest(priv))
+            chats = getattr(res, "chats", None) or []
+            if chats:
+                return chats[0]
+        except errors.UserAlreadyParticipantError:
+            pass
+        return await client.get_entity(t)
+
+    uname = _swarm_public_username_from_link(t)
+    if uname:
+        ent = await client.get_entity(uname)
+        if isinstance(ent, Channel):
+            try:
+                await client(JoinChannelRequest(await client.get_input_entity(ent)))
+            except errors.UserAlreadyParticipantError:
+                pass
+        return ent
+
+    ent = await client.get_entity(t)
+    if isinstance(ent, Channel) and (
+        getattr(ent, "megagroup", False) or not getattr(ent, "broadcast", False)
+    ):
+        try:
+            await client(JoinChannelRequest(await client.get_input_entity(ent)))
+        except errors.UserAlreadyParticipantError:
+            pass
+    return ent
+
+
 # ── Hebrew dialogue topics & slang pool ───────────────────────────────────────
 
 _TOPICS = ["פוליטיקה", "אקטואליה", "צהוב", "כלכלה"]
@@ -617,6 +701,8 @@ class CommunityEngine:
             async def _run_client() -> bool:
                 # Telethon's ``async with TelegramClient`` calls ``start()``, which prompts
                 # for phone/OTP via ``input()`` — headless israeli-swarm has no TTY → EOFError.
+                from telethon import errors
+
                 client = TelegramClient(session_path, api_id, api_hash)
                 await client.connect()
                 try:
@@ -630,19 +716,17 @@ class CommunityEngine:
                         _publish_engine_error(detail)
                         return False
                     try:
-                        await client.get_entity(group_link)
-                    except Exception:
-                        await client(
-                            __import__(
-                                "telethon.tl.functions.channels",
-                                fromlist=["JoinChannelRequest"],
-                            ).JoinChannelRequest(group_link)
+                        target = await _ensure_swarm_target_entity(client, group_link)
+                        await client.send_message(target, message)
+                        return True
+                    except errors.ChatWriteForbiddenError as cw_exc:
+                        detail = (
+                            f"{session_file.stem}: אין הרשאת כתיבה בצ'אט (אולי ערוץ הכרזות או חסימת משתמשים). "
+                            f"({cw_exc})"
                         )
-                        self.bots_joined += 1
-                        await self._push_join_event(session_file.stem, group_link)
-
-                    await client.send_message(group_link, message)
-                    return True
+                        log.warning("[COMMUNITY] %s", detail)
+                        _publish_engine_error(detail[:500])
+                        return False
                 finally:
                     await client.disconnect()
 
