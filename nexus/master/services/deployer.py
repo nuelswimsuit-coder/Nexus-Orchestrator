@@ -533,6 +533,20 @@ class DeployerService:
                 "port_22_reachability",
                 {"worker_ip": ip, **_probe},
             )
+            if not _probe.get("tcp_ok"):
+                err_tail = str(_probe.get("err") or "connection failed")[:200]
+                detail = (
+                    f"No TCP route to {ip}:22 ({err_tail}). "
+                    "Check VPN, same LAN, firewall, WORKER_IP, and that sshd is running on the worker."
+                )
+                _agent_dbg_sync(
+                    "H1",
+                    "deployer.py:sync_to_worker:tcp_unreachable_abort",
+                    "skipping_paramiko_after_tcp_failure",
+                    {"worker_ip": ip, "detail": detail[:300]},
+                )
+                await self._emit(node_id, "error", "error", detail)
+                return f"error: {detail}"
 
             def _paramiko_connect() -> None:
                 _t0 = time.monotonic()
