@@ -303,6 +303,280 @@ def _anti_duplication_prompt_suffix(recent_texts: list[str]) -> str:
     )
 
 
+def _message_refs_newest_first(messages_oldest_first: list[Any]) -> list[tuple[int, str]]:
+    """Telethon history reversed to chronological oldest-first; collect newest text messages first."""
+    out: list[tuple[int, str]] = []
+    for m in reversed(messages_oldest_first):
+        if m is None:
+            continue
+        mid = getattr(m, "id", None)
+        if mid is None:
+            continue
+        raw = getattr(m, "message", None)
+        if raw is None:
+            continue
+        t = str(raw).strip()
+        if not t:
+            continue
+        if len(t) > RECENT_GROUP_MSG_MAX_CHARS:
+            t = t[: RECENT_GROUP_MSG_MAX_CHARS - 1] + "…"
+        out.append((int(mid), t))
+        if len(out) >= RECENT_GROUP_MSG_CAP:
+            break
+    return out
+
+
+def _last_five_prompt_block(refs_newest_first: list[tuple[int, str]]) -> str:
+    block = refs_newest_first[:5]
+    if not block:
+        return "אין הודעות אחרונות בקבוצה — תאלתר טבעי."
+    chronological = list(reversed(block))
+    lines = "\n".join(f"{i + 1}. {txt}" for i, (_, txt) in enumerate(chronological))
+    return f"5 ההודעות האחרונות בקבוצה (לפי סדר כרונולוגי, מהישנה לחדשה):\n{lines}"
+
+
+def _finalize_primary_message(text: str) -> str:
+    s = _strip_hashtags_and_cleanup(text)
+    s = _cap_hebrew_words(s, 25)
+    parts = s.split()
+    if len(parts) <= 8 or len(s) <= 40:
+        s = re.sub(r"[.!?]+\s*$", "", s).strip()
+    return s
+
+
+def _finalize_correction_message(text: str) -> str:
+    return _cap_hebrew_words(_strip_hashtags_and_cleanup(text), 20)
+
+
+def _safe_md_link_label(label: str) -> str:
+    s = (label or "").replace("[", "(").replace("]", ")").strip()
+    return s or "קראו כאן"
+
+
+async def _maybe_tinyurl_shorten(url: str) -> str:
+    u = (url or "").strip()
+    if not u.startswith(("http://", "https://")):
+        return u
+    flag = (os.getenv("COMMUNITY_FACTORY_USE_TINYURL", "") or "").strip().lower()
+    if flag not in ("1", "true", "yes", "on"):
+        return u
+    try:
+        import httpx
+
+        api = f"https://tinyurl.com/api-create.php?url={quote(u, safe='')}"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(api)
+            if r.status_code == 200:
+                short = (r.text or "").strip()
+                if short.startswith("http://") or short.startswith("https://"):
+                    return short
+    except Exception as exc:
+        log.debug("factory_tinyurl_failed", error=str(exc))
+    return u
+
+
+def _format_opener_with_md_link(primary: str, url: str, label: str) -> tuple[str, bool]:
+    base = _finalize_primary_message(primary)
+    u = (url or "").strip()
+    if not u.startswith(("http://", "https://")):
+        return base, False
+    lab = _safe_md_link_label(label)
+    link_line = f"[{lab}]({u})"
+    if not base:
+        return link_line, True
+    return f"{base}\n{link_line}", True
+
+
+def _coerce_bool(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    s = str(v).strip().lower()
+    return s in ("true", "1", "yes", "on")
+
+
+def _normalize_amcha_dict(obj: dict[str, Any]) -> dict[str, Any]:
+    pm = str(obj.get("primary_message") or obj.get("text") or "").strip()
+    cm = str(obj.get("correction_message") or "").strip()
+    return {
+        "primary_message": pm,
+        "needs_correction": _coerce_bool(obj.get("needs_correction")),
+        "correction_message": cm,
+        "article_url": str(obj.get("article_url") or "").strip(),
+        "link_label": str(obj.get("link_label") or "").strip(),
+    }
+
+
+def _parse_llm_json_object(raw: str) -> dict[str, Any] | None:
+    t = (raw or "").strip()
+    if not t:
+        return None
+    try:
+        obj = parse_json_object(t)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+async def _send_amcha_messages(
+    client: Any,
+    entity: Any,
+    *,
+    primary: str,
+    needs_correction: bool,
+    correction: str,
+    reply_to_id: int | None,
+    parse_mode: str | None,
+) -> list[Any]:
+    sent: list[Any] = []
+    text = primary[:4096]
+    try:
+        msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=parse_mode)
+        sent.append(msg)
+    except Exception as exc:
+        if parse_mode:
+            log.debug("factory_send_md_fallback", error=str(exc))
+            msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
+            sent.append(msg)
+        else:
+            raise
+    if needs_correction and (correction or "").strip():
+        await asyncio.sleep(random.uniform(2.0, 4.0))
+        fix = _finalize_correction_message(correction)[:4096]
+        if fix:
+            msg2 = await client.send_message(entity, fix, reply_to=None, parse_mode=None)
+            sent.append(msg2)
+    return sent
+
+
+async def _generate_amcha_turn(
+    api_key: str,
+    topic: str,
+    openai_key: str,
+    *,
+    role: Literal["opener", "replier"],
+    stance_he: str,
+    last_five_block: str,
+    typo_must_correct: bool,
+    anchor_preview: str | None = None,
+    recent_texts: list[str] | None = None,
+    active_topic_line: str | None = None,
+    opener_fresh_event: bool = False,
+    news_opener: bool = False,
+) -> dict[str, Any]:
+    anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
+    json_schema = (
+        "החזר אך ורק JSON תקף (בלי טקסט נוסף) עם המפתחות: "
+        '"primary_message","needs_correction","correction_message","article_url","link_label". '
+        "article_url ו-link_label — מחרוזות; כשאין קישור חדשותי השאר ריק."
+    )
+    if typo_must_correct:
+        typo_rule = (
+            "חובה: needs_correction=true — שים ב-primary_message טעות הקלדה עברית נפוצה "
+            "(למשל בוט במקום טוב, או ניראה לי במקום נראה לי), "
+            "וב-correction_message תיקון אותנטי קצר כמו 'טוב*' או 'סליחה טוב*' או 'איזה אהבל אני, טוב*'."
+        )
+    else:
+        typo_rule = "needs_correction חייב להיות false; correction_message יכול להיות מחרוזת ריקה."
+
+    opener_news_clause = ""
+    if news_opener:
+        opener_news_clause = (
+            "תפקיד: פותח חדשות. primary_message — שורות קצרות כמו בווטסאפ על הכתבה/פלאש (בלי URL גולמי בגוף ההודעה). "
+            "חובה למלא article_url עם קישור https plausibly לאתר חדשות ישראלי, "
+            "ול-link_label משפט עברית לכפתור הקישור (למשל: קראו פה את הכתבה המלאה)."
+        )
+
+    if role == "opener" and not news_opener:
+        ctx = (active_topic_line or "").strip()[:400] or topic
+        user_he = (
+            f"{last_five_block}\n\n{stance_he}\n\n"
+            f'הקבוצה כבר רותחת סביב: "{ctx}". '
+            "עוד משפט או שניים — זווית אחרת, לא פורמלי.\n"
+            f"{opener_news_clause}\n{typo_rule}\n{anti}\n{json_schema}"
+        )
+    elif role == "opener" and news_opener:
+        user_he = (
+            f"{last_five_block}\n\n{stance_he}\n\n"
+            f"הנחיה: שמועה/פלאש/מה זה עכשיו — קבוצת חדשות בטלגרם. "
+            f'רקע רחב בלבד: "{topic}".\n'
+            f"{opener_news_clause}\n{typo_rule}\n{anti}\n{json_schema}"
+        )
+    else:
+        ap = (anchor_preview or "").strip()[:800] or "(אין טקסט — תגיב בקצרה)"
+        if (active_topic_line or "").strip():
+            head = f'הנושא הפעיל בקבוצה: "{(active_topic_line or "").strip()[:400]}". '
+        else:
+            head = ""
+        user_he = (
+            f"{last_five_block}\n\n{stance_he}\n\n"
+            f"{head}"
+            f'אתה משיב להודעה/שורה הזו (או לקונטקסט שלה): "{ap}"\n'
+            f"{typo_rule}\n{anti}\n{json_schema}"
+        )
+
+    temperature = random.uniform(0.85, 0.95)
+    frequency_penalty = random.uniform(0.35, 0.5)
+    presence_penalty = random.uniform(0.35, 0.5)
+
+    if api_key:
+        try:
+            from nexus.modules.community_vibe import _gemini_json  # type: ignore[attr-defined]
+
+            out = await _gemini_json(
+                api_key,
+                AMCHA_ISRAEL_SYSTEM_PROMPT,
+                user_he,
+                temperature=temperature,
+                max_tokens=320,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
+            )
+            if isinstance(out, dict) and (out.get("primary_message") or out.get("text")):
+                return _normalize_amcha_dict(out)
+        except Exception as exc:
+            log.warning("factory_gemini_failed", error=str(exc))
+
+    if openai_key:
+        try:
+            import httpx
+
+            url = "https://api.openai.com/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {openai_key}"}
+            payload = {
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": AMCHA_ISRAEL_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_he},
+                ],
+                "temperature": temperature,
+                "max_tokens": 320,
+                "frequency_penalty": frequency_penalty,
+                "presence_penalty": presence_penalty,
+            }
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.post(url, json=payload, headers=headers)
+                r.raise_for_status()
+                data = r.json()
+                choice = (data.get("choices") or [{}])[0]
+                raw_msg = (choice.get("message") or {}).get("content") or ""
+                obj = _parse_llm_json_object(raw_msg) if raw_msg.strip() else None
+                if obj:
+                    return _normalize_amcha_dict(obj)
+        except Exception as exc:
+            log.warning("factory_openai_failed", error=str(exc))
+
+    fb_pm = "וואלה הזייה אחי" if role == "opener" else "אין מצב"
+    return {
+        "primary_message": fb_pm,
+        "needs_correction": False,
+        "correction_message": "",
+        "article_url": "",
+        "link_label": "",
+    }
+
+
 async def _redis_delete_keys_with_prefix(redis: Any, prefix: str) -> None:
     if redis is None:
         return
@@ -342,10 +616,6 @@ def _roll_thread_role(has_thread: bool) -> Literal["lurk", "opener", "replier", 
     if u < 0.75:
         return "replier"
     return "reactor"
-
-
-def _finalize_llm_line(line: str) -> str:
-    return _cap_hebrew_words(_strip_hashtags_and_cleanup(line), 10)
 
 
 async def _send_thread_reaction(client: Any, entity: Any, msg_id: int) -> bool:
@@ -489,123 +759,6 @@ async def _enqueue_task(task_type: str, parameters: dict[str, Any]) -> bool:
     except Exception as exc:
         log.error("community_factory_enqueue_failed", task_type=task_type, error=str(exc))
         return False
-
-
-def _parse_openai_json_text(content: str) -> str:
-    t = (content or "").strip()
-    if "{" in t:
-        try:
-            start = t.index("{")
-            depth = 0
-            for i, ch in enumerate(t[start:], start=start):
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        obj = json.loads(t[start : i + 1])
-                        if isinstance(obj, dict) and obj.get("text"):
-                            return str(obj["text"]).strip()
-                        break
-        except Exception:
-            pass
-    return t
-
-
-async def _generate_hebrew_line(
-    api_key: str,
-    topic: str,
-    openai_key: str,
-    *,
-    role: Literal["opener", "replier"],
-    anchor_preview: str | None = None,
-    recent_texts: list[str] | None = None,
-    active_topic_line: str | None = None,
-    opener_fresh_event: bool = False,
-) -> str:
-    json_tail = ' Return only valid JSON: {"text":"your line here"}'
-    anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
-
-    if role == "opener":
-        if opener_fresh_event:
-            user_he = (
-                "הנחיה: שורה אחת — שמועה/פלאש/מה זה עכשיו, כאילו מישהו זורק בקבוצת חדשות בטלגרם. "
-                "אפשר דיווח חדשותי, שמועה, מחיר (דולר וכו'), שביתה מחר, מהומה — קצר ומלוכלך, לא רשמי. "
-                f'רקע רחב בלבד (לא לצטט מילה במילה): "{topic}".'
-                f"{anti}{json_tail}"
-            )
-        else:
-            ctx = (active_topic_line or "").strip()[:400] or topic
-            user_he = (
-                f'הקבוצה כבר רותחת סביב: "{ctx}". '
-                "כתוב עוד משפט קצר — זווית אחרת לגמרי על אותו עניין. לא פורמלי, לא מנומס."
-                f"{anti}{json_tail}"
-            )
-    else:
-        ap = (anchor_preview or "").strip()[:800] or "(אין טקסט — תגיב בקצרה)"
-        if (active_topic_line or "").strip():
-            head = f'הנושא הפעיל בקבוצה עכשיו: "{(active_topic_line or "").strip()[:400]}". '
-        else:
-            head = "אין אירוע מוגדר מפורש — תגיב רק למה שבציטוט. "
-        user_he = (
-            f"{head}"
-            "תגובה קצרצרה בשרשור. "
-            f'מה שנכתב שאליו משיבים: "{ap}"'
-            f"{anti}{json_tail}"
-        )
-
-    temperature = random.uniform(0.85, 0.95)
-    frequency_penalty = random.uniform(0.35, 0.5)
-    presence_penalty = random.uniform(0.35, 0.5)
-
-    if api_key:
-        try:
-            from nexus.modules.community_vibe import _gemini_json  # type: ignore[attr-defined]
-
-            out = await _gemini_json(
-                api_key,
-                ISRAELI_NEWS_SYSTEM_PROMPT,
-                user_he,
-                temperature=temperature,
-                max_tokens=128,
-                frequency_penalty=frequency_penalty,
-                presence_penalty=presence_penalty,
-            )
-            text = str(out.get("text", "")).strip()
-            if text:
-                return _finalize_llm_line(text)
-        except Exception as exc:
-            log.warning("factory_gemini_failed", error=str(exc))
-    if openai_key:
-        try:
-            import httpx
-
-            url = "https://api.openai.com/v1/chat/completions"
-            headers = {"Authorization": f"Bearer {openai_key}"}
-            payload = {
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": ISRAELI_NEWS_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_he},
-                ],
-                "temperature": temperature,
-                "max_tokens": 120,
-                "frequency_penalty": frequency_penalty,
-                "presence_penalty": presence_penalty,
-            }
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                r = await client.post(url, json=payload, headers=headers)
-                r.raise_for_status()
-                data = r.json()
-                choice = (data.get("choices") or [{}])[0]
-                raw_msg = (choice.get("message") or {}).get("content") or ""
-                text = _parse_openai_json_text(raw_msg) if raw_msg.strip() else ""
-                if text.strip():
-                    return _finalize_llm_line(text.strip())
-        except Exception as exc:
-            log.warning("factory_openai_failed", error=str(exc))
-    fb = "וואלה הזייה אחי" if role == "opener" else "אין מצב"
-    return _finalize_llm_line(fb)
 
 
 @registry.register("swarm.community_factory.bootstrap")
@@ -970,6 +1123,125 @@ async def community_factory_join_tick(parameters: dict[str, Any]) -> dict[str, A
     return {"status": "completed", "joined": False, "join_flat_idx": j, "exhausted": j >= flat_max}
 
 
+@registry.register("swarm.community_factory.burst_reply_chain")
+async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dict[str, Any]:
+    """
+    After a news opener, send N quick replies (2–15s apart) as random pool accounts, all reply_to the opener.
+    """
+    redis = parameters.get("__redis__")
+    api_key = _resolve_api_key(parameters)
+    openai_key = _resolve_openai_key(parameters)
+    gid_int = int(parameters.get("burst_group_id") or 0)
+    reply_mid = int(parameters.get("burst_reply_to_msg_id") or 0)
+    count = int(parameters.get("burst_count") or 5)
+    if gid_int <= 0 or reply_mid <= 0 or count <= 0:
+        return {"status": "failed", "error": "invalid burst parameters"}
+
+    roles = await _redis_json_get(redis, KEY_ROLES)
+    if not isinstance(roles, dict):
+        return {"status": "failed", "error": "roles missing"}
+    owners = list(roles.get("owners") or [])
+    members = list(roles.get("members") or [])
+    pool = owners + members
+    if not pool:
+        return {"status": "failed", "error": "no sessions"}
+
+    aid, ahash = resolve_telethon_creds(pool[0], parameters)
+    if not aid or not ahash:
+        return {
+            "status": "failed",
+            "error": "Telethon api_id/api_hash missing: set TELEFIX_* or add .json next to sessions",
+        }
+
+    sent_n = 0
+    for _ in range(count):
+        await asyncio.sleep(random.uniform(2.0, 15.0))
+        random.shuffle(pool)
+        picked = False
+        for session_base in pool:
+            if await _is_session_banned(redis, session_base):
+                continue
+            until = await _cooldown_until(redis, session_base)
+            if until and datetime.now(timezone.utc) < until:
+                continue
+            try:
+                async with async_telegram_client(session_base, parameters) as client:
+                    if not await client.is_user_authorized():
+                        await _mark_banned(redis, session_base)
+                        await _bump_metric(redis, "bans", 1)
+                        continue
+                    await _ensure_factory_profile(client, redis, session_base)
+                    ent = await client.get_entity(gid_int)
+                    hist = await client.get_messages(ent, limit=RECENT_GROUP_MSG_CAP)
+                    chronological = list(hist)
+                    chronological.reverse()
+                    refs = _message_refs_newest_first(chronological)
+                    last_five = _last_five_prompt_block(refs)
+                    recent_texts = [t for _, t in reversed(refs)] if refs else []
+                    anchor_preview = ""
+                    try:
+                        ams = await client.get_messages(ent, ids=reply_mid)
+                        m0 = ams[0] if ams else None
+                        if m0 is not None:
+                            anchor_preview = str(getattr(m0, "message", None) or "")[:800]
+                    except Exception:
+                        anchor_preview = ""
+                    active_record = await _active_topic_read(redis, gid_int)
+                    active_topic_line = (
+                        str(active_record.get("text") or "").strip() if isinstance(active_record, dict) else None
+                    ) or None
+                    topic = random.choice(FACTORY_TOPICS)
+                    stance = random.choice(AMCHA_STANCES_HE)
+                    typo_must = random.random() < 0.15
+                    turn = await _generate_amcha_turn(
+                        api_key,
+                        topic,
+                        openai_key,
+                        role="replier",
+                        stance_he=stance,
+                        last_five_block=last_five,
+                        typo_must_correct=typo_must,
+                        anchor_preview=anchor_preview or None,
+                        recent_texts=recent_texts,
+                        active_topic_line=active_topic_line,
+                        opener_fresh_event=False,
+                        news_opener=False,
+                    )
+                    body = _finalize_primary_message(turn["primary_message"])
+                    async with client.action(ent, "typing"):
+                        await asyncio.sleep(random.uniform(1.0, 4.0))
+                    msgs = await _send_amcha_messages(
+                        client,
+                        ent,
+                        primary=body,
+                        needs_correction=bool(turn.get("needs_correction")),
+                        correction=str(turn.get("correction_message") or ""),
+                        reply_to_id=reply_mid,
+                        parse_mode=None,
+                    )
+                    sent_n += len(msgs)
+                    await _bump_metric(redis, "messages_sent", len(msgs))
+                    picked = True
+                    break
+            except ValueError as exc:
+                log.warning("factory_burst_creds_missing", error=str(exc))
+            except Exception as exc:
+                kind = classify_telethon_account_error(exc)
+                if kind == "ban":
+                    await _mark_banned(redis, session_base)
+                    await _bump_metric(redis, "bans", 1)
+                elif kind == "flood":
+                    sec = int(flood_wait_seconds(exc) * 1.1) + 1
+                    await _set_cooldown(redis, session_base, sec)
+                    await _bump_metric(redis, "flood_waits", 1)
+                else:
+                    log.debug("factory_burst_send_failed", error=str(exc))
+        if not picked:
+            log.debug("factory_burst_skipped_no_session")
+
+    return {"status": "completed", "burst_replies_attempted": count, "messages_sent": sent_n}
+
+
 @registry.register("swarm.community_factory.converse_tick")
 async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[str, Any]:
     redis = parameters.get("__redis__")
@@ -1025,7 +1297,7 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
     async def _enqueue_next() -> None:
         await _enqueue_task("swarm.community_factory.converse_tick", carry)
 
-    await asyncio.sleep(random.uniform(60.0, 600.0))
+    await asyncio.sleep(random.uniform(900.0, 2700.0))
 
     if await _is_session_banned(redis, session_base):
         await _enqueue_next()
@@ -1097,8 +1369,8 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
         return {"status": "completed", "action": "reactor"}
 
     reply_to_id: int | None = None
-    if role == "replier" and thread_ids:
-        reply_to_id = thread_ids[-1]
+    stance = random.choice(AMCHA_STANCES_HE)
+    typo_must_correct = random.random() < 0.15
 
     try:
         async with async_telegram_client(session_base, parameters) as client:
@@ -1109,17 +1381,24 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
                 return {"status": "skipped", "reason": "unauthorized"}
             await _ensure_factory_profile(client, redis, session_base)
             ent = await client.get_entity(gid_int)
+            refs_newest_first: list[tuple[int, str]] = []
             recent_texts: list[str] = []
             try:
                 hist = await client.get_messages(ent, limit=RECENT_GROUP_MSG_CAP)
                 if hist:
                     chronological = list(hist)
                     chronological.reverse()
-                    recent_texts = _recent_texts_from_telethon_messages(chronological)
+                    refs_newest_first = _message_refs_newest_first(chronological)
+                    recent_texts = [t for _, t in reversed(refs_newest_first)]
             except Exception as exc:
                 log.debug("factory_recent_messages_failed", group_id=gid_int, error=str(exc))
-            anchor_preview: str | None = None
-            if reply_to_id is not None:
+            last_five_block = _last_five_prompt_block(refs_newest_first)
+            pick_pool = refs_newest_first[:5]
+            if pick_pool and random.random() < 0.6:
+                reply_to_id = random.choice(pick_pool)[0]
+            ref_by_id = {mid: txt for mid, txt in refs_newest_first}
+            anchor_preview: str | None = ref_by_id.get(reply_to_id) if reply_to_id is not None else None
+            if reply_to_id is not None and anchor_preview is None:
                 try:
                     msgs = await client.get_messages(ent, ids=reply_to_id)
                     m0 = msgs[0] if msgs else None
@@ -1127,30 +1406,54 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
                         anchor_preview = (getattr(m0, "message", None) or "")[:500]
                 except Exception:
                     anchor_preview = None
-            line = await _generate_hebrew_line(
+            news_opener = role == "opener" and opener_fresh_event
+            turn = await _generate_amcha_turn(
                 api_key,
                 topic,
                 openai_key,
                 role="opener" if role == "opener" else "replier",
+                stance_he=stance,
+                last_five_block=last_five_block,
+                typo_must_correct=typo_must_correct,
                 anchor_preview=anchor_preview,
                 recent_texts=recent_texts,
                 active_topic_line=active_topic_line,
                 opener_fresh_event=opener_fresh_event,
+                news_opener=news_opener,
             )
-            if random.random() < 0.12 and len(line) > 3:
-                cut = random.randint(0, max(0, len(line) - 1))
-                line = line[:cut] + line[cut + 1 :]
+            use_md = False
+            primary_out = _finalize_primary_message(turn["primary_message"])
+            if news_opener:
+                url = await _maybe_tinyurl_shorten(str(turn.get("article_url") or ""))
+                primary_out, use_md = _format_opener_with_md_link(
+                    turn["primary_message"],
+                    url,
+                    str(turn.get("link_label") or ""),
+                )
             async with client.action(ent, "typing"):
                 await asyncio.sleep(random.uniform(2.0, 8.0))
-            sent = await client.send_message(
-                ent, line[:4096], reply_to=reply_to_id if reply_to_id is not None else None
+            sent_list = await _send_amcha_messages(
+                client,
+                ent,
+                primary=primary_out,
+                needs_correction=bool(turn.get("needs_correction")),
+                correction=str(turn.get("correction_message") or ""),
+                reply_to_id=reply_to_id,
+                parse_mode="md" if use_md else None,
             )
-            mid = getattr(sent, "id", None)
+            sent = sent_list[0] if sent_list else None
+            mid = getattr(sent, "id", None) if sent is not None else None
             if mid is not None and role == "opener":
                 await _thread_ids_push(redis, gid_int, int(mid))
             if role == "opener" and opener_fresh_event:
-                await _active_topic_write(redis, gid_int, line)
-        await _bump_metric(redis, "messages_sent", 1)
+                await _active_topic_write(redis, gid_int, primary_out)
+            if mid is not None and news_opener:
+                burst_carry = dict(carry)
+                burst_carry["burst_group_id"] = gid_int
+                burst_carry["burst_reply_to_msg_id"] = int(mid)
+                burst_carry["burst_count"] = random.randint(4, 8)
+                await _enqueue_task("swarm.community_factory.burst_reply_chain", burst_carry)
+        await _bump_metric(redis, "messages_sent", len(sent_list))
     except ValueError as exc:
         log.warning("factory_converse_creds_missing", error=str(exc))
     except Exception as exc:
