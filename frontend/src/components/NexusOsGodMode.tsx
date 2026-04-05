@@ -4850,10 +4850,10 @@ function SwarmMonitorView() {
             </div>
             <div className="text-lg font-black text-cyan-300">
               {!inventoryReady
-                ? "טוען מלאי סשנים מ-Redis…"
+                ? "טוען מלאי סשני טלגרם (מ-Redis)…"
                 : bannerPick && bannerPick.sessions.length > 0
-                  ? `${bannerPick.sessions.length} סשנים ב-Redis (${bannerPick.machineId}) · ${bannerPick.sessions[0]?.phone || "—"}`
-                  : "אין סשנים במלאי Redis — מפתחות nexus:sessions:inventory:* ריקים. תג «Redis: ONLINE» אומר שהברוקר עונה; עדיין צריך תהליך שמפרסם סריקה (session_manager / swarm)."}
+                  ? `${bannerPick.sessions.length} סשני טלגרם במלאי (מסונכרן ל-Redis, ${bannerPick.machineId}) · ${bannerPick.sessions[0]?.phone || "—"}`
+                  : "אין סשני טלגרם רשומים במלאי — מפתחות nexus:sessions:inventory:* ריקים. «Redis: ONLINE» אומר שהברוקר עונה בלבד; צריך session_manager / swarm שמפרסמים את מלאי סשני הטלגרם."}
             </div>
           </div>
         </div>
@@ -4931,17 +4931,17 @@ function SwarmMonitorView() {
       <div className="bg-slate-900/40 border border-slate-800 rounded-[2rem] p-6">
         <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
           <Search size={12} className="text-cyan-400" />
-          🔍 סריקה חיה — telefix.db sessions
+          🔍 סריקה חיה — סשני טלגרם (מלאי ב-Redis)
         </div>
         <div className="space-y-2 max-h-[200px] overflow-y-auto nexus-os-scrollbar pr-1">
           {!inventoryReady && allSessions.length === 0 ? (
             <div className="flex items-center gap-3 p-3 bg-slate-950/50 rounded-xl border border-slate-800/50 text-slate-500 text-xs">
               <RefreshCw size={12} className="animate-spin text-cyan-400" />
-              טוען מלאי מ-Redis…
+              טוען מלאי סשני טלגרם…
             </div>
           ) : allSessions.length === 0 ? (
             <div className="p-3 bg-slate-950/50 rounded-xl border border-slate-800/50 text-slate-500 text-xs leading-relaxed">
-              אין סשנים ב-Redis. ודא שסורק הסשנים רץ על אותו ברוקר כמו ה-API, ושהוא כותב ל־
+              אין סשני טלגרם במלאי. ודא שסורק/מנהל שמפרסם סשני טלגרם רץ על אותו ברוקר כמו ה-API, ושהוא כותב ל־
               <code className="text-slate-400 mx-1" dir="ltr">nexus:sessions:inventory:&lt;hostname&gt;</code>.
             </div>
           ) : (
@@ -4958,7 +4958,7 @@ function SwarmMonitorView() {
                 >
                   <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${isMaster ? "bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.8)]" : "bg-slate-600"}`} />
                   <span className={`text-xs font-mono font-bold ${isMaster ? "text-cyan-300" : "text-slate-300"}`}>
-                    🔍 Scanning: {s.phone || s.machine_id} from telefix.db
+                    🔍 סשן טלגרם: {s.phone || s.machine_id} (מלאי Redis)
                   </span>
                   <span className={`text-[10px] font-bold ml-auto shrink-0 px-2 py-0.5 rounded-lg ${
                     s.status === "active" || s.status === "running"
@@ -5063,12 +5063,12 @@ function SwarmMonitorView() {
             מלאי נחיל גלובלי (Swarm Inventory)
           </h3>
           <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-            {inventory ? `${inventory.total} סשנים · ${inventory.machines.length} מכונות` : "טוען…"}
+            {inventory ? `${inventory.total} סשני טלגרם · ${inventory.machines.length} מכונות` : "טוען…"}
           </span>
         </div>
 
         {allSessions.length === 0 ? (
-          <p className="text-sm text-slate-500">0 SESSIONS ACTIVE</p>
+          <p className="text-sm text-slate-500">אין סשני טלגרם פעילים במלאי</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-right text-sm">
@@ -5202,13 +5202,13 @@ function SessionSwarmView() {
             📡 Global Session Swarm (All Scanned)
           </h3>
           <p className="text-slate-500 text-sm mt-1">
-            סריקה מלאה של Redis — כל הסשנים הפעילים בנחיל, מקובצים לפי מחשב
+            סריקה מלאה דרך Redis — כל סשני הטלגרם (חשבונות) הפעילים בנחיל, מקובצים לפי מחשב
           </p>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-xs font-mono bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-xl">
             <span className="text-cyan-400 font-bold">{data?.total ?? 0}</span>
-            <span className="text-slate-500">sessions</span>
+            <span className="text-slate-500">סשני טלגרם</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-cyan-500/15 text-cyan-400">heartbeat</span>
@@ -5240,17 +5240,17 @@ function SessionSwarmView() {
       {loading && !data && (
         <div className="flex items-center justify-center py-16 text-slate-500 gap-3">
           <RefreshCw size={20} className="animate-spin" />
-          <span className="text-sm">סורק Redis...</span>
+          <span className="text-sm">סורק מלאי סשני טלגרם ב-Redis…</span>
         </div>
       )}
 
       {!loading && filteredMachines.length === 0 && (
         <div className="text-center py-16 text-slate-600 text-sm space-y-2">
           <div className="text-2xl">📭</div>
-          <div>{q ? "לא נמצאו תוצאות לחיפוש זה." : "אין סשנים פעילים ב-Redis"}</div>
+          <div>{q ? "לא נמצאו תוצאות לחיפוש זה." : "אין סשני טלגרם פעילים במלאי (Redis)"}</div>
           {!q && (
             <div className="text-xs text-slate-700 mt-1">
-              ממתין ל-heartbeats מ-session_manager, deployer, או vault
+              ממתין לדיווחי סשני טלגרם מ-session_manager, deployer, או vault
             </div>
           )}
         </div>
@@ -5266,7 +5266,7 @@ function SessionSwarmView() {
                 <span className={`text-sm font-black uppercase tracking-widest ${isMaster ? "text-cyan-300" : "text-slate-400"}`}>
                   {isMaster ? "👑 " : ""}{machine}
                 </span>
-                <span className="text-xs text-slate-600 font-mono">({sessions.length} sessions)</span>
+                <span className="text-xs text-slate-600 font-mono">({sessions.length} סשני טלגרם)</span>
               </div>
               <div className="overflow-x-auto rounded-2xl border border-slate-800">
                 <table className="w-full text-sm">
@@ -5413,7 +5413,7 @@ function GlobalSwarmTableView() {
             🌐 Global Swarm Inventory
           </h3>
           <p className="text-slate-500 text-sm mt-1">
-            מלאי סשנים מלא מ-Redis — מקובץ לפי מחשב מקור
+            מלאי סשני טלגרם מ-Redis — מקובץ לפי מחשב מקור
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -5452,13 +5452,13 @@ function GlobalSwarmTableView() {
       {loading && !data && (
         <div className="flex items-center justify-center py-16 text-slate-500 gap-3">
           <RefreshCw size={20} className="animate-spin" />
-          <span className="text-sm">סורק Redis...</span>
+          <span className="text-sm">סורק מלאי סשני טלגרם ב-Redis…</span>
         </div>
       )}
 
       {!loading && filteredMachines.length === 0 && (
         <div className="text-center py-16 text-slate-500 text-sm">
-          {q ? "לא נמצאו תוצאות לחיפוש זה." : "0 SESSIONS ACTIVE"}
+          {q ? "לא נמצאו תוצאות לחיפוש זה." : "אין סשני טלגרם פעילים במלאי (Redis)"}
         </div>
       )}
 
@@ -5532,12 +5532,12 @@ function GlobalSwarmTableView() {
                     {selectedMachine === "Jacob-PC" ? "👑 " : ""}{selectedMachine}
                   </span>
                   <span className="text-[10px] font-mono text-slate-600">
-                    {selectedSessions.length} sessions
+                    {selectedSessions.length} סשני טלגרם
                   </span>
                 </div>
                 {selectedSessions.length === 0 ? (
                   <div className="flex items-center justify-center h-40 text-slate-600 text-sm">
-                    אין סשנים להצגה
+                    אין סשני טלגרם להצגה
                   </div>
                 ) : (
                   <div className={`overflow-x-auto rounded-2xl border ${
@@ -6916,7 +6916,7 @@ interface SwarmFeedData {
   last_engine_error?: string;
   /** True when API uses in-memory Redis (degraded) — not the same broker as israeli_swarm. */
   redis_degraded?: boolean;
-  /** Unix seconds (UTC) when israeli_swarm last finished a cycle (Redis heartbeat). */
+  /** Unix seconds (UTC): last engine activity stamp from israeli_swarm (Redis key heartbeat) — not a Telegram .session. */
   engine_last_seen_ts?: number;
   /** When degraded: separate PING to ``REDIS_URL`` (real broker), not the in-memory client. */
   broker_reachable?: boolean | null;
@@ -6937,18 +6937,18 @@ function _formatEngineHeartbeatLine(
   if (ts === undefined || ts <= 0) {
     return {
       text:
-        "מנוע: אין דופק ב-Redis — ה-API רואה את אותו ברוקר, אבל israeli-swarm לא כתב ל־nexus:swarm:israeli:heartbeat. ודא שתהליך israeli-swarm רץ (למשל nexus_launcher), ש־REDIS_URL זהה בין API למנוע, ושהנחיל באמת ב־running. הדופק מתעדכן בתחילת כל מחזור; אם אין דופק אחרי ~דקה — המנוע כנראה לא רץ או מחובר ל-Redis אחר. שגיאות מנוע מוצגות למטה.",
+        "דופק מנוע: אין עדכון — זו חותמת פעילות של תהליך israeli_swarm ב-Redis (מפתח nexus:swarm:israeli:heartbeat), לא קשור לסשני טלגרם (‎.session) בדיסק. ודא ש־israeli-swarm רץ (למשל nexus_launcher), ש־REDIS_URL זהה ל-API, ושהנחיל ב־running; הדופק מתעדכן בתחילת כל מחזור. שגיאות מנוע מוצגות למטה.",
       stale: true,
     };
   }
   const age = now - ts;
-  if (age < 0) return { text: "מנוע: דופק עודכן כרגע", stale: false };
-  if (age < 60) return { text: `מנוע: פעיל — דופק לפני ${Math.floor(age)} שניות`, stale: age > 45 };
+  if (age < 0) return { text: "דופק מנוע: עודכן כרגע", stale: false };
+  if (age < 60) return { text: `דופק מנוע: פעיל — לפני ${Math.floor(age)} שניות`, stale: age > 45 };
   if (age < 3600) {
     const stale = age > 600;
-    return { text: `מנוע: דופק לפני ${Math.floor(age / 60)} דקות`, stale };
+    return { text: `דופק מנוע: לפני ${Math.floor(age / 60)} דקות`, stale };
   }
-  return { text: `מנוע: דופק לפני ${Math.floor(age / 3600)} שעות`, stale: true };
+  return { text: `דופק מנוע: לפני ${Math.floor(age / 3600)} שעות`, stale: true };
 }
 
 function SwarmBotCard({ bot }: { bot: SwarmBot }) {
