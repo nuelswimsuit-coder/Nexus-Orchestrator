@@ -6935,6 +6935,7 @@ interface SwarmBot {
   is_active: boolean;
   messages_sent: number;
   last_message: string;
+  display_name?: string;
   is_king: boolean;
 }
 
@@ -6943,6 +6944,16 @@ interface SwarmRecentMessage {
   message: string;
   topic: string;
   ts: string;
+  display_name?: string;
+  event?: string;
+}
+
+interface SwarmSchedule {
+  phase?: string | null;
+  cycle_started_at?: string | null;
+  next_cycle_at?: string | null;
+  delay_total_s?: number | null;
+  updated_at?: string | null;
 }
 
 interface SwarmFeedData {
@@ -6951,6 +6962,7 @@ interface SwarmFeedData {
   last_message: string;
   last_message_ts: number;
   last_sender_phone: string;
+  last_sender_display_name?: string;
   is_running: boolean;
   bots: SwarmBot[];
   verified_count?: number;
@@ -6959,6 +6971,7 @@ interface SwarmFeedData {
   /** Paired Telethon *.session + *.json on disk (vault roots). */
   tg_session_files_on_disk?: number;
   recent_messages?: SwarmRecentMessage[];
+  schedule?: SwarmSchedule | null;
   /** Set by israeli_swarm when Telethon / config fails (Redis). */
   last_engine_error?: string;
   /** True when API uses in-memory Redis (degraded) — not the same broker as israeli_swarm. */
@@ -6969,6 +6982,24 @@ interface SwarmFeedData {
   broker_reachable?: boolean | null;
   /** When degraded: sanitized DSN the API was configured with (password masked). */
   configured_redis_url_safe?: string | null;
+}
+
+interface TgUiMessage {
+  message_id: number;
+  date: string;
+  text: string;
+  sender_label: string;
+  out: boolean;
+  reply_to_msg_id?: number | null;
+}
+
+interface WarmerDashRow {
+  group_key: string;
+  config?: { group_title?: string; group_id?: number };
+  next_run_at?: string | null;
+  next_speaker?: Record<string, unknown> | null;
+  personas?: unknown[];
+  rotation_index?: number;
 }
 
 function _formatEngineHeartbeatLine(
@@ -7029,7 +7060,14 @@ function SwarmBotCard({ bot }: { bot: SwarmBot }) {
           }`}
         />
         <span className="text-xs font-black font-mono text-slate-200 truncate flex-1">
-          {bot.phone}
+          {bot.display_name?.trim() ? (
+            <>
+              <span className="text-purple-200">{bot.display_name}</span>
+              <span className="text-slate-600 font-normal block text-[10px]">{bot.phone}</span>
+            </>
+          ) : (
+            bot.phone
+          )}
         </span>
         {bot.is_king && (
           <span className="px-1.5 py-0.5 bg-amber-500/20 border border-amber-500/40 text-amber-400 text-[9px] font-black rounded-full uppercase tracking-widest shrink-0">
@@ -7109,6 +7147,109 @@ function _addSwarmPreset(link: string): string[] {
   return next;
 }
 
+function _useRemainingSeconds(iso: string | null | undefined): number | null {
+  const [sec, setSec] = useState<number | null>(null);
+  useEffect(() => {
+    if (!iso?.trim()) {
+      setSec(null);
+      return;
+    }
+    const parse = () => {
+      const t = new Date(iso.trim()).getTime();
+      if (Number.isNaN(t)) return null;
+      return Math.max(0, Math.floor((t - Date.now()) / 1000));
+    };
+    setSec(parse());
+    const id = setInterval(() => setSec(parse()), 1000);
+    return () => clearInterval(id);
+  }, [iso]);
+  return sec;
+}
+
+function _formatCountdown(sec: number | null): string {
+  if (sec === null) return "—";
+  if (sec <= 0) return "עכשיו";
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m > 0 ? `${m}:${s.toString().padStart(2, "0")}` : `${s} ש׳`;
+}
+
+function SwarmTelegramChatPanel(props: {
+  loading: boolean;
+  error: string | null;
+  messages: TgUiMessage[];
+  cached?: boolean;
+}) {
+  const { loading, error, messages, cached } = props;
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-[#0a0e14] overflow-hidden shadow-inner">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800/80 bg-slate-900/50">
+        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">היסטוריית צ׳אט (טלגרם)</span>
+        {cached && (
+          <span className="text-[9px] text-slate-600 font-mono" dir="ltr">
+            cache
+          </span>
+        )}
+      </div>
+      {loading && messages.length === 0 && (
+        <div className="px-4 py-8 text-center text-slate-500 text-sm font-bold">טוען הודעות…</div>
+      )}
+      {error && (
+        <div className="px-4 py-3 text-amber-200/90 text-xs font-mono border-b border-amber-500/20 bg-amber-950/30">
+          {error}
+        </div>
+      )}
+      <div className="max-h-[min(520px,55vh)] overflow-y-auto nexus-os-scrollbar px-3 py-4 space-y-3" dir="rtl">
+        {messages.map((m) => (
+          <div
+            key={m.message_id}
+            className={`flex w-full ${m.out ? "justify-start" : "justify-end"}`}
+          >
+            <div
+              className={`max-w-[min(92%,28rem)] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed shadow-md ${
+                m.out
+                  ? "bg-cyan-950/50 border border-cyan-600/35 text-cyan-50 rounded-br-md"
+                  : "bg-slate-800/90 border border-slate-600/40 text-slate-100 rounded-bl-md"
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                <span className={`text-[10px] font-black uppercase ${m.out ? "text-cyan-300/90" : "text-slate-400"}`}>
+                  {m.sender_label}
+                </span>
+                {m.date && (
+                  <span className="text-[9px] text-slate-500 font-mono mr-auto" dir="ltr">
+                    {(() => {
+                      try {
+                        return new Date(m.date).toLocaleString("he-IL", {
+                          day: "2-digit",
+                          month: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        });
+                      } catch {
+                        return m.date;
+                      }
+                    })()}
+                  </span>
+                )}
+              </div>
+              <div className="text-[13px] whitespace-pre-wrap break-words">{m.text}</div>
+              {m.reply_to_msg_id != null && m.reply_to_msg_id > 0 && (
+                <div className="mt-1.5 text-[9px] text-slate-500 font-mono" dir="ltr">
+                  ↩ reply to #{m.reply_to_msg_id}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        {!loading && !error && messages.length === 0 && (
+          <div className="text-center text-slate-600 text-sm py-10 font-bold">אין הודעות להצגה</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function LiveSwarmView() {
   const [feed, setFeed] = useState<SwarmFeedData | null>(null);
   const [swarmRunning, setSwarmRunning] = useState(false);
@@ -7121,6 +7262,13 @@ function LiveSwarmView() {
   const [groupPresets, setGroupPresets] = useState<string[]>([]);
   const [statusMsg, setStatusMsg] = useState("");
   const [swarmTab, setSwarmTab] = useState<"bots" | "feed">("bots");
+  const [chatSource, setChatSource] = useState<"israeli" | "warmer">("israeli");
+  const [warmerRows, setWarmerRows] = useState<WarmerDashRow[]>([]);
+  const [warmerKey, setWarmerKey] = useState("");
+  const [tgMsgs, setTgMsgs] = useState<TgUiMessage[]>([]);
+  const [tgErr, setTgErr] = useState<string | null>(null);
+  const [tgLoading, setTgLoading] = useState(false);
+  const [tgCached, setTgCached] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -7175,6 +7323,84 @@ function LiveSwarmView() {
     const t = setInterval(fetchFeed, 3000);
     return () => clearInterval(t);
   }, [fetchFeed]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadWarmer() {
+      try {
+        const res = await fetch(`${API_BASE}/api/swarm/dashboard`);
+        if (!res.ok || cancelled) return;
+        const d = (await res.json()) as { groups?: WarmerDashRow[] };
+        const rows = Array.isArray(d.groups) ? d.groups : [];
+        if (cancelled) return;
+        setWarmerRows(rows);
+        setWarmerKey((k) => (k.trim() ? k : rows[0]?.group_key ?? ""));
+      } catch {
+        /* ignore */
+      }
+    }
+    void loadWarmer();
+    const t = setInterval(loadWarmer, 12000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      if (chatSource === "warmer" && !warmerKey.trim()) {
+        setTgMsgs([]);
+        setTgErr("בחר קבוצת Warmer מהרשימה");
+        setTgLoading(false);
+        setTgCached(false);
+        return;
+      }
+      setTgLoading(true);
+      setTgErr(null);
+      try {
+        const url =
+          chatSource === "israeli"
+            ? `${API_BASE}/api/swarm/israeli/group-messages?limit=60`
+            : `${API_BASE}/api/swarm/warmer/${encodeURIComponent(warmerKey.trim())}/group-messages?limit=60`;
+        const res = await fetch(url);
+        const data = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          detail?: string;
+          messages?: TgUiMessage[];
+          cached?: boolean;
+        };
+        if (cancelled) return;
+        if (!res.ok) {
+          const det =
+            typeof data.detail === "string"
+              ? data.detail
+              : `שגיאה ${res.status}`;
+          setTgErr(det);
+          setTgMsgs([]);
+          setTgCached(false);
+          return;
+        }
+        setTgMsgs(Array.isArray(data.messages) ? data.messages : []);
+        setTgCached(!!data.cached);
+      } catch (e) {
+        if (!cancelled) {
+          setTgErr(e instanceof Error ? e.message : String(e));
+          setTgMsgs([]);
+          setTgCached(false);
+        }
+      } finally {
+        if (!cancelled) setTgLoading(false);
+      }
+    }
+    void poll();
+    const iv = setInterval(poll, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [chatSource, warmerKey]);
 
   async function handleStartSwarm() {
     if (!targetGroup.trim()) {
@@ -7249,6 +7475,25 @@ function LiveSwarmView() {
 
   const recentMessages = feed?.recent_messages ?? [];
   const engineHb = _formatEngineHeartbeatLine(feed, swarmRunning);
+
+  const lastAttempt = useMemo(() => {
+    const rm = feed?.recent_messages ?? [];
+    for (let i = rm.length - 1; i >= 0; i--) {
+      if (rm[i]?.topic === "attempt") return rm[i] ?? null;
+    }
+    return null;
+  }, [feed?.recent_messages]);
+
+  const warmerRow = useMemo(
+    () => warmerRows.find((r) => r.group_key === warmerKey),
+    [warmerRows, warmerKey],
+  );
+
+  const sched = feed?.schedule;
+  const waitSec = _useRemainingSeconds(
+    sched?.phase === "waiting" ? (sched?.next_cycle_at ?? null) : null,
+  );
+  const warmerNextSec = _useRemainingSeconds(warmerRow?.next_run_at ?? null);
 
   return (
     <div className="space-y-6" dir="rtl">
