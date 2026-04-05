@@ -486,6 +486,9 @@ def _child_env(base: dict[str, str]) -> dict[str, str]:
         out["PYTHONPATH"] = pr if not prev else f"{pr}{os.pathsep}{prev}"
     out["PYTHONIOENCODING"] = "utf-8"
     out["PYTHONUTF8"] = "1"
+    # Children use PIPE stdout — without this, Windows Python often block-buffers prints
+    # and Rich panes stay on "Waiting for output…" even while the process is healthy.
+    out["PYTHONUNBUFFERED"] = "1"
     return out
 
 
