@@ -5,18 +5,43 @@ Recent Telegram group messages via Telethon — used by swarm chat UI (short Red
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from nexus.services.session_vault import discover_meta_paths_from_session_sqlite
+from nexus.services.session_vault import discover_meta_paths_from_session_sqlite, vault_candidate_roots
 
 
 def first_authorized_session_path_stem() -> str | None:
-    """Telethon session path without ``.session`` suffix (first vault pair with valid meta)."""
+    """
+    Telethon session path without ``.session`` suffix.
+
+    Prefers ``<stem>.session`` + sibling ``<stem>.json`` containing ``api_id`` / ``api_hash``
+    (vault indexing). If none, falls back to the first ``*.session`` under vault roots so callers
+    that supply matching ``TELEGRAM_*`` / ``TELEFIX_*`` in the environment still work.
+    """
     metas = list(discover_meta_paths_from_session_sqlite())
-    if not metas:
+    if metas:
+        meta = metas[0]
+        return str((meta.parent / meta.stem).resolve())
+
+    sessions: list[Path] = []
+    for root in vault_candidate_roots():
+        if not root.is_dir():
+            continue
+        for sess in root.rglob("*.session"):
+            if sess.name.endswith("-journal"):
+                continue
+            sessions.append(sess)
+    if not sessions:
         return None
-    meta = metas[0]
-    return str((meta.parent / meta.stem).resolve())
+
+    def _fallback_sort_key(p: Path) -> tuple[int, str]:
+        # Prefer swarm-touched accounts (sibling .swarm_identity.json) over unrelated vault files.
+        swarm_touch = p.with_name(f"{p.stem}.swarm_identity.json").is_file()
+        return (0 if swarm_touch else 1, p.as_posix().lower())
+
+    first = sorted(sessions, key=_fallback_sort_key)[0]
+    return str(first.with_suffix("").resolve())
 
 
 def _reply_to_id(m: Any) -> int | None:
