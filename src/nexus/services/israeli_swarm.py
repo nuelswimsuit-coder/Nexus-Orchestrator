@@ -27,6 +27,9 @@ VAULT_INCOMING_DIR      — Override path to vault/incoming (default: auto-detec
 VAULT_SESSIONS_DIR      — Override path to vault/sessions (default: auto-detect)
 SWARM_SESSIONS_PER_CYCLE — Telethon send attempts per engine cycle (default 3, max 12)
 SWARM_TELETHON_TIMEOUT_S — Max seconds per Telethon connect/send attempt (default 90, max 300)
+
+A daemon thread publishes ``nexus:swarm:israeli:heartbeat`` every 15s so the dashboard
+sees a pulse even while ``CommunityEngine`` is blocked inside a long Telethon cycle.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 log = logging.getLogger("hatan.israeli_swarm")
+_HEARTBEAT_REDIS_WARNED = False
 
 # ── Path resolution ────────────────────────────────────────────────────────────
 
@@ -149,6 +153,7 @@ def _redis_sync_get(key: str) -> str | None:
 
 
 def _redis_sync_set(key: str, value: str, ex: int = 7200) -> None:
+    global _HEARTBEAT_REDIS_WARNED
     try:
         import redis as redis_sync
 
@@ -157,8 +162,14 @@ def _redis_sync_set(key: str, value: str, ex: int = 7200) -> None:
             r.set(key, value[:2000], ex=ex)
         finally:
             r.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        if key == _ISRAELI_HEARTBEAT_KEY and not _HEARTBEAT_REDIS_WARNED:
+            log.warning(
+                "[COMMUNITY] Redis heartbeat write failed — broker unreachable or wrong REDIS_URL "
+                "(engine uses coerced DSN like the API). Error: %s",
+                exc,
+            )
+            _HEARTBEAT_REDIS_WARNED = True
 
 
 def _consume_poke_sync() -> bool:
@@ -794,13 +805,33 @@ class IsraeliSwarmEngine:
 
     def __init__(self) -> None:
         global _harvester, _community
+        self._hb_stop: threading.Event | None = None
+        self._hb_thread: threading.Thread | None = None
         _harvester = SessionHarvester()
         _community = CommunityEngine()
+
+    def _ensure_periodic_heartbeat(self) -> None:
+        """Pulse Redis while Telethon may block the community thread for minutes."""
+        if self._hb_thread is not None and self._hb_thread.is_alive():
+            return
+        self._hb_stop = threading.Event()
+
+        def _run() -> None:
+            assert self._hb_stop is not None
+            while not self._hb_stop.wait(15.0):
+                _touch_engine_heartbeat_sync()
+
+        self._hb_thread = threading.Thread(
+            target=_run, name="israeli-swarm-heartbeat", daemon=True
+        )
+        self._hb_thread.start()
 
     def start(self) -> None:
         global _harvester, _community
         _harvester.start()  # type: ignore[union-attr]
         _community.start()  # type: ignore[union-attr]
+        _touch_engine_heartbeat_sync()
+        self._ensure_periodic_heartbeat()
         log.info(
             "[%s] ✅ HATAN INDUSTRIES — ISRAELI SWARM ACTIVE — 5,000 MEMBER SIMULATION RUNNING",
             self.SERVICE_NAME,
@@ -812,6 +843,12 @@ class IsraeliSwarmEngine:
 
     def stop(self) -> None:
         global _harvester, _community
+        if self._hb_stop is not None:
+            self._hb_stop.set()
+        if self._hb_thread is not None:
+            self._hb_thread.join(timeout=5.0)
+            self._hb_thread = None
+            self._hb_stop = None
         if _harvester:
             _harvester.stop()
         if _community:

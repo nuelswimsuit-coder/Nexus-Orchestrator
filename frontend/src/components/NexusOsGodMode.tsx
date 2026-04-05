@@ -6937,7 +6937,7 @@ function _formatEngineHeartbeatLine(
   if (ts === undefined || ts <= 0) {
     return {
       text:
-        "דופק מנוע: אין עדכון — זו חותמת פעילות של תהליך israeli_swarm ב-Redis (מפתח nexus:swarm:israeli:heartbeat), לא קשור לסשני טלגרם (‎.session) בדיסק. ודא ש־israeli-swarm רץ (למשל nexus_launcher), ש־REDIS_URL זהה ל-API, ושהנחיל ב־running; הדופק מתעדכן בתחילת כל מחזור. שגיאות מנוע מוצגות למטה.",
+        "דופק מנוע: אין עדכון — חותמת ב-Redis (מפתח nexus:swarm:israeli:heartbeat), לא קשור לסשני טלגרם (‎.session). כל עוד תהליך israeli_swarm חי הוא אמור לעדכן כל ~15 שניות; אם אין דופק — התהליך לא רץ, Redis לא נגיש מהמנוע, או ה-API על ברוקר אחר (fakeredis). ודא nexus_launcher / REDIS_URL / סטטוס running. שגיאות מנוע למטה.",
       stale: true,
     };
   }
