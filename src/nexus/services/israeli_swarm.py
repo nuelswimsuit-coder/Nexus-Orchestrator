@@ -439,6 +439,9 @@ class CommunityEngine:
                 log.debug("[COMMUNITY] Swarm paused — Redis status is not 'running'")
                 return
 
+            # Pulse early so the dashboard sees a heartbeat during long Telethon work, not only at cycle end.
+            _touch_engine_heartbeat_sync()
+
             group_link = effective_swarm_group_link()
             if not group_link:
                 msg = "חסר קישור קבוצה — לחץ Start Swarm בדשבורד או הגדר SWARM_GROUP_LINK"

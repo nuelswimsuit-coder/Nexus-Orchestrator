@@ -6889,14 +6889,19 @@ interface SwarmFeedData {
 }
 
 function _formatEngineHeartbeatLine(
-  ts: number | undefined,
+  feed: SwarmFeedData | null | undefined,
   swarmRunning: boolean,
 ): { text: string; stale: boolean } {
   if (!swarmRunning) return { text: "", stale: false };
+  if (feed?.redis_degraded) {
+    return { text: "", stale: false };
+  }
+  const ts = feed?.engine_last_seen_ts;
   const now = Date.now() / 1000;
   if (ts === undefined || ts <= 0) {
     return {
-      text: "מנוע: אין דופק ב-Redis — אם הנחיל מסומן כרץ, ודא ש-israeli-swarm רץ ומחובר לאותו Redis כמו ה-API.",
+      text:
+        "מנוע: אין דופק ב-Redis — ה-API רואה את אותו ברוקר, אבל israeli-swarm לא כתב ל־nexus:swarm:israeli:heartbeat. ודא שתהליך israeli-swarm רץ (למשל nexus_launcher), ש־REDIS_URL זהה בין API למנוע, ושהנחיל באמת ב־running. הדופק מתעדכן בתחילת כל מחזור; אם אין דופק אחרי ~דקה — המנוע כנראה לא רץ או מחובר ל-Redis אחר. שגיאות מנוע מוצגות למטה.",
       stale: true,
     };
   }
@@ -7061,7 +7066,7 @@ function LiveSwarmView() {
     : "—";
 
   const recentMessages = feed?.recent_messages ?? [];
-  const engineHb = _formatEngineHeartbeatLine(feed?.engine_last_seen_ts, swarmRunning);
+  const engineHb = _formatEngineHeartbeatLine(feed, swarmRunning);
 
   return (
     <div className="space-y-6" dir="rtl">
