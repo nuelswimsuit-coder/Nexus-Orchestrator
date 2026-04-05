@@ -22,9 +22,8 @@ log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/swarm", tags=["swarm"])
 
 _SWARM_DEGRADED_MSG = (
-    "ה-API במצב Redis מקומי בזיכרון (degraded) — לא אותו ברוקר כמו תהליך israeli-swarm. "
-    "לכן Start/Poke/פיד לא מגיעים למנוע. הפעל redis-server אמיתי, ודא ש-REDIS_URL נכון, "
-    "והפעל מחדש את ה-API (ללא NEXUS_ALLOW_DEGRADED)."
+    "הדשבורד רץ במצב זמני מקומי ולא מסונכן עם שירות הנחיל שמפעיל חשבונות טלגרם מהסריקה. "
+    "הפעל redis-server, ודא REDIS_URL, והפעל מחדש את שרת ה-API (או את כל הסט מ־nexus_launcher)."
 )
 
 

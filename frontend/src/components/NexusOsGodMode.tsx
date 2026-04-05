@@ -6916,7 +6916,7 @@ interface SwarmFeedData {
   last_engine_error?: string;
   /** True when API uses in-memory Redis (degraded) — not the same broker as israeli_swarm. */
   redis_degraded?: boolean;
-  /** Unix seconds (UTC): last engine activity stamp from israeli_swarm (Redis key heartbeat) — not a Telegram .session. */
+  /** Unix seconds (UTC): last time the background community service reported alive (for ops). */
   engine_last_seen_ts?: number;
   /** When degraded: separate PING to ``REDIS_URL`` (real broker), not the in-memory client. */
   broker_reachable?: boolean | null;
@@ -6937,18 +6937,31 @@ function _formatEngineHeartbeatLine(
   if (ts === undefined || ts <= 0) {
     return {
       text:
-        "דופק מנוע: אין עדכון — חותמת ב-Redis (מפתח nexus:swarm:israeli:heartbeat), לא קשור לסשני טלגרם (‎.session). כל עוד תהליך israeli_swarm חי הוא אמור לעדכן כל ~15 שניות; אם אין דופק — התהליך לא רץ, Redis לא נגיש מהמנוע, או ה-API על ברוקר אחר (fakeredis). ודא nexus_launcher / REDIS_URL / סטטוס running. שגיאות מנוע למטה.",
+        "שירות הקהילה ברקע לא מדווח פעיל — חשבונות הטלגרם שמצאת בסריקה (קבצי ‎.session ב־vault) לא יוכלו לשלוח בפועל לקבוצה עד שהשירות רץ ומסונכרן עם הדף הזה. הפעל את הנחיל דרך ה־launcher של הפרויקט והמתן כחצי דקה. אם מופיעה הודעת שגיאה כתומה למטה — שם הסיבה.",
       stale: true,
     };
   }
   const age = now - ts;
-  if (age < 0) return { text: "דופק מנוע: עודכן כרגע", stale: false };
-  if (age < 60) return { text: `דופק מנוע: פעיל — לפני ${Math.floor(age)} שניות`, stale: age > 45 };
+  if (age < 0) {
+    return { text: "שירות הקהילה פעיל — הבוטים מהסריקה יכולים לעבוד בקבוצה (עדכון זה עתה).", stale: false };
+  }
+  if (age < 60) {
+    return {
+      text: `שירות הקהילה פעיל — חשבונות מהסריקה מחוברים ללוגיקה. עדכון לפני ${Math.floor(age)} שניות.`,
+      stale: age > 45,
+    };
+  }
   if (age < 3600) {
     const stale = age > 600;
-    return { text: `דופק מנוע: לפני ${Math.floor(age / 60)} דקות`, stale };
+    return {
+      text: `שירות הקהילה דיווח לפני ${Math.floor(age / 60)} דקות — אם אין הודעות בקבוצה, בדוק שגיאה למטה או שהקישור לקבוצה נכון.`,
+      stale,
+    };
   }
-  return { text: `דופק מנוע: לפני ${Math.floor(age / 3600)} שעות`, stale: true };
+  return {
+    text: `שירות הקהילה לא דיווח זמן רב (${Math.floor(age / 3600)} שע׳) — ייתכן שהרקע נעצר; הפעל מחדש מה־launcher.`,
+    stale: true,
+  };
 }
 
 function SwarmBotCard({ bot }: { bot: SwarmBot }) {
@@ -7109,30 +7122,29 @@ function LiveSwarmView() {
       {feed?.redis_degraded && (
         <div className="sticky top-0 z-20 rounded-2xl border border-rose-500/50 bg-rose-950/50 px-4 py-3 text-[12px] text-rose-100/95 leading-relaxed shadow-lg shadow-black/20 backdrop-blur-sm space-y-2">
           <span className="font-black text-rose-400 uppercase tracking-widest text-[10px] block mb-1">
-            Redis — מצב degraded (זיכרון מקומי / fakeredis)
+            הדף לא מסונכן עם שירות הקהילה
           </span>
           <p>
-            ה-API לא מחובר לברוקר Redis האמיתי. תהליך <strong>israeli-swarm</strong> קורא את{" "}
-            <strong>Redis האמיתי</strong> מ-<code className="text-rose-200/90">REDIS_URL</code> — לכן אין דופק
-            מנוע בפיד הזה, ו-<strong>Start/Poke לא מגיעים למנוע</strong>.
+            כפתורי Start כאן <strong>לא</strong> מגיעים לרכיב שמפעיל את <strong>חשבונות הטלגרם מסריקת המחשב</strong> (קבצי ‎.session).
+            הדשבורד רץ במצב זמני מקומי; שירות הנחיל ברקע משתמש בחיבור הרגיל של הפרויקט — לכן לא תראה פעילות אמיתית בקבוצה עד
+            שתיישרו את ההפעלה (שרת אחד + אותו חיבור כמו ב־launcher).
           </p>
           {feed.configured_redis_url_safe && (
             <p className="font-mono text-[11px] text-rose-200/80 break-all" dir="ltr">
-              ברוקר מוגדר: {feed.configured_redis_url_safe}
+              יעד חיבור (אופרטור): {feed.configured_redis_url_safe}
             </p>
           )}
           {feed.broker_reachable === true && (
             <p className="rounded-xl border border-emerald-500/40 bg-emerald-950/40 px-3 py-2 text-emerald-100/95">
-              <strong className="text-emerald-300">PING לברוקר הצליח</strong> — Redis זמין, אבל תהליך ה-API נשאר על
-              fakeredis. <strong>הפעל מחדש את שרת ה-API</strong> (או הרץ דרך <code className="text-emerald-200/90">nexus_launcher</code> אחרי ש-redis-server עלה) כדי
-              להתחבר לברוקר האמיתי.
+              <strong className="text-emerald-300">החיבור לרשת התאושש</strong> — הפעל מחדש את <strong>שרת ה-API</strong> של הפרויקט
+              (או את כל הסט מ־<code className="text-emerald-200/90">nexus_launcher</code>) כדי שהדף והנחיל ידברו שוב על אותו ערוץ.
             </p>
           )}
           {feed.broker_reachable === false && (
             <p className="rounded-xl border border-amber-500/40 bg-amber-950/35 px-3 py-2 text-amber-100/95">
-              <strong className="text-amber-300">PING לברוקר נכשל</strong> — הפעל <code className="text-amber-200/90">redis-server</code>, ודא
-              ש-<code className="text-amber-200/90">REDIS_URL</code> תואם לפורט/מחשב הנכון (ב-Windows לעיתים{" "}
-              <code className="text-amber-200/90">[::1]:6379</code>), ואז הפעל מחדש את ה-API.
+              <strong className="text-amber-300">אין גישה לשירות הסנכרון</strong> — ודא שרת ה־redis של הפרויקט רץ ושההגדרות
+              (<code className="text-amber-200/90">REDIS_URL</code>) תואמות למחשב; ב-Windows לעיתים כתובת הלולאה היא{" "}
+              <code className="text-amber-200/90">[::1]:6379</code>.
             </p>
           )}
         </div>
@@ -7145,7 +7157,7 @@ function LiveSwarmView() {
         <div>
           <h2 className="text-xl font-black text-white tracking-tight">קהילה חיה — Live AI Swarm</h2>
           <p className="text-[11px] text-slate-500 font-bold uppercase tracking-widest">
-            מנוע נחיל ישראלי · Gemini Hebrew Content Engine
+            בוטים בקבוצות טלגרם — מחשבונות Telethon שנמצאו בסריקה (‎.session ב־vault) · תוכן בעברית (Gemini)
           </p>
         </div>
         {swarmRunning && (
@@ -7171,7 +7183,7 @@ function LiveSwarmView() {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
           <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">
-            סשנים בדיסק (‎.session)
+            סשני טלגרם מסריקה (‎.session)
           </div>
           <div className="text-2xl font-black text-purple-400">{feed?.total_sessions ?? 0}</div>
         </div>
@@ -7235,7 +7247,7 @@ function LiveSwarmView() {
         {feed?.last_engine_error?.trim() && (
           <div className="rounded-xl border border-amber-500/50 bg-amber-950/40 px-4 py-3 text-[12px] text-amber-100/95 leading-relaxed font-mono">
             <span className="font-black text-amber-400 uppercase tracking-widest text-[10px] block mb-1">
-              מנוע israeli_swarm — שגיאה אחרונה
+              שגיאה — שירות הקהילה / חיבור לקבוצה
             </span>
             {feed.last_engine_error}
           </div>
@@ -7329,8 +7341,8 @@ function LiveSwarmView() {
           </div>
           <div className="text-slate-600 text-[12px] max-w-lg mx-auto leading-relaxed">
             {swarmRunning
-              ? "אם המונה למעלה מראה סשנים אבל אין הודעות: ודא שב-vault/sessions יש קבצי ‎.session של Telethon (לא רק JSON), ש־TELEFIX/TELEGRAM API מוגדרים, ושתהליך israeli-swarm רץ מאותו פרויקט. השגיאה האחרונה מופיעה למעלה אם המנוע דיווח."
-              : "הפעל את הנחיל עם קישור לקבוצה כדי להתחיל"}
+              ? "הפעילות בקבוצה מגיעה מחשבונות שמצאת בסריקה: צריך קבצי ‎.session אמיתיים ב־vault/sessions (לא רק JSON), מזהי Telegram API בתצורה, ושירות הנחיל ברקע מהפעלת ה־launcher. הודעת שגיאה כתומה למעלה מסבירה אם משהו חסר."
+              : "הפעל את הנחיל עם קישור לקבוצת טלגרם כדי שהבוטים מהסריקה יתחילו לפעול"}
           </div>
         </div>
       )}
