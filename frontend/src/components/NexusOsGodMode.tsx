@@ -1148,6 +1148,11 @@ function GroupFactoryView() {
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [startFactoryLoading, setStartFactoryLoading] = useState(false);
   const [factoryGroupsHint, setFactoryGroupsHint] = useState<string | null>(null);
+  const [factoryScheduleCounts, setFactoryScheduleCounts] = useState<{
+    groups_total: number;
+    groups_in_warmup: number;
+    groups_in_public_trial: number;
+  } | null>(null);
 
   const showToast = (msg: string, ok = true) => {
     setToast({ msg, ok });
@@ -1182,11 +1187,22 @@ function GroupFactoryView() {
     try {
       const res = await fetch(`${API_BASE}/api/telefix/group-factory/schedule`);
       if (!res.ok) return;
-      const j = (await res.json()) as { settings: GroupFactorySettingsForm };
+      const j = (await res.json()) as {
+        settings: GroupFactorySettingsForm;
+        groups_total?: number;
+        groups_in_warmup?: number;
+        groups_in_public_trial?: number;
+      };
       if (j.settings) {
         setScheduleSettings(j.settings);
         setSettingsForm(j.settings);
       }
+      setFactoryScheduleCounts({
+        groups_total: typeof j.groups_total === "number" ? j.groups_total : 0,
+        groups_in_warmup: typeof j.groups_in_warmup === "number" ? j.groups_in_warmup : 0,
+        groups_in_public_trial:
+          typeof j.groups_in_public_trial === "number" ? j.groups_in_public_trial : 0,
+      });
     } catch { /* ignore */ }
   }, []);
 
@@ -1430,9 +1446,15 @@ function GroupFactoryView() {
           </div>
           <div className="bg-violet-500/10 rounded-2xl p-4 border border-violet-500/20 text-center">
             <div className="text-2xl font-black text-violet-400">{scheduleSettings?.groups_per_day ?? "—"}</div>
-            <div className="text-xs text-violet-600 font-bold mt-0.5">קבוצות ליום</div>
+            <div className="text-xs text-violet-600 font-bold mt-0.5">יעד יצירה ליום (לא ספירת קבוצות)</div>
           </div>
         </div>
+        {factoryScheduleCounts && (
+          <p className="text-[11px] text-slate-500 mb-4 leading-relaxed">
+            מחזור חיים בקובץ state (מאסטר): {factoryScheduleCounts.groups_total} במעקב · חימום{" "}
+            {factoryScheduleCounts.groups_in_warmup} · ניסיון ציבורי {factoryScheduleCounts.groups_in_public_trial}
+          </p>
+        )}
 
         {/* Settings panel */}
         {showSettings && settingsForm && (

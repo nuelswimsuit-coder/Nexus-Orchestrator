@@ -2,8 +2,11 @@
 Private-group warm-up → public indexing loop (master-side state machine).
 
 Uses Hebrew naming hints from ``vault/config/group_names.json``, merges with
-live ``nexus:swarm:warmer:groups`` entries, and keeps durable state in
-``vault/data/group_factory_state.json``.
+live ``nexus:swarm:warmer:groups`` entries plus **telefix.db** ``managed_groups``
+rows (public ``t.me`` targets), and keeps durable state in
+``vault/data/group_factory_state.json``. Ticks run only when
+``vault/data/group_factory_settings.json`` has ``automation_armed`` true (if the
+file is missing, behaviour stays “always on” for backwards compatibility).
 
 Phases
 ------
@@ -19,6 +22,7 @@ public indexing.
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -27,12 +31,14 @@ import httpx
 import structlog
 
 from nexus.services.swarm_social_scheduler import SWARM_GROUPS_KEY
+from nexus.shared.db_util import TELEFIX_DB_PATH
 
 log = structlog.get_logger(__name__)
 
 _REPO = Path(__file__).resolve().parents[3]
 _GROUP_NAMES_PATH = _REPO / "vault" / "config" / "group_names.json"
 _STATE_PATH = _REPO / "vault" / "data" / "group_factory_state.json"
+_FACTORY_SETTINGS_PATH = _REPO / "vault" / "data" / "group_factory_settings.json"
 _UI_KEY = "nexus:ui:group_factory"
 _WARMUP_DAYS = 14
 _COOLDOWN_HOURS = 24
@@ -94,6 +100,113 @@ def _parse_iso(ts: str | None) -> datetime | None:
         return None
 
 
+def _factory_automation_armed() -> bool:
+    # No settings file yet → keep legacy behaviour (tick always ran before this flag existed).
+    if not _FACTORY_SETTINGS_PATH.is_file():
+        return True
+    try:
+        data = json.loads(_FACTORY_SETTINGS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return True
+        armed = data.get("automation_armed")
+        if armed is None:
+            return True
+        return bool(armed)
+    except Exception:
+        return True
+
+
+def _sqlite_table_exists(cur: sqlite3.Cursor, name: str) -> bool:
+    cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        (name,),
+    )
+    return cur.fetchone() is not None
+
+
+def _invite_for_managed_row(joined_invite: Any, username: Any) -> str | None:
+    if joined_invite:
+        s = str(joined_invite).strip()
+        if s:
+            return s
+    if username:
+        un = str(username).strip().lstrip("@")
+        if un:
+            return f"https://t.me/{un}"
+    return None
+
+
+def _usable_tme_public_link(invite: str | None) -> bool:
+    if not invite:
+        return False
+    low = invite.lower()
+    return "t.me/" in low or "telegram.me/" in low
+
+
+def _username_from_invite(invite: str) -> str:
+    low = invite.lower()
+    for marker in ("t.me/", "telegram.me/"):
+        if marker in low:
+            rest = low.split(marker, 1)[1].split("?", 1)[0].strip().strip("/")
+            if "/" not in rest:
+                return rest
+    return ""
+
+
+def _load_telefix_managed_factory_seed() -> dict[str, dict[str, Any]]:
+    """
+    Mirror telefix ``managed_groups`` (public t.me targets) into the same shape as
+    ``nexus:swarm:warmer:groups`` so the warm-up / probe loop runs without Redis prep.
+    """
+    db_path = TELEFIX_DB_PATH
+    if not db_path.is_file():
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=5, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        try:
+            cur = conn.cursor()
+            if not _sqlite_table_exists(cur, "managed_groups"):
+                return {}
+            if _sqlite_table_exists(cur, "groups"):
+                sql = """
+                    SELECT mg.group_id, mg.title, mg.username,
+                           g.invite_link AS joined_invite
+                    FROM managed_groups mg
+                    LEFT JOIN groups g ON CAST(mg.group_id AS TEXT) = CAST(g.id AS TEXT)
+                """
+            else:
+                sql = """
+                    SELECT mg.group_id, mg.title, mg.username, NULL AS joined_invite
+                    FROM managed_groups mg
+                """
+            cur.execute(sql)
+            for row in cur.fetchall():
+                invite = _invite_for_managed_row(row["joined_invite"], row["username"])
+                if not _usable_tme_public_link(invite):
+                    continue
+                un = str(row["username"] or "").strip().lstrip("@")
+                if not un:
+                    un = _username_from_invite(invite or "")
+                if not un:
+                    continue
+                gid = row["group_id"]
+                key = f"mg:{gid}"
+                title = str(row["title"] or "").strip() or key
+                out[key] = {
+                    "group_title": title,
+                    "public_username": un,
+                    "username": un,
+                    "enabled": True,
+                }
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("group_factory_telefix_seed_failed", error=str(exc))
+    return out
+
+
 async def _probe_tme_public(username: str) -> bool:
     u = (username or "").strip().lstrip("@")
     if not u:
@@ -118,6 +231,10 @@ class GroupFactoryService:
         self._redis = redis
 
     async def tick(self) -> None:
+        if not _factory_automation_armed():
+            log.debug("group_factory_tick_skipped_disarmed")
+            return
+
         cfg = load_group_names_config()
         raw = await self._redis.get(SWARM_GROUPS_KEY)
         groups_cfg: dict[str, Any] = {}
@@ -129,8 +246,17 @@ class GroupFactoryService:
             except Exception:
                 pass
 
+        telefix_seed = _load_telefix_managed_factory_seed()
+        for k, v in telefix_seed.items():
+            groups_cfg.setdefault(k, v)
+
         state = _load_state()
         gmap: dict[str, Any] = state.setdefault("groups", {})
+        for stale in list(gmap.keys()):
+            sk = str(stale)
+            if sk.startswith("mg:") and sk not in telefix_seed:
+                gmap.pop(stale, None)
+
         now = datetime.now(timezone.utc)
         ui_rows: list[dict[str, Any]] = []
 

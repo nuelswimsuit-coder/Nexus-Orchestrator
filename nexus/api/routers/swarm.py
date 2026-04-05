@@ -500,6 +500,11 @@ async def _ensure_israeli_swarm_process(request: Request, redis: Any) -> None:
     url = redis_util.coerce_redis_url_for_platform(settings.redis_url)
     child_env = os.environ.copy()
     child_env["REDIS_URL"] = url
+    repo_str = str(repo)
+    prev_pp = (child_env.get("PYTHONPATH") or "").strip()
+    child_env["PYTHONPATH"] = (
+        f"{repo_str}{os.pathsep}{prev_pp}" if prev_pp else repo_str
+    )
 
     def _popen() -> None:
         kwargs: dict[str, Any] = dict(

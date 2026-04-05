@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-04-05T01:11:38Z",
+  "updated_at": "2026-04-05T10:40:59Z",
   "groups": [
     {
       "id": "g1",
@@ -30,6 +30,17 @@
       "telegram_link": null,
       "force_searched_at": "2026-04-05T01:11:38Z",
       "source": "force_search_upsert"
+    },
+    {
+      "id": "g479fc1b9",
+      "name_he": "דגכ עדגכעדג יעגכי בהננ",
+      "is_private": true,
+      "in_search": false,
+      "joined_at": "2026-04-05T10:40:59Z",
+      "telegram_link": null,
+      "notes": null,
+      "created_on_telegram": false,
+      "initial_warmup_days": 1
     }
   ]
 }

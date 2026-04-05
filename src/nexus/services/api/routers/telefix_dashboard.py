@@ -521,6 +521,31 @@ def _merge_scanned_and_db_session_tokens(
     return tokens
 
 
+def _digits_only_key(s: str) -> str:
+    return "".join(c for c in str(s) if c.isdigit())
+
+
+def _phone_core_variants(digits: str) -> set[str]:
+    """
+    Comparable phone signatures for owner_session ↔ fleet / sessions table matching.
+    Handles +972… vs 0… vs local mobile cores (last 9–10 digits).
+    """
+    d = digits.strip()
+    if len(d) < 8:
+        return set()
+    variants = {d, d[-9:], d[-10:]}
+    if d.startswith("972"):
+        local = d[3:].lstrip("0")
+        if len(local) >= 8:
+            variants.add(local)
+            variants.add(local[-9:])
+    elif d.startswith("0") and len(d) >= 10:
+        local = d[1:]
+        variants.add(local)
+        variants.add(local[-9:])
+    return {v for v in variants if len(v) >= 8}
+
+
 def _owner_matches_session_tokens(owner_raw: str | None, tokens: set[str]) -> bool:
     o = str(owner_raw or "").strip()
     if not o or o == "(unassigned)":
@@ -528,14 +553,22 @@ def _owner_matches_session_tokens(owner_raw: str | None, tokens: set[str]) -> bo
     ol = o.lower()
     if ol in tokens:
         return True
-    od = "".join(c for c in o if c.isdigit())
-    if len(od) >= 8:
-        for t in tokens:
-            if len(t) >= 8 and t.isdigit():
-                if od == t or od.endswith(t[-10:]) or t.endswith(od[-10:]):
-                    return True
+    od = _digits_only_key(o)
+    o_cores = _phone_core_variants(od) if len(od) >= 8 else set()
     for t in tokens:
-        if len(t) > 4 and not t.isdigit() and t in ol:
+        ts = str(t)
+        tl = ts.lower()
+        if tl == ol:
+            return True
+        td = _digits_only_key(ts)
+        if len(td) >= 8:
+            if o_cores & _phone_core_variants(td):
+                return True
+            if len(od) >= 8 and (od == td or od.endswith(td[-9:]) or td.endswith(od[-9:])):
+                return True
+    for t in tokens:
+        ts = str(t)
+        if len(ts) > 4 and not ts.isdigit() and ts.lower() in ol:
             return True
     return False
 

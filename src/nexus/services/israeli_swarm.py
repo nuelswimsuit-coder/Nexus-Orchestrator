@@ -217,6 +217,7 @@ def _redis_sync_set(key: str, value: str, ex: int = 7200) -> None:
                             "data": {
                                 "redis_host": _host,
                                 "exc_type": type(exc).__name__,
+                                "exc_detail": str(exc)[:240],
                             },
                         },
                         ensure_ascii=False,
