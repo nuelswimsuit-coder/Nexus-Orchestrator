@@ -796,8 +796,13 @@ def get_swarm_stats() -> dict[str, Any]:
         bots_joined         — bots that joined the group this run
         messages_sent       — messages sent this run
     """
-    sessions = list(_VAULT_SESSIONS.glob("*.session")) if _VAULT_SESSIONS.is_dir() else []
-    total_sessions = len(sessions)
+    try:
+        from nexus.services.tg_session_disk import count_live_telethon_session_files
+
+        total_sessions = count_live_telethon_session_files()
+    except Exception:
+        sessions = list(_VAULT_SESSIONS.glob("*.session")) if _VAULT_SESSIONS.is_dir() else []
+        total_sessions = len(sessions)
 
     verified = 0
     written = 0

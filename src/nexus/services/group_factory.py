@@ -4,9 +4,9 @@ Private-group warm-up → public indexing loop (master-side state machine).
 Uses Hebrew naming hints from ``vault/config/group_names.json``, merges with
 live ``nexus:swarm:warmer:groups`` entries plus **telefix.db** ``managed_groups``
 rows (public ``t.me`` targets), and keeps durable state in
-``vault/data/group_factory_state.json``. Ticks run only when
-``vault/data/group_factory_settings.json`` has ``automation_armed`` true (if the
-file is missing, behaviour stays “always on” for backwards compatibility).
+``vault/data/group_factory_state.json``. If ``group_factory_settings.json``
+exists, ticks are skipped while ``automation_armed`` is false; if that file is
+missing, the loop keeps the historical always-on behaviour.
 
 Phases
 ------
