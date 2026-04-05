@@ -5,6 +5,7 @@ Swarm Social Synthesis — dashboard API for community identity + group registry
 from __future__ import annotations
 
 import json
+import pathlib
 import uuid
 from typing import Any
 
@@ -364,6 +365,34 @@ _ISRAELI_STATUS_KEY = "nexus:swarm:israeli:status"
 _ISRAELI_LAST_ENGINE_ERROR_KEY = "nexus:swarm:israeli:last_engine_error"
 
 
+# #region agent log
+def _dbg_swarm43(location: str, message: str, data: dict[str, Any], hypothesis_id: str) -> None:
+    import time as _t
+
+    try:
+        _p = pathlib.Path(__file__).resolve().parents[3] / "debug-43baa8.log"
+        with open(_p, "a", encoding="utf-8") as _f:
+            _f.write(
+                json.dumps(
+                    {
+                        "sessionId": "43baa8",
+                        "location": location,
+                        "message": message,
+                        "data": data,
+                        "timestamp": int(_t.time() * 1000),
+                        "hypothesisId": hypothesis_id,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+
+
+# #endregion
+
+
 class SwarmStartBody(BaseModel):
     target_group: str = Field(default="", description="Telegram group invite link or @username")
 
@@ -467,6 +496,30 @@ async def get_live_feed(redis: RedisDep) -> dict[str, Any]:
             else str(last_engine_err_raw)
         )
 
+    # #region agent log
+    _sr = status_raw
+    if _sr is None:
+        _status_preview = ""
+    elif isinstance(_sr, bytes):
+        _status_preview = _sr.decode("utf-8", errors="replace")[:80]
+    else:
+        _status_preview = str(_sr)[:80]
+    _dbg_swarm43(
+        "swarm.py:get_live_feed",
+        "live_feed_snapshot",
+        {
+            "is_running": is_running,
+            "status_raw": _status_preview,
+            "events_len": len(events_raw),
+            "bots_len": len(bots),
+            "total_sessions": total_sessions,
+            "last_engine_error_len": len(last_engine_error),
+            "last_engine_error_prefix": last_engine_error[:200],
+        },
+        "H1",
+    )
+    # #endregion
+
     return {
         "total_in_group": len(bots),
         "active_talkers": active_talkers,
@@ -494,6 +547,14 @@ async def start_swarm(body: SwarmStartBody, redis: RedisDep) -> dict[str, Any]:
     if body.target_group:
         await redis.set("nexus:swarm:israeli:target_group", body.target_group)
     log.info("swarm_start_requested", target_group=body.target_group or "(env)")
+    # #region agent log
+    _dbg_swarm43(
+        "swarm.py:start_swarm",
+        "redis_marked_running",
+        {"target_group_len": len((body.target_group or "").strip())},
+        "H2",
+    )
+    # #endregion
     return {"ok": True, "status": "running"}
 
 

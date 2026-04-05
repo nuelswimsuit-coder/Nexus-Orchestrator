@@ -70,6 +70,31 @@ _REDIS_SWARM_TARGET_KEY = "nexus:swarm:israeli:target_group"
 _REDIS_LAST_ENGINE_ERROR_KEY = "nexus:swarm:israeli:last_engine_error"
 
 
+# #region agent log
+def _dbg_is43(location: str, message: str, data: dict[str, Any], hypothesis_id: str) -> None:
+    try:
+        with open(_ROOT / "debug-43baa8.log", "a", encoding="utf-8") as _f:
+            _f.write(
+                json.dumps(
+                    {
+                        "sessionId": "43baa8",
+                        "location": location,
+                        "message": message,
+                        "data": data,
+                        "timestamp": int(time.time() * 1000),
+                        "hypothesisId": hypothesis_id,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+
+
+# #endregion
+
+
 def _redis_sync_get(key: str) -> str | None:
     try:
         import redis as redis_sync
@@ -348,6 +373,14 @@ class CommunityEngine:
     async def _cycle(self) -> None:
         if not _redis_swarm_status_allows_send():
             log.debug("[COMMUNITY] Swarm paused — Redis status is not 'running'")
+            # #region agent log
+            _dbg_is43(
+                "israeli_swarm.py:_cycle",
+                "early_return",
+                {"reason": "status_not_running_or_stopped"},
+                "H3",
+            )
+            # #endregion
             return
 
         group_link = effective_swarm_group_link()
@@ -355,6 +388,9 @@ class CommunityEngine:
             msg = "חסר קישור קבוצה — לחץ Start Swarm בדשבורד או הגדר SWARM_GROUP_LINK"
             log.warning("[COMMUNITY] %s", msg)
             _publish_engine_error(msg)
+            # #region agent log
+            _dbg_is43("israeli_swarm.py:_cycle", "early_return", {"reason": "no_group_link"}, "H5")
+            # #endregion
             return
 
         sessions = list(_VAULT_SESSIONS.glob("*.session"))
@@ -370,6 +406,15 @@ class CommunityEngine:
             hint = _vault_session_inventory_hint()
             log.warning("[COMMUNITY] %s", hint or "אין סשנים זמינים")
             _publish_engine_error(hint or "אין קבצי .session ב-vault/sessions")
+            # #region agent log
+            _n_json = len(list(_VAULT_SESSIONS.glob("*.json"))) if _VAULT_SESSIONS.is_dir() else -1
+            _dbg_is43(
+                "israeli_swarm.py:_cycle",
+                "early_return",
+                {"reason": "no_session_files", "json_files": _n_json},
+                "H4",
+            )
+            # #endregion
             return
 
         topic = random.choice(_TOPICS)
@@ -386,6 +431,18 @@ class CommunityEngine:
 
         # Attempt Telethon send if available
         sent = await self._try_send_telethon(session_file, message, group_link)
+        # #region agent log
+        _dbg_is43(
+            "israeli_swarm.py:_cycle",
+            "cycle_telethon",
+            {
+                "sent": sent,
+                "n_sessions": len(sessions),
+                "has_api_id": bool(int(os.getenv("TELEGRAM_API_ID", "0") or os.getenv("TELEFIX_API_ID", "0") or "0")),
+            },
+            "H1",
+        )
+        # #endregion
         if sent:
             self.messages_sent += 1
             await self._push_redis_event(phone, topic, message)
