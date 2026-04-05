@@ -45,6 +45,7 @@ class ManagementGroupsResponse(BaseModel):
 class ManagementScanRequest(BaseModel):
     run_health_scan: bool = True
     run_sentinel_seo: bool = False
+    run_seo_watchdog: bool = False
     seo_keyword_phrases: list[str] | None = None
 
     @field_validator("seo_keyword_phrases")

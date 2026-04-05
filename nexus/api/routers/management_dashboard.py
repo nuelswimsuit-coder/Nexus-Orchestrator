@@ -130,6 +130,27 @@ async def post_management_scan(body: ManagementScanRequest) -> ManagementScanRes
                 "task_id": task_id,
                 "job_id": getattr(job, "job_id", None),
             })
+
+        if body.run_seo_watchdog:
+            task_id = str(uuid.uuid4())
+            task = TaskPayload(
+                task_id=task_id,
+                task_type="seo.watchdog.audit",
+                parameters={"session_start_offset": -1},
+                project_id="management",
+                priority=4,
+            )
+            job = await pool.enqueue_job(
+                "execute_task",
+                task_payload=task.model_dump_for_wire(),
+                _job_id=task_id,
+                _queue_name="nexus:tasks",
+            )
+            enqueued.append({
+                "task_type": "seo.watchdog.audit",
+                "task_id": task_id,
+                "job_id": getattr(job, "job_id", None),
+            })
     except Exception as exc:
         errors.append(str(exc))
         log.warning("management_scan_enqueue_failed", error=str(exc))

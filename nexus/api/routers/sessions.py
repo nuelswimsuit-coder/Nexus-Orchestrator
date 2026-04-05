@@ -1,8 +1,10 @@
 """
+Telegram account sessions (Telethon) — not Redis connections.
+
 POST /api/sessions/send-code        — start Telethon login (SMS / app OTP).
 POST /api/sessions/verify-code      — submit OTP; optional second step with 2FA password.
-GET  /api/sessions/list             — staged sessions with Online / Offline status.
-GET  /api/sessions/vault/commander  — vault session health overview (lease + health status).
+GET  /api/sessions/list             — staged Telegram sessions with Online / Offline status.
+GET  /api/sessions/vault/commander  — vault Telegram session health (lease + health status).
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from nexus.master.services import session_factory as session_factory_svc
 
 log = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/sessions", tags=["sessions"])
+router = APIRouter(prefix="/sessions", tags=["telegram-sessions"])
 
 
 class SendCodeRequest(BaseModel):
@@ -53,7 +55,7 @@ async def send_code(body: SendCodeRequest) -> dict:
         ) from exc
 
 
-@router.post("/verify-code", summary="Verify OTP and save session")
+@router.post("/verify-code", summary="Verify OTP and save Telegram (Telethon) session")
 async def verify_code(body: VerifyCodeRequest) -> dict:
     try:
         return await session_factory_svc.verify_login(
@@ -82,14 +84,14 @@ async def list_sessions() -> dict:
     return {"sessions": rows, "count": len(rows)}
 
 
-@router.get("/vault/commander", summary="Session vault health overview")
+@router.get("/vault/commander", summary="Telegram session vault health overview")
 async def vault_commander(request: Request) -> dict:
     """
-    Return a health overview of all Telethon session files found in the vault.
+    Return a health overview of all Telegram (Telethon) account files in the vault.
 
-    Reads session JSON files from the configured TELEFIX_SESSIONS_DIR and
-    enriches them with Redis lease data (if available).  Falls back gracefully
-    if the vault directory does not exist.
+    Reads per-account JSON from TELEFIX_SESSIONS_DIR and enriches with Redis
+    lease keys (orchestration metadata — not the Telegram session itself).
+    Falls back gracefully if the vault directory does not exist.
     """
     redis = request.app.state.redis
 

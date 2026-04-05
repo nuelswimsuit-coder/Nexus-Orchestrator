@@ -455,7 +455,7 @@ export default function ProfitDashboard() {
             color: tokens.textMuted,
           }}
         >
-          sessions: {biz?.active_sessions ?? "—"} · health:{" "}
+          Telegram sessions: {biz?.active_sessions ?? "—"} · health:{" "}
           {report?.health_ratio != null ? `${report.health_ratio.toFixed(0)}%` : "—"}
         </div>
       )}

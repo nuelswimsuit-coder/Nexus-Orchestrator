@@ -633,6 +633,16 @@ async def run() -> None:
     dispatcher.cron.add(hour=2, minute=0, task=nightly_scrape, name="nightly-scrape")
     log.info("cron_nightly_scrape_registered", at="02:00 local")
 
+    if os.getenv("SEO_WATCHDOG_CRON_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
+        seo_watchdog = TaskPayload(
+            task_type="seo.watchdog.audit",
+            parameters={"session_start_offset": -1},
+            project_id="management",
+            priority=4,
+        )
+        dispatcher.cron.add(hour=3, minute=30, task=seo_watchdog, name="seo-watchdog-audit")
+        log.info("cron_seo_watchdog_registered", at="03:30 local")
+
     # Swarm Social Synthesis — AI group warmer + community classification
     if os.getenv("SWARM_SOCIAL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}:
         from nexus.master.services.swarm_social_scheduler import SwarmSocialScheduler

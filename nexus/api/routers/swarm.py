@@ -1,5 +1,8 @@
 """
 Swarm Social Synthesis — dashboard API for community identity + group registry.
+
+``/swarm/sessions/*`` endpoints deal with **Telegram (Telethon) account** inventory
+and scans; Redis keys under ``nexus:sessions:*`` only store that metadata.
 """
 
 from __future__ import annotations
@@ -42,7 +45,10 @@ class SwarmSessionEntry(BaseModel):
 
 class SwarmGroupUpsert(BaseModel):
     group_id: int
-    sessions: list[SwarmSessionEntry]
+    sessions: list[SwarmSessionEntry] = Field(
+        ...,
+        description="Telegram (Telethon) logins assigned to this swarm group",
+    )
     timezone: str = "UTC"
     enabled: bool = True
     group_title: str = ""
@@ -152,14 +158,17 @@ def _machine_id() -> str:
     return _socket.gethostname()
 
 
-@router.get("/sessions/inventory", summary="Get global session inventory grouped by machine")
+@router.get(
+    "/sessions/inventory",
+    summary="Get global Telegram (Telethon) session inventory grouped by machine",
+)
 async def get_session_inventory(redis: RedisDep) -> dict[str, Any]:
     """
-    Returns inventory in the shape the dashboard expects:
+    Returns Telegram account / Telethon session inventory the dashboard expects:
       {inventory_by_machine: {machine_id: [InventorySession]}, machines: [...], total: N}
 
-    Data is aggregated from all per-node keys ``nexus:sessions:inventory:<machine_id>``
-    plus the legacy single-node key ``nexus:sessions:inventory``.
+    Payloads are stored in Redis keys (not “Redis sessions”): per-node
+    ``nexus:sessions:inventory:<machine_id>`` plus legacy ``nexus:sessions:inventory``.
     """
     inventory_by_machine: dict[str, list[dict[str, Any]]] = {}
 
@@ -210,7 +219,10 @@ async def get_session_inventory(redis: RedisDep) -> dict[str, Any]:
     }
 
 
-@router.post("/sessions/inventory", summary="Update session inventory for this node")
+@router.post(
+    "/sessions/inventory",
+    summary="Update this node's Telegram (Telethon) session inventory",
+)
 async def set_session_inventory(body: dict, redis: RedisDep) -> dict[str, Any]:
     machine = body.get("machine_id") or _machine_id()
     # Store both per-node key and legacy key
@@ -219,15 +231,18 @@ async def set_session_inventory(body: dict, redis: RedisDep) -> dict[str, Any]:
     return {"ok": True, "machine_id": machine}
 
 
-@router.get("/sessions/all_scanned", summary="Get all scanned sessions across nodes")
+@router.get(
+    "/sessions/all_scanned",
+    summary="Get all scanned Telegram (Telethon) sessions across nodes",
+)
 async def get_all_scanned(redis: RedisDep) -> dict[str, Any]:
     """
-    Bridge endpoint: aggregates sessions from all three Redis sources into a
-    unified sessions_by_machine map.
+    Bridge endpoint: aggregates **Telegram (Telethon) session** records from
+    three Redis key namespaces into one ``sessions_by_machine`` map.
 
     Sources (in order of priority, deduplicated by redis_key):
-    1. ``session:*``                  — session_manager process heartbeats (TTL 120s)
-    2. ``nexus:sessions:*``           — deployer worker sessions
+    1. ``session:*`` — session_manager heartbeats for live Telegram sessions (TTL 120s)
+    2. ``nexus:sessions:*`` — deployer-published Telegram session rows (excludes inventory keys)
     3. ``nexus:session_vault:meta:*`` — vault Telethon session metadata
     """
     sessions_by_machine: dict[str, list[dict[str, Any]]] = {}
@@ -241,7 +256,7 @@ async def get_all_scanned(redis: RedisDep) -> dict[str, Any]:
             seen_keys.add(rk)
         sessions_by_machine.setdefault(machine, []).append(entry)
 
-    # ── Source 1: session:* (session_manager heartbeats) ──────────────────────
+    # ── Source 1: session:* (session_manager — Telegram session heartbeats) ───
     try:
         cursor = 0
         while True:
@@ -273,7 +288,7 @@ async def get_all_scanned(redis: RedisDep) -> dict[str, Any]:
     except Exception:
         pass
 
-    # ── Source 2: nexus:sessions:* (deployer worker sessions) ─────────────────
+    # ── Source 2: nexus:sessions:* (deployer — Telegram session rows) ──────────
     _skip_prefixes = (
         "nexus:sessions:all_scanned",
         "nexus:sessions:inventory",
@@ -358,7 +373,10 @@ async def get_all_scanned(redis: RedisDep) -> dict[str, Any]:
     }
 
 
-@router.post("/sessions/all_scanned", summary="Update all scanned sessions")
+@router.post(
+    "/sessions/all_scanned",
+    summary="Update aggregated scan snapshot for Telegram sessions on this node",
+)
 async def set_all_scanned(body: dict, redis: RedisDep) -> dict[str, Any]:
     machine = body.get("machine_id") or _machine_id()
     await redis.set(f"{_ALL_SCANNED_KEY}:{machine}", json.dumps(body, ensure_ascii=False))
@@ -706,7 +724,10 @@ FACTORY_METRICS_KEY = "nexus:swarm:factory:metrics"
 
 
 class CommunityFactoryInitiateBody(BaseModel):
-    sessions_dir: str = Field(default="", description="Directory of *.session files; default vault/sessions")
+    sessions_dir: str = Field(
+        default="",
+        description="Directory of Telethon *.session files (Telegram logins); default vault/sessions",
+    )
     phases: list[str] = Field(
         default_factory=lambda: ["allocate", "create", "join", "chat"],
         description="allocate | create | join | chat",

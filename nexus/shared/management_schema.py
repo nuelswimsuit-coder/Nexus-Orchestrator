@@ -50,6 +50,33 @@ CREATE TABLE IF NOT EXISTS rank_tracker (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rank_tracker_gm ON rank_tracker(group_metadata_id);
+
+CREATE TABLE IF NOT EXISTS member_audit (
+    id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id                   INTEGER NOT NULL,
+    user_id                    INTEGER NOT NULL,
+    join_date                  TEXT,
+    subscription_duration_days INTEGER NOT NULL DEFAULT 30
+        CHECK (subscription_duration_days IN (30, 60)),
+    is_premium                 INTEGER NOT NULL DEFAULT 0,
+    status                     TEXT NOT NULL
+        CHECK (status IN ('Active', 'Banned', 'Deleted', 'Left')),
+    invite_slug                TEXT,
+    updated_at                 TEXT DEFAULT (datetime('now')),
+    UNIQUE (group_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_member_audit_group ON member_audit(group_id);
+CREATE INDEX IF NOT EXISTS idx_member_audit_status ON member_audit(group_id, status);
+
+CREATE TABLE IF NOT EXISTS seo_invite_snapshot (
+    group_id           INTEGER NOT NULL PRIMARY KEY,
+    invite_link        TEXT,
+    usage_count        INTEGER NOT NULL DEFAULT 0,
+    participant_count  INTEGER NOT NULL DEFAULT 0,
+    ghost_delta        INTEGER NOT NULL DEFAULT 0,
+    audited_at         TEXT DEFAULT (datetime('now'))
+);
 """
 
 

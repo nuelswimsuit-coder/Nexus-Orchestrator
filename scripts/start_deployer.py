@@ -385,12 +385,13 @@ def create_deployer_app() -> FastAPI:
 
     @app.get(
         "/api/sessions/all",
-        tags=["sessions"],
-        summary="All active worker sessions (legacy UI endpoint)",
+        tags=["telegram-sessions"],
+        summary="All active Telegram (Telethon) worker session rows (legacy UI endpoint)",
         response_model=None,
     )
     async def sessions_all(request: Request) -> JSONResponse:
-        """Return every ``nexus:sessions:*`` key with its stored payload.
+        """Return every ``nexus:sessions:*`` key: each value describes a **Telegram (Telethon)**
+        session row published by workers — Redis is only the index, not “a Redis session”.
         Used by the legacy dashboard to display the full worker list (e.g. 153 workers)."""
         r = getattr(request.app.state, "redis", None)
         if r is None:
@@ -541,7 +542,7 @@ def create_deployer_app() -> FastAPI:
                     trading_status = trading_status_raw.decode() if isinstance(trading_status_raw, (bytes, bytearray)) else str(trading_status_raw)
                 else:
                     trading_status = "IDLE"
-                # Scan ALL nexus:sessions:* keys for a live count.
+                # Count Redis keys that index Telegram (Telethon) sessions (nexus:sessions:*).
                 _session_count = 0
                 _cursor = 0
                 while True:
@@ -808,7 +809,7 @@ def create_deployer_app() -> FastAPI:
       </div>
       <div class="card">
         <span class="card-icon">&#9679;</span>
-        <div class="card-label">&#9632; Active Sessions</div>
+        <div class="card-label">&#9632; Active Telegram sessions</div>
         <div class="card-value">{active_sessions}</div>
       </div>
       <div class="card">
@@ -991,7 +992,7 @@ def create_deployer_app() -> FastAPI:
         """
         JSON stats consumed by the Nexus OS dashboard.
 
-        - ``active_sessions``: count of all ``nexus:sessions:*`` keys in Redis.
+        - ``active_sessions``: count of ``nexus:sessions:*`` keys (each key indexes one Telegram/Telethon session row).
         - ``trading_status``: value of ``nexus:trading:status`` (defaults to ``"IDLE"``).
         - ``redis_status``: ``"ONLINE"`` | ``"OFFLINE"``.
         """
@@ -1009,7 +1010,7 @@ def create_deployer_app() -> FastAPI:
                 content={"redis_status": "OFFLINE", "active_sessions": 0, "trading_status": "IDLE", "detail": str(exc)},
             )
 
-        # Scan all nexus:sessions:* keys to get a live count.
+        # Count Telegram session rows indexed under nexus:sessions:*.
         session_count = 0
         try:
             cursor = 0
@@ -1056,13 +1057,14 @@ def create_deployer_app() -> FastAPI:
     @app.get(
         "/api/v1/swarm/inventory",
         tags=["swarm"],
-        summary="Swarm session inventory grouped by machine_id",
+        summary="Swarm Telegram (Telethon) session inventory grouped by machine_id",
         response_model=None,
     )
     async def swarm_inventory(request: Request) -> JSONResponse:
-        """Scan all nexus:sessions:* keys in Redis and return sessions grouped by machine_id.
+        """Scan ``nexus:sessions:*`` and return **Telegram (Telethon)** sessions grouped by machine_id.
 
-        Each session entry exposes: phone, machine_id, status, current_task.
+        Redis keys hold orchestration metadata; each entry describes one Telegram login row
+        (phone, machine_id, status, current_task, etc.).
         """
         r = getattr(request.app.state, "redis", None)
         if r is None:

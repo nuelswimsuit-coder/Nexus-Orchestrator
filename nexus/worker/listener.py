@@ -54,6 +54,7 @@ import nexus.worker.tasks.group_warmer  # noqa: F401 — registers swarm.group_w
 import nexus.worker.tasks.swarm  # noqa: F401 — registers swarm.community_factory.*
 import nexus.worker.tasks.incubator_spawn  # noqa: F401 — registers nexus.incubator.*
 import nexus.worker.tasks.account_mapper  # noqa: F401 — registers account_mapper.map
+import nexus.worker.tasks.auditor  # noqa: F401 — registers seo.watchdog.audit
 import nexus.worker.tasks.health_check  # noqa: F401 — registers management.group_health_scan
 import nexus.worker.tasks.sentinel_seo  # noqa: F401 — registers management.sentinel_seo
 import nexus.worker.tasks.moltbot  # noqa: F401 — registers bot.moltbot

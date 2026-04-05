@@ -431,7 +431,7 @@ export default function NexusOsGodMode() {
           <MenuItem
             id="session-swarm"
             icon={<Network size={18} />}
-            label="נחיל סשנים גלובלי"
+            label="נחיל סשני טלגרם גלובלי"
             active={activeTab}
             setActive={setActiveTabWithUrl}
           />
@@ -2400,7 +2400,7 @@ function AhuManagementView() {
 
   const tabs = [
     { id: "dashboard" as const, label: "Dashboard", icon: <LayoutDashboard size={14} /> },
-    { id: "sessions" as const, label: "Sessions", icon: <HardDrive size={14} /> },
+    { id: "sessions" as const, label: "סשני טלגרם", icon: <HardDrive size={14} /> },
     { id: "scraper" as const, label: "Scraper/Adder", icon: <Search size={14} /> },
     { id: "logs" as const, label: "Logs", icon: <Terminal size={14} /> },
     { id: "link" as const, label: "Quick Link", icon: <MessageSquareCode size={14} /> },
@@ -2412,7 +2412,7 @@ function AhuManagementView() {
       <div className="flex justify-between items-center mb-8 flex-wrap gap-4">
         <div>
           <h3 className="text-2xl font-black text-white">ניהול אהו — Ops Sync</h3>
-          <p className="text-slate-500 text-sm mt-1">ניהול בוט, סשנים, Scraper ולוגים חיים</p>
+          <p className="text-slate-500 text-sm mt-1">ניהול בוט, סשני טלגרם, Scraper ולוגים חיים</p>
         </div>
         <div className="flex items-center gap-3">
           {status && (

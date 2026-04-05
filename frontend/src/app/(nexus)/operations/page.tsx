@@ -94,7 +94,7 @@ export default function OperationsPage() {
           <StatCard icon="🎯" label="Target Groups"  value={biz?.target_groups ?? "—"} accent="#22d3ee" />
           <StatCard icon="👤" label="Scraped Users"  value={biz?.total_scraped_users ?? "—"} accent="#00ff88" sub="distinct" />
           <StatCard icon="📦" label="Pipeline"       value={biz?.total_users_pipeline ?? "—"} accent="#f59e0b" sub="users" />
-          <StatCard icon="🤖" label="Active Sessions" value={biz?.active_sessions ?? "—"} accent="#22c55e" />
+          <StatCard icon="🤖" label="Active Telegram sessions" value={biz?.active_sessions ?? "—"} accent="#22c55e" />
           <StatCard icon="❄️" label="Frozen Sessions" value={biz?.frozen_sessions ?? "—"} accent="#ef4444" />
         </div>
 

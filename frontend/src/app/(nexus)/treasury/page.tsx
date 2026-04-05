@@ -98,7 +98,7 @@ export default function TreasuryPage() {
           <KpiCard icon="💵" label="Net Revenue"   value={`$${Math.round(revenue - totalCost)}`} accent="#00ff88" sub="after costs" />
           <KpiCard icon="🎯" label="Target Groups" value={String(targets)} accent="#22d3ee" sub="active targets" />
           <KpiCard icon="👤" label="Pipeline"      value={String(pipeline)} accent="#f59e0b" sub="users ready" />
-          <KpiCard icon="🤖" label="Sessions"      value={String(report?.active_sessions ?? biz?.active_sessions ?? 0)} accent="#6366f1" sub="active" />
+          <KpiCard icon="🤖" label="Telegram sessions" value={String(report?.active_sessions ?? biz?.active_sessions ?? 0)} accent="#6366f1" sub="active" />
           <KpiCard icon="❤️" label="Health"        value={`${(report?.health_ratio ?? 0).toFixed(0)}%`} accent="#22c55e" sub="session ratio" />
         </div>
 

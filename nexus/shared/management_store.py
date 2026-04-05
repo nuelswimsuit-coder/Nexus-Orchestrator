@@ -406,3 +406,301 @@ def sync_upsert_rank_tracker_row(
         conn.commit()
     finally:
         conn.close()
+
+
+def sync_get_member_audit_map(group_id: int) -> dict[int, dict[str, Any]]:
+    """user_id -> {status, join_date, subscription_duration_days, is_premium}."""
+    import sqlite3
+
+    path = management_db_path()
+    if not path.exists():
+        return {}
+    conn = sqlite3.connect(str(path), check_same_thread=False)
+    try:
+        conn.executescript(MANAGEMENT_DDL)
+        cur = conn.execute(
+            """
+            SELECT user_id, status, join_date, subscription_duration_days, is_premium
+            FROM member_audit WHERE group_id = ?
+            """,
+            (group_id,),
+        )
+        out: dict[int, dict[str, Any]] = {}
+        for r in cur.fetchall():
+            out[int(r[0])] = {
+                "status": r[1],
+                "join_date": r[2],
+                "subscription_duration_days": int(r[3]),
+                "is_premium": bool(r[4]),
+            }
+        return out
+    finally:
+        conn.close()
+
+
+def sync_upsert_seo_invite_snapshot(
+    *,
+    group_id: int,
+    invite_link: str | None,
+    usage_count: int,
+    participant_count: int,
+    ghost_delta: int,
+) -> None:
+    import sqlite3
+
+    now = datetime.now(timezone.utc).isoformat()
+    path = management_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), check_same_thread=False)
+    try:
+        conn.executescript(MANAGEMENT_DDL)
+        conn.execute(
+            """
+            INSERT INTO seo_invite_snapshot (
+                group_id, invite_link, usage_count, participant_count, ghost_delta, audited_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(group_id) DO UPDATE SET
+                invite_link = excluded.invite_link,
+                usage_count = excluded.usage_count,
+                participant_count = excluded.participant_count,
+                ghost_delta = excluded.ghost_delta,
+                audited_at = excluded.audited_at
+            """,
+            (
+                group_id,
+                invite_link,
+                usage_count,
+                participant_count,
+                ghost_delta,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def sync_get_seo_invite_snapshot(group_id: int) -> dict[str, Any] | None:
+    import sqlite3
+
+    path = management_db_path()
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(str(path), check_same_thread=False)
+    try:
+        conn.executescript(MANAGEMENT_DDL)
+        cur = conn.execute(
+            """
+            SELECT group_id, invite_link, usage_count, participant_count, ghost_delta, audited_at
+            FROM seo_invite_snapshot WHERE group_id = ?
+            """,
+            (group_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "group_id": int(row[0]),
+            "invite_link": row[1],
+            "usage_count": int(row[2] or 0),
+            "participant_count": int(row[3] or 0),
+            "ghost_delta": int(row[4] or 0),
+            "audited_at": row[5],
+        }
+    finally:
+        conn.close()
+
+
+def sync_apply_member_participants(
+    *,
+    group_id: int,
+    rows: list[dict[str, Any]],
+    default_subscription_days: int,
+) -> None:
+    """
+    Upsert current participants, mark absent users as Left.
+    Each row: user_id, is_premium (bool), status ('Active'|'Deleted'), invite_slug (optional).
+    Preserves join_date on conflict; sets join_date on first insert.
+    """
+    import sqlite3
+
+    if default_subscription_days not in (30, 60):
+        default_subscription_days = 30
+    now = datetime.now(timezone.utc).isoformat()
+    path = management_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), check_same_thread=False)
+    try:
+        conn.executescript(MANAGEMENT_DDL)
+        present: set[int] = set()
+        for r in rows:
+            uid = int(r["user_id"])
+            present.add(uid)
+            st = str(r["status"])
+            prem = 1 if r.get("is_premium") else 0
+            slug = r.get("invite_slug")
+            conn.execute(
+                """
+                INSERT INTO member_audit (
+                    group_id, user_id, join_date, subscription_duration_days,
+                    is_premium, status, invite_slug, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(group_id, user_id) DO UPDATE SET
+                    is_premium = excluded.is_premium,
+                    status = excluded.status,
+                    invite_slug = COALESCE(excluded.invite_slug, member_audit.invite_slug),
+                    subscription_duration_days = COALESCE(
+                        member_audit.subscription_duration_days, excluded.subscription_duration_days
+                    ),
+                    join_date = COALESCE(member_audit.join_date, excluded.join_date),
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    group_id,
+                    uid,
+                    now,
+                    default_subscription_days,
+                    prem,
+                    st,
+                    slug,
+                    now,
+                ),
+            )
+        if present:
+            placeholders = ",".join("?" * len(present))
+            conn.execute(
+                f"""
+                UPDATE member_audit SET status = 'Left', updated_at = ?
+                WHERE group_id = ? AND user_id NOT IN ({placeholders})
+                  AND status IN ('Active', 'Deleted', 'Banned')
+                """,
+                (now, group_id, *sorted(present)),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE member_audit SET status = 'Left', updated_at = ?
+                WHERE group_id = ? AND status IN ('Active', 'Deleted', 'Banned')
+                """,
+                (now, group_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def get_group_health_bundle(
+    *,
+    group_metadata_id: int | None = None,
+    telegram_group_id: int | None = None,
+) -> dict[str, Any] | None:
+    """Resolve by gm.id or Telegram group_id; join member_stats + latest invite snapshot."""
+    if group_metadata_id is None and telegram_group_id is None:
+        return None
+    async with await _connect() as db:
+        if group_metadata_id is not None:
+            cur = await db.execute(
+                """
+                SELECT gm.id, gm.group_id, gm.title, gm.username, gm.invite_link, gm.updated_at,
+                       ms.total_members, ms.premium_count, ms.deleted_count, ms.active_real_count
+                FROM group_metadata gm
+                LEFT JOIN member_stats ms ON ms.group_metadata_id = gm.id
+                WHERE gm.id = ?
+                """,
+                (group_metadata_id,),
+            )
+        else:
+            cur = await db.execute(
+                """
+                SELECT gm.id, gm.group_id, gm.title, gm.username, gm.invite_link, gm.updated_at,
+                       ms.total_members, ms.premium_count, ms.deleted_count, ms.active_real_count
+                FROM group_metadata gm
+                LEFT JOIN member_stats ms ON ms.group_metadata_id = gm.id
+                WHERE gm.group_id = ?
+                ORDER BY gm.updated_at DESC LIMIT 1
+                """,
+                (telegram_group_id,),
+            )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        gid = int(row["group_id"])
+        snap_cur = await db.execute(
+            """
+            SELECT invite_link, usage_count, participant_count, ghost_delta, audited_at
+            FROM seo_invite_snapshot WHERE group_id = ?
+            """,
+            (gid,),
+        )
+        snap = await snap_cur.fetchone()
+        return {
+            "group_metadata_id": int(row["id"]),
+            "group_id": gid,
+            "title": row["title"],
+            "username": row["username"],
+            "invite_link": row["invite_link"],
+            "gm_updated_at": row["updated_at"],
+            "total_members": int(row["total_members"] or 0),
+            "premium_count": int(row["premium_count"] or 0),
+            "deleted_count": int(row["deleted_count"] or 0),
+            "active_real_count": int(row["active_real_count"] or 0),
+            "invite_snapshot": (
+                {
+                    "invite_link": snap["invite_link"],
+                    "usage_count": int(snap["usage_count"] or 0),
+                    "participant_count": int(snap["participant_count"] or 0),
+                    "ghost_delta": int(snap["ghost_delta"] or 0),
+                    "audited_at": snap["audited_at"],
+                }
+                if snap
+                else None
+            ),
+        }
+
+
+async def aggregate_rank_projection_inputs() -> dict[str, Any]:
+    """Cross-group aggregates for heuristic rank projection."""
+    async with await _connect() as db:
+        cur = await db.execute(
+            """
+            SELECT AVG(CAST(ms.premium_count AS REAL) / NULLIF(ms.total_members, 0)) AS avg_prem,
+                   AVG(ms.total_members) AS avg_members,
+                   COUNT(*) AS n_groups
+            FROM group_metadata gm
+            JOIN member_stats ms ON ms.group_metadata_id = gm.id
+            WHERE ms.total_members > 0
+            """
+        )
+        row = await cur.fetchone()
+        avg_prem = float(row["avg_prem"] or 0.0)
+        avg_members = float(row["avg_members"] or 0.0)
+        n_groups = int(row["n_groups"] or 0)
+
+        cur2 = await db.execute(
+            """
+            SELECT AVG(
+                (julianday('now') - julianday(ma.join_date)) / 30.0
+            ) AS avg_tenure_mo
+            FROM member_audit ma
+            WHERE ma.join_date IS NOT NULL AND ma.status = 'Active'
+            """
+        )
+        r2 = await cur2.fetchone()
+        avg_tenure_mo = float(r2["avg_tenure_mo"] or 0.0)
+
+        cur3 = await db.execute(
+            """
+            SELECT AVG(julianday('now') - julianday(gm.updated_at)) AS avg_gm_age_days
+            FROM group_metadata gm
+            """
+        )
+        r3 = await cur3.fetchone()
+        avg_gm_age_days = float(r3["avg_gm_age_days"] or 0.0)
+
+        return {
+            "avg_premium_ratio": avg_prem,
+            "avg_members": avg_members,
+            "n_groups": n_groups,
+            "avg_member_tenure_months": avg_tenure_mo,
+            "avg_group_row_age_days": avg_gm_age_days,
+        }

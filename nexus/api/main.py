@@ -54,6 +54,7 @@ from nexus.api.routers import (
     proxy,
     scalper,
     scan,
+    seo,
     sentinel,
     sessions,
     swarm,
@@ -332,9 +333,9 @@ _OPENAPI_TAGS = [
         ),
     },
     {
-        "name": "sessions",
+        "name": "telegram-sessions",
         "description": (
-            "🔑 **Sessions** — ניהול סשנים של Telegram (Telethon).\n\n"
+            "🔑 **Telegram sessions (Telethon)** — חשבונות טלגרם, לא חיבורי Redis.\n\n"
             "יצירת סשנים חדשים, רשימת סשנים פעילים, Vault Commander."
         ),
     },
@@ -342,7 +343,7 @@ _OPENAPI_TAGS = [
         "name": "swarm",
         "description": (
             "🐝 **Swarm** — ניהול נחיל חשבונות Telegram.\n\n"
-            "קבוצות, מלאי סשנים, סריקות מלאות."
+            "קבוצות, מלאי סשני טלגרם (Telethon), סריקות מלאות."
         ),
     },
     {
