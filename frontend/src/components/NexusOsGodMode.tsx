@@ -50,8 +50,7 @@ import {
   Line,
   ReferenceLine,
 } from "recharts";
-import DOMPurify from "isomorphic-dompurify";
-import { marked } from "marked";
+import { SwarmRichText } from "@/components/swarm/SwarmRichText";
 import { API_BASE, apiSseBase, apiWsBase, triggerPanic, swrFetcher } from "@/lib/api";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -6914,61 +6913,24 @@ function DecisionNode({
 
 // ── Live Swarm View — rich text + terminal styling ───────────────────────────
 
-let _swarmPurifyHooksInstalled = false;
-function _ensureSwarmPurifyHooks() {
-  if (_swarmPurifyHooksInstalled) return;
-  _swarmPurifyHooksInstalled = true;
-  DOMPurify.addHook("afterSanitizeAttributes", (node) => {
-    if (node.tagName === "A" && node instanceof Element) {
-      const href = node.getAttribute("href") ?? "";
-      if (/^\s*javascript:/i.test(href) || /^\s*data:/i.test(href)) {
-        node.removeAttribute("href");
-        return;
-      }
-      node.setAttribute("target", "_blank");
-      node.setAttribute("rel", "noopener noreferrer");
-    }
-  });
-}
-
-function _looksLikeMarkup(s: string): boolean {
-  return /<[a-z][\s\S]*>/i.test(s);
-}
-
-function _swarmRichTextToSafeHtml(raw: string): string {
-  _ensureSwarmPurifyHooks();
-  const t = raw ?? "";
-  if (!t.trim()) return "";
-  let dirty: string;
-  if (_looksLikeMarkup(t)) {
-    dirty = t;
-  } else {
-    try {
-      dirty = marked.parse(t, { async: false, breaks: true, gfm: true }) as string;
-    } catch {
-      return "";
-    }
+function _swarmLogLineClass(line: string, topic?: string): string {
+  if (
+    /error|fail|exception|critical|שגיאה|(\[שגיאה\])|(\[error\])/i.test(line)
+  ) {
+    return "text-rose-400/90 [text-shadow:0_0_10px_rgba(251,113,133,0.35)]";
   }
-  return DOMPurify.sanitize(dirty, {
-    ALLOWED_TAGS: [
-      "a",
-      "b",
-      "strong",
-      "i",
-      "em",
-      "u",
-      "code",
-      "pre",
-      "br",
-      "p",
-      "span",
-      "ul",
-      "ol",
-      "li",
-      "blockquote",
-    ],
-    ALLOWED_ATTR: ["href", "title", "target", "rel", "class"],
-  });
+  if (
+    /success|הצלחה|✅|\bok\b|dispatched|started|(\[הצלחה\])|(\[success\])/i.test(
+      line,
+    )
+  ) {
+    return "text-emerald-400 [text-shadow:0_0_10px_rgba(52,211,153,0.45)]";
+  }
+  const topicLow = (topic ?? "").toLowerCase();
+  if (topicLow === "engine" || /\[\s*מנוע\s*\]/.test(line)) {
+    return "text-violet-400/95 [text-shadow:0_0_10px_rgba(167,139,250,0.4)]";
+  }
+  return "text-slate-400/90";
 }
 
 function SwarmRichMessageBody({
@@ -6978,30 +6940,14 @@ function SwarmRichMessageBody({
   text: string;
   className?: string;
 }) {
-  const html = useMemo(() => _swarmRichTextToSafeHtml(text), [text]);
-  if (!html.trim()) {
-    return <span className="text-slate-500">—</span>;
-  }
+  const t = (text ?? "").trim();
+  if (!t) return <span className="text-slate-500">—</span>;
   return (
-    <div
-      className={`swarm-rich-message whitespace-pre-wrap break-words [overflow-wrap:anywhere] [&_a]:text-cyan-400 [&_a]:underline [&_a]:underline-offset-2 [&_a]:decoration-cyan-500/50 [&_a:hover]:text-cyan-300 [&_p]:my-1 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_code]:rounded [&_code]:bg-slate-950/90 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-purple-200/95 [&_code]:text-[0.92em] [&_pre]:my-1 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:border [&_pre]:border-slate-700/60 [&_pre]:bg-slate-950/80 [&_pre]:p-2 [&_ul]:my-1 [&_ol]:my-1 ${className}`}
-      // eslint-disable-next-line react/no-danger
-      dangerouslySetInnerHTML={{ __html: html }}
+    <SwarmRichText
+      text={text}
+      className={`whitespace-pre-wrap break-words [overflow-wrap:anywhere] [&_a]:text-cyan-400 [&_a]:underline [&_a]:underline-offset-2 [&_a]:decoration-cyan-500/50 [&_a:hover]:text-cyan-300 [&_p]:my-1 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_code]:rounded [&_code]:bg-slate-950/90 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-purple-200/95 [&_code]:text-[0.92em] [&_pre]:my-1 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:border [&_pre]:border-slate-700/60 [&_pre]:bg-slate-950/80 [&_pre]:p-2 [&_ul]:my-1 [&_ol]:my-1 ${className}`}
     />
   );
-}
-
-function _swarmLogLineClass(line: string): string {
-  if (/(\[שגיאה\])|(\[error\])/i.test(line)) {
-    return "text-rose-400/95 [text-shadow:0_0_10px_rgba(251,113,133,0.35)]";
-  }
-  if (/(\[הצלחה\])|(\[success\])/i.test(line)) {
-    return "text-emerald-400 [text-shadow:0_0_10px_rgba(52,211,153,0.45)]";
-  }
-  if (/\[מנוע\]/.test(line)) {
-    return "text-purple-400/95 [text-shadow:0_0_10px_rgba(192,132,252,0.35)]";
-  }
-  return "text-slate-400/90";
 }
 
 interface SwarmBot {
@@ -7892,27 +7838,57 @@ function LiveSwarmView() {
                 </p>
               )}
             </div>
-            <div className="rounded-xl border border-cyan-500/20 bg-slate-900/60 p-4 space-y-3">
-              <div className="text-[10px] text-cyan-300/80 font-black uppercase tracking-widest">ניסיון שליחה אחרון</div>
+            <div className="rounded-2xl border border-cyan-500/25 bg-gradient-to-br from-slate-950/70 to-cyan-950/20 p-3.5 space-y-3 shadow-[0_0_24px_rgba(34,211,238,0.08)]">
+              <div className="text-[10px] text-cyan-300/85 font-black uppercase tracking-widest">
+                ניסיון שליחה אחרון
+              </div>
               {lastAttempt ? (
-                <div>
-                  <div className="text-xs font-black text-cyan-300 font-mono">
-                    {lastAttempt.display_name?.trim() || lastAttempt.phone || "—"}
+                <div className="rounded-[1rem] border border-cyan-500/20 bg-slate-950/50 px-3 py-2.5 ring-1 ring-cyan-400/10">
+                  <div className="flex items-start justify-between gap-2 mb-1.5">
+                    <span className="text-[11px] font-black text-cyan-300 [text-shadow:0_0_12px_rgba(34,211,238,0.35)] truncate min-w-0">
+                      {lastAttempt.display_name?.trim() || lastAttempt.phone || "—"}
+                    </span>
+                    {lastAttempt.ts && (
+                      <span
+                        className="text-[9px] text-slate-500 font-[family-name:var(--font-jetbrains)] shrink-0 tabular-nums"
+                        dir="ltr"
+                      >
+                        {(() => {
+                          try {
+                            return new Date(lastAttempt.ts).toLocaleTimeString("he-IL");
+                          } catch {
+                            return lastAttempt.ts;
+                          }
+                        })()}
+                      </span>
+                    )}
                   </div>
-                  <p className="text-[11px] text-slate-500 mt-1">{lastAttempt.message}</p>
+                  <SwarmRichMessageBody text={lastAttempt.message} className="text-[12px] text-slate-300/95" />
                 </div>
               ) : (
                 <p className="text-xs text-slate-600">אין ניסיון מתועד בפיד</p>
               )}
-              <div className="text-[10px] text-slate-600 font-black uppercase tracking-widest pt-1 border-t border-slate-800">
+              <div className="text-[10px] text-slate-500 font-black uppercase tracking-widest pt-2 border-t border-slate-800/80">
                 אחרון שנשלח לקבוצה
               </div>
-              <div className="text-xs font-bold text-emerald-400/95">
-                {feed?.last_sender_display_name?.trim() || feed?.last_sender_phone || "—"}
+              <div className="rounded-[1rem] border border-emerald-500/25 bg-slate-950/45 px-3 py-2.5 ring-1 ring-emerald-400/10">
+                <div className="flex items-start justify-between gap-2 mb-1.5">
+                  <span className="text-[11px] font-black text-emerald-300 [text-shadow:0_0_12px_rgba(52,211,153,0.35)] truncate min-w-0">
+                    {feed?.last_sender_display_name?.trim() || feed?.last_sender_phone || "—"}
+                  </span>
+                  <span
+                    className="text-[9px] text-slate-500 font-[family-name:var(--font-jetbrains)] shrink-0 tabular-nums"
+                    dir="ltr"
+                  >
+                    {lastMsgTime}
+                  </span>
+                </div>
+                {feed?.last_message ? (
+                  <SwarmRichMessageBody text={feed.last_message} className="text-[12px] text-slate-300/95" />
+                ) : (
+                  <span className="text-xs text-slate-600">—</span>
+                )}
               </div>
-              {feed?.last_message && (
-                <p className="text-[11px] text-slate-400 line-clamp-3 leading-relaxed">{feed.last_message}</p>
-              )}
             </div>
           </div>
         )}
@@ -7993,42 +7969,60 @@ function LiveSwarmView() {
           )}
 
           {swarmTab === "feed" && (
-            <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden">
+            <div className="rounded-2xl border border-emerald-500/20 bg-[#05080c] overflow-hidden shadow-[inset_0_1px_0_rgba(52,211,153,0.06)]">
+              <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-800/90 bg-slate-950/90 font-[family-name:var(--font-jetbrains)]">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-500/90">
+                  swarm://live-feed
+                </span>
+                <span className="text-[9px] text-slate-600 tabular-nums" dir="ltr">
+                  {recentMessages.length} evt
+                </span>
+              </div>
               {recentMessages.length === 0 ? (
-                <div className="px-6 py-10 text-center text-slate-600 text-sm font-bold">
+                <div className="px-6 py-10 text-center text-slate-600 text-sm font-bold font-[family-name:var(--font-jetbrains)]">
                   אין הודעות עדיין — הנחיל טרם שלח
                 </div>
               ) : (
-                <div className="divide-y divide-slate-800/60 max-h-[480px] overflow-y-auto nexus-os-scrollbar">
-                  {[...recentMessages].reverse().map((msg, i) => {
+                <div
+                  className="max-h-[min(420px,52vh)] overflow-y-auto nexus-os-scrollbar px-3 py-2 text-[11px] leading-relaxed"
+                  dir="rtl"
+                >
+                  {recentMessages.map((msg, i) => {
                     const msgTime = msg.ts
                       ? (() => {
-                          try { return new Date(msg.ts).toLocaleTimeString("he-IL"); }
-                          catch { return msg.ts; }
+                          try {
+                            return new Date(msg.ts).toLocaleTimeString("he-IL");
+                          } catch {
+                            return msg.ts;
+                          }
                         })()
                       : "";
+                    const line = msg.message ?? "";
+                    const lineCls = _swarmLogLineClass(line);
                     return (
-                      <div key={i} className="px-5 py-3 flex gap-3 hover:bg-slate-800/30 transition">
-                        <div className="w-1.5 h-1.5 rounded-full bg-purple-400 mt-1.5 flex-shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                            <span className="text-[10px] font-black font-mono text-purple-400">
-                              {msg.display_name?.trim() || msg.phone || "—"}
-                            </span>
-                            {msg.topic && (
-                              <span className="text-[9px] px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded-full text-slate-500 font-bold uppercase tracking-widest">
-                                {msg.topic}
-                              </span>
-                            )}
-                            {msgTime && (
-                              <span className="text-[9px] text-slate-600 font-mono mr-auto">{msgTime}</span>
-                            )}
-                          </div>
-                          <div className="text-sm text-slate-300 leading-relaxed">{msg.message}</div>
+                      <div
+                        key={`${msg.ts ?? ""}-${i}`}
+                        className="flex gap-2 py-1.5 border-b border-slate-800/40 last:border-b-0 hover:bg-slate-900/50 rounded-md px-1 -mx-1 transition-colors items-start"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <SwarmRichMessageBody
+                            text={line}
+                            className={`text-[11px] font-[family-name:var(--font-jetbrains)] [&_a]:font-[family-name:var(--font-jetbrains)] ${lineCls}`}
+                          />
                         </div>
+                        <span className="shrink-0 w-16 text-center uppercase tracking-tighter text-slate-500 font-[family-name:var(--font-jetbrains)] text-[10px] pt-0.5">
+                          {msg.topic ? msg.topic.slice(0, 12) : "—"}
+                        </span>
+                        <span
+                          className="text-slate-600 shrink-0 w-[52px] text-left tabular-nums select-none font-[family-name:var(--font-jetbrains)] text-[10px] pt-0.5"
+                          dir="ltr"
+                        >
+                          {msgTime || "—"}
+                        </span>
                       </div>
                     );
                   })}
+                  <div ref={liveFeedEndRef} className="h-px w-full scroll-mt-1" aria-hidden />
                 </div>
               )}
             </div>

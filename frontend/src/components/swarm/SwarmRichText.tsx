@@ -12,26 +12,43 @@ function sanitizeSwarmHtml(raw: string): string {
     purifyLinkHookInstalled = true;
     DOMPurify.addHook("afterSanitizeAttributes", (node) => {
       if (node.tagName === "A") {
+        const href = node.getAttribute("href") ?? "";
+        if (/^\s*javascript:/i.test(href) || /^\s*data:/i.test(href)) {
+          node.removeAttribute("href");
+          return;
+        }
         node.setAttribute("target", "_blank");
         node.setAttribute("rel", "noopener noreferrer");
       }
     });
   }
   return DOMPurify.sanitize(raw, {
-    ALLOWED_TAGS: ["a", "br", "strong", "em", "b", "i", "code", "pre", "p", "span"],
-    ALLOWED_ATTR: ["href", "target", "rel", "class"],
+    ALLOWED_TAGS: [
+      "a",
+      "b",
+      "strong",
+      "i",
+      "em",
+      "u",
+      "code",
+      "pre",
+      "br",
+      "p",
+      "span",
+      "ul",
+      "ol",
+      "li",
+      "blockquote",
+    ],
+    ALLOWED_ATTR: ["href", "title", "target", "rel", "class"],
   });
 }
 
 function looksLikeHtmlSnippet(s: string): boolean {
   const t = s.trim();
   if (!t) return false;
-  if (/<\s*a\s/i.test(t)) return true;
-  if (/<\/\s*a\s*>/i.test(t)) return true;
-  if (/<\s*\/\s*p\s*>/i.test(t)) return true;
-  if (/<\s*p[\s>]/i.test(t)) return true;
-  if (/<\s*br\s*\/?>/i.test(t)) return true;
-  if (/&lt;\s*a\s/i.test(t)) return true;
+  if (/<[a-z][\s\S]*>/i.test(t)) return true;
+  if (/&lt;[a-z]/i.test(t)) return true;
   return false;
 }
 

@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import os
+from io import BytesIO
 import random
 import re
 import uuid
@@ -310,6 +311,65 @@ def _anti_duplication_prompt_suffix(recent_texts: list[str]) -> str:
     )
 
 
+def _session_persona_seed(session_base: str) -> str:
+    raw = (session_base or "").encode("utf-8", errors="ignore")
+    return hashlib.sha256(raw).hexdigest()[:24]
+
+
+def _global_outgoing_prompt_suffix(lines: list[str]) -> str:
+    if not lines:
+        return ""
+    clipped = [ln[:160] for ln in lines[:RECENT_OUTGOING_PROMPT_LINES]]
+    block = "\n".join(f"- {t}" for t in clipped)
+    return (
+        "\n\nחובה: אל תשכפל ואל תדמה לתוכן שהמערכת כבר שלחה לאחרונה מהחשבונות האחרים — שוני מוחלט.\n"
+        "טקסטים שכבר נשלחו (אסור לחקות):\n"
+        f"{block}\n"
+    )
+
+
+async def _redis_recent_outgoing_fetch(redis: Any) -> list[str]:
+    if redis is None:
+        return []
+    try:
+        raw = await redis.lrange(KEY_RECENT_OUTGOING, 0, RECENT_OUTGOING_PROMPT_LINES - 1)
+    except Exception:
+        return []
+    out: list[str] = []
+    for x in raw or []:
+        if isinstance(x, (bytes, bytearray)):
+            s = bytes(x).decode("utf-8", errors="ignore")
+        else:
+            s = str(x)
+        s = s.strip()
+        if s:
+            out.append(s)
+    return out
+
+
+async def _redis_recent_outgoing_push(redis: Any, fragment: str) -> None:
+    if redis is None:
+        return
+    frag = (fragment or "").strip()[:400]
+    if not frag:
+        return
+    try:
+        await redis.lpush(KEY_RECENT_OUTGOING, frag)
+        await redis.ltrim(KEY_RECENT_OUTGOING, 0, RECENT_OUTGOING_CAP - 1)
+    except Exception as exc:
+        log.debug("factory_recent_outgoing_push_failed", error=str(exc))
+
+
+def _amcha_system_prompt_with_persona(persona_seed: str | None) -> str:
+    if not (persona_seed or "").strip():
+        return AMCHA_ISRAEL_SYSTEM_PROMPT
+    return (
+        f"{AMCHA_ISRAEL_SYSTEM_PROMPT}\n\n"
+        f"Your unique persona seed is {persona_seed.strip()}. You MUST output a completely unique response "
+        "never seen before. NEVER use generic templates."
+    )
+
+
 def _message_refs_newest_first(messages_oldest_first: list[Any]) -> list[tuple[int, str]]:
     """Telethon history reversed to chronological oldest-first; collect newest text messages first."""
     out: list[tuple[int, str]] = []
@@ -415,6 +475,22 @@ def _normalize_amcha_dict(obj: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_rich_turn(obj: dict[str, Any]) -> dict[str, Any]:
+    n = _normalize_amcha_dict(obj)
+    at = str(obj.get("action_type") or "text").strip().lower().replace(" ", "_").replace("-", "_")
+    if at not in _RICH_ACTION_TYPES:
+        at = "text"
+    mt = str(obj.get("message_text") or n["primary_message"] or "").strip()
+    if not mt and n["primary_message"]:
+        mt = str(n["primary_message"]).strip()
+    if mt:
+        n["primary_message"] = mt
+    n["action_type"] = at
+    n["message_text"] = mt
+    n["image_query"] = str(obj.get("image_query") or "").strip()[:120]
+    return n
+
+
 def _parse_llm_json_object(raw: str) -> dict[str, Any] | None:
     t = (raw or "").strip()
     if not t:
@@ -471,13 +547,31 @@ async def _generate_amcha_turn(
     active_topic_line: str | None = None,
     opener_fresh_event: bool = False,
     news_opener: bool = False,
+    persona_seed: str | None = None,
+    rich_media_mode: bool = False,
+    global_recent_outgoing: list[str] | None = None,
 ) -> dict[str, Any]:
     anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
-    json_schema = (
-        "החזר אך ורק JSON תקף (בלי טקסט נוסף) עם המפתחות: "
-        '"primary_message","needs_correction","correction_message","article_url","link_label". '
-        "article_url ו-link_label — מחרוזות; כשאין קישור חדשותי השאר ריק."
-    )
+    anti += _global_outgoing_prompt_suffix(list(global_recent_outgoing or []))
+    system_prompt = _amcha_system_prompt_with_persona(persona_seed)
+
+    if rich_media_mode:
+        json_schema = (
+            "החזר אך ורק JSON תקף (בלי טקסט נוסף) עם המפתחות: "
+            '"action_type","message_text","image_query",'
+            '"primary_message","needs_correction","correction_message","article_url","link_label". '
+            "action_type חייב להיות אחד מ: text | text_with_emoji | sticker | gif | image. "
+            "בערך לאורך זמן: ~60% text או text_with_emoji, ~15% sticker, ~15% gif, ~10% image. "
+            "ב-sticker/gif/image: message_text יכול להיות ריק או כיתוב קצר; image_query — מילת מפתח באנגלית לחיפוש (למשל coffee, traffic, shawarma). "
+            "ב-text/text_with_emoji: מלא message_text (ועדיף גם primary_message באותו תוכן). "
+            "article_url ו-link_label — מחרוזות; כשאין קישור חדשותי השאר ריק."
+        )
+    else:
+        json_schema = (
+            "החזר אך ורק JSON תקף (בלי טקסט נוסף) עם המפתחות: "
+            '"primary_message","needs_correction","correction_message","article_url","link_label". '
+            "article_url ו-link_label — מחרוזות; כשאין קישור חדשותי השאר ריק."
+        )
     if typo_must_correct:
         typo_rule = (
             "חובה: needs_correction=true — שים ב-primary_message טעות הקלדה עברית נפוצה "
@@ -494,6 +588,10 @@ async def _generate_amcha_turn(
             "חובה למלא article_url עם קישור https plausibly לאתר חדשות ישראלי, "
             "ול-link_label משפט עברית לכפתור הקישור (למשל: קראו פה את הכתבה המלאה)."
         )
+        if rich_media_mode:
+            opener_news_clause += (
+                " חובה: action_type חייב להיות text או text_with_emoji בלבד (לא sticker/gif/image)."
+            )
 
     if role == "opener" and not news_opener:
         ctx = (active_topic_line or "").strip()[:400] or topic
@@ -523,9 +621,29 @@ async def _generate_amcha_turn(
             f"{typo_rule}\n{anti}\n{json_schema}"
         )
 
-    temperature = random.uniform(0.85, 0.95)
-    frequency_penalty = random.uniform(0.35, 0.5)
-    presence_penalty = random.uniform(0.35, 0.5)
+    if rich_media_mode:
+        temperature = 0.95
+        frequency_penalty = 0.8
+        presence_penalty = 0.5
+        max_tokens = 384
+    else:
+        temperature = random.uniform(0.85, 0.95)
+        frequency_penalty = random.uniform(0.35, 0.5)
+        presence_penalty = random.uniform(0.35, 0.5)
+        max_tokens = 320
+
+    def _postprocess_llm_dict(out: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(out, dict):
+            return None
+        if rich_media_mode:
+            if out.get("action_type") is not None or (out.get("message_text") is not None and str(out.get("message_text")).strip()):
+                return _normalize_rich_turn(out)
+            if out.get("primary_message") or out.get("text"):
+                return _normalize_rich_turn(out)
+            return None
+        if out.get("primary_message") or out.get("text"):
+            return _normalize_amcha_dict(out)
+        return None
 
     if api_key:
         try:
@@ -533,15 +651,16 @@ async def _generate_amcha_turn(
 
             out = await _gemini_json(
                 api_key,
-                AMCHA_ISRAEL_SYSTEM_PROMPT,
+                system_prompt,
                 user_he,
                 temperature=temperature,
-                max_tokens=320,
+                max_tokens=max_tokens,
                 frequency_penalty=frequency_penalty,
                 presence_penalty=presence_penalty,
             )
-            if isinstance(out, dict) and (out.get("primary_message") or out.get("text")):
-                return _normalize_amcha_dict(out)
+            processed = _postprocess_llm_dict(out) if isinstance(out, dict) else None
+            if processed is not None:
+                return processed
         except Exception as exc:
             log.warning("factory_gemini_failed", error=str(exc))
 
@@ -554,11 +673,11 @@ async def _generate_amcha_turn(
             payload = {
                 "model": "gpt-4o-mini",
                 "messages": [
-                    {"role": "system", "content": AMCHA_ISRAEL_SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_he},
                 ],
                 "temperature": temperature,
-                "max_tokens": 320,
+                "max_tokens": max_tokens,
                 "frequency_penalty": frequency_penalty,
                 "presence_penalty": presence_penalty,
             }
@@ -570,11 +689,25 @@ async def _generate_amcha_turn(
                 raw_msg = (choice.get("message") or {}).get("content") or ""
                 obj = _parse_llm_json_object(raw_msg) if raw_msg.strip() else None
                 if obj:
-                    return _normalize_amcha_dict(obj)
+                    processed = _postprocess_llm_dict(obj)
+                    if processed is not None:
+                        return processed
         except Exception as exc:
             log.warning("factory_openai_failed", error=str(exc))
 
     fb_pm = "וואלה הזייה אחי" if role == "opener" else "אין מצב"
+    if rich_media_mode:
+        return _normalize_rich_turn(
+            {
+                "action_type": "text",
+                "message_text": fb_pm,
+                "primary_message": fb_pm,
+                "needs_correction": False,
+                "correction_message": "",
+                "article_url": "",
+                "link_label": "",
+            }
+        )
     return {
         "primary_message": fb_pm,
         "needs_correction": False,
@@ -646,28 +779,179 @@ async def _send_thread_reaction(client: Any, entity: Any, msg_id: int) -> bool:
     return False
 
 
-async def _try_send_pack_sticker(client: Any, entity: Any) -> bool:
+def _sticker_pack_short_names() -> list[str]:
+    multi = (os.getenv("COMMUNITY_FACTORY_STICKER_SETS") or "").strip()
+    legacy = (os.getenv("COMMUNITY_FACTORY_STICKER_SET") or "").strip()
+    names: list[str] = []
+    if multi:
+        names.extend(x.strip() for x in multi.split(",") if x.strip())
+    elif legacy:
+        names.append(legacy)
+    return names or list(_DEFAULT_STICKER_PACKS)
+
+
+async def _try_send_random_sticker_from_packs(client: Any, entity: Any) -> Any:
     from telethon.tl.functions.messages import GetStickerSetRequest  # type: ignore[import-untyped]
     from telethon.tl.types import InputStickerSetShortName  # type: ignore[import-untyped]
 
-    short = (os.getenv("COMMUNITY_FACTORY_STICKER_SET", "AnimatedEmojies") or "").strip()
-    if not short:
-        return False
+    packs = list(_sticker_pack_short_names())
+    random.shuffle(packs)
+    for short in packs[:8]:
+        try:
+            res = await client(
+                GetStickerSetRequest(
+                    stickerset=InputStickerSetShortName(short_name=short),
+                    hash=0,
+                )
+            )
+            docs = [d for d in (getattr(res, "documents", None) or []) if d]
+            if not docs:
+                continue
+            return await client.send_file(entity, random.choice(docs))
+        except Exception as exc:
+            log.debug("factory_sticker_pack_skipped", pack=short, error=str(exc))
+            continue
+    return None
+
+
+async def _try_send_inline_gif(client: Any, entity: Any, query: str) -> Any:
+    from telethon.tl.functions.messages import (  # type: ignore[import-untyped]
+        GetInlineBotResultsRequest,
+        SendInlineBotResultRequest,
+    )
+
+    q = (query or "").strip()[:64] or random.choice(["funny", "lol", "wow", "mood", "cat"])
     try:
-        res = await client(
-            GetStickerSetRequest(
-                stickerset=InputStickerSetShortName(short_name=short),
-                hash=0,
+        bot = await client.get_input_entity("gif")
+        results = await client(GetInlineBotResultsRequest(bot=bot, peer=entity, query=q, offset=""))
+    except Exception as exc:
+        log.debug("factory_gif_inline_query_failed", error=str(exc))
+        return None
+    rlist = [r for r in (getattr(results, "results", None) or []) if r is not None]
+    if not rlist:
+        return None
+    chosen = random.choice(rlist)
+    rid = getattr(chosen, "id", None)
+    if rid is None:
+        return None
+    try:
+        return await client(
+            SendInlineBotResultRequest(
+                peer=entity,
+                query_id=int(results.query_id),
+                id=str(rid),
+                random_id=random.randint(1, 2**63 - 1),
+                hide_via=True,
             )
         )
-        docs = [d for d in (getattr(res, "documents", None) or []) if d]
-        if not docs:
-            return False
-        await client.send_file(entity, random.choice(docs))
-        return True
     except Exception as exc:
-        log.debug("factory_sticker_skipped", error=str(exc))
-        return False
+        log.debug("factory_gif_inline_send_failed", error=str(exc))
+        return None
+
+
+async def _try_send_unsplash_random_image(
+    client: Any, entity: Any, image_query: str, caption: str | None
+) -> Any:
+    q = (image_query or "").strip()[:80] or random.choice(["urban", "food", "sky", "sea"])
+    url = f"https://source.unsplash.com/random/800x600/?{quote(q, safe='')}"
+    cap = (caption or "").strip()[:1024] or None
+    try:
+        return await client.send_file(entity, url, caption=cap)
+    except Exception as exc:
+        log.debug("factory_unsplash_url_send_failed", error=str(exc))
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as h:
+            r = await h.get(url)
+            if r.status_code == 200 and r.content:
+                return await client.send_file(entity, r.content, caption=cap)
+    except Exception as exc:
+        log.debug("factory_unsplash_download_send_failed", error=str(exc))
+    return None
+
+
+async def _send_rich_factory_messages(
+    client: Any,
+    entity: Any,
+    turn: dict[str, Any],
+    *,
+    reply_to_id: int | None,
+    news_opener: bool,
+    use_md: bool,
+) -> list[Any]:
+    """
+    Flood-safe jitter before Telegram sends, then text / sticker / gif / image per LLM action_type.
+    """
+    await asyncio.sleep(random.uniform(0.5, 4.0))
+    sent: list[Any] = []
+    action = str(turn.get("action_type") or "text")
+
+    if news_opener:
+        primary_out = _finalize_primary_message(str(turn.get("primary_message") or turn.get("message_text") or ""))
+        url = await _maybe_tinyurl_shorten(str(turn.get("article_url") or ""))
+        primary_out, use_md2 = _format_opener_with_md_link(
+            str(turn.get("primary_message") or primary_out),
+            url,
+            str(turn.get("link_label") or ""),
+        )
+        use_md = use_md or use_md2
+        return await _send_amcha_messages(
+            client,
+            entity,
+            primary=primary_out,
+            needs_correction=bool(turn.get("needs_correction")),
+            correction=str(turn.get("correction_message") or ""),
+            reply_to_id=reply_to_id,
+            parse_mode="md" if use_md else None,
+        )
+
+    if action == "sticker":
+        msg = await _try_send_random_sticker_from_packs(client, entity)
+        if msg is not None:
+            return [msg]
+        action = "text"
+
+    if action == "gif":
+        msg = await _try_send_inline_gif(client, entity, str(turn.get("image_query") or ""))
+        if msg is not None:
+            cap = _finalize_primary_message(str(turn.get("message_text") or ""))
+            if cap:
+                try:
+                    await client.send_message(entity, cap, reply_to=reply_to_id, parse_mode=None)
+                except Exception as exc:
+                    log.debug("factory_gif_caption_failed", error=str(exc))
+            return [msg]
+        action = "text"
+
+    if action == "image":
+        msg = await _try_send_unsplash_random_image(
+            client,
+            entity,
+            str(turn.get("image_query") or ""),
+            str(turn.get("message_text") or "").strip() or None,
+        )
+        if msg is not None:
+            return [msg]
+        action = "text"
+
+    body = _finalize_primary_message(str(turn.get("message_text") or turn.get("primary_message") or ""))
+    if not body and action in ("text", "text_with_emoji"):
+        body = "וואלה"
+    return await _send_amcha_messages(
+        client,
+        entity,
+        primary=body,
+        needs_correction=bool(turn.get("needs_correction")),
+        correction=str(turn.get("correction_message") or ""),
+        reply_to_id=reply_to_id,
+        parse_mode=None,
+    )
+
+
+async def _try_send_pack_sticker(client: Any, entity: Any) -> bool:
+    msg = await _try_send_random_sticker_from_packs(client, entity)
+    return msg is not None
 
 
 async def _mark_banned(redis: Any, session_base: str) -> None:
@@ -785,7 +1069,14 @@ async def community_factory_bootstrap(parameters: dict[str, Any]) -> dict[str, A
 
     if reset and redis and not dry_run:
         await redis.delete(
-            KEY_ROLES, KEY_GROUPS, KEY_STATE, KEY_BANNED, KEY_COOLDOWNS, KEY_METRICS, KEY_PROFILE_GATE
+            KEY_ROLES,
+            KEY_GROUPS,
+            KEY_STATE,
+            KEY_BANNED,
+            KEY_COOLDOWNS,
+            KEY_METRICS,
+            KEY_PROFILE_GATE,
+            KEY_RECENT_OUTGOING,
         )
         await _redis_delete_keys_with_prefix(redis, THREAD_KEY_PREFIX)
         await _redis_delete_keys_with_prefix(redis, ACTIVE_TOPIC_KEY_PREFIX)

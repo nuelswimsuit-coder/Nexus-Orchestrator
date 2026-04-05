@@ -2,21 +2,18 @@
 Telegram Bot — Nexus Command Center.
 
 This bot serves as the mobile version of the React dashboard.
-It handles HITL approvals AND provides live statistics via a persistent
-Reply Keyboard menu.
+It handles HITL approvals and exposes the command center via an **inline**
+keyboard on ``/start`` (attached to the bot message in the chat).
 
 Commands
 --------
-/start    — Show the persistent Reply Keyboard menu
+/start    — Welcome message + full inline button menu (command center)
 /dashboard — Send a direct link to the dashboard
 /help     — Show available commands
 
-Menu buttons (Reply Keyboard)
-------------------------------
-📊 Current Stats    — Telefix DB stats (groups, users, sessions)
-🖥️ Cluster Health  — Worker nodes with CPU/RAM/IP
-💰 Profit Report   — Latest ROI forecast from the business audit
-🛠️ Active Tasks    — Pending HITL approvals + queue depth
+Legacy (optional): when running ``python scripts/start_telegram_bot.py``,
+the same stats/features can also be triggered from the old Reply Keyboard
+text labels (📊 Current Stats, 🖥️ Cluster Health, etc.).
 
 Architecture
 ------------
@@ -359,19 +356,6 @@ def get_start_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="❓ Help & Commands",         callback_data="help_btn"),
         ],
     ])
-
-
-def get_nexus_project_start_menu() -> InlineKeyboardMarkup:
-    """Compact menu for TELEGRAM_NEXUS_BOT_TOKEN polling (callbacks must exist on nexus dispatcher)."""
-    rows: list[list[InlineKeyboardButton]] = [
-        [
-            InlineKeyboardButton(text="🎯 Polymarket", callback_data="poly_menu"),
-        ],
-    ]
-    dash = (DASHBOARD_URL or "").strip()
-    if dash.startswith(("http://", "https://")):
-        rows.append([InlineKeyboardButton(text="🔗 Dashboard", url=dash)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # ── API helpers ────────────────────────────────────────────────────────────────
@@ -818,33 +802,6 @@ async def cmd_start(message: Message) -> None:
         message,
         welcome,
         reply_markup=get_start_menu(),
-    )
-
-
-async def cmd_start_nexus_project(message: Message) -> None:
-    """``/start`` on the Nexus project bot (separate token + polling) — not the channel bot."""
-    admin_id = _nexus_project_admin_chat_id()
-    uid = message.from_user.id if message.from_user else None
-    if not _telegram_admin_allowed(chat_id=message.chat.id, user_id=uid, admin_chat_id=admin_id):
-        try:
-            await message.answer("⛔ גישה נדחתה — מוגבל למנהל בלבד\\.", parse_mode=ParseMode.MARKDOWN_V2)
-        except TelegramBadRequest:
-            await message.answer(
-                "גישה נדחתה. הגדר TELEGRAM_NEXUS_ADMIN_CHAT_ID או TELEGRAM_ADMIN_CHAT_ID למזהה הצ'אט שלך."
-            )
-        return
-    name = message.from_user.first_name if message.from_user else "מפעיל"
-    welcome = (
-        "🎯 *Nexus Orchestrator* \\(בוט פרויקט\\)\n\n"
-        f"שלום, {_esc(name)}\\!\n\n"
-        "כאן התראות Git / Polymarket AI ופקודות מסחר\\. "
-        "הפאנל המלא \\(HITL, קלאסטר, Incubator\\) — **בבוט אחושרמוטה**\\.\n\n"
-        "שלח `/help` או בחר למטה\\."
-    )
-    await _answer_markdown_v2_or_plain(
-        message,
-        welcome,
-        reply_markup=get_nexus_project_start_menu(),
     )
 
 
@@ -3364,18 +3321,6 @@ def register_polymarket_handlers(dp: TgDispatcher) -> None:
     dp.callback_query.register(handle_poly_alert_ignore_permanent, F.data.startswith("poly_ign:"))
 
 
-def register_nexus_project_bot_messages(dp: TgDispatcher) -> None:
-    """Message handlers for TELEGRAM_NEXUS_BOT_TOKEN polling (project / alerts bot)."""
-    dp.message.register(cmd_start_nexus_project, CommandStart())
-    dp.message.register(cmd_dashboard, Command("dashboard"))
-    dp.message.register(cmd_help, Command("help"))
-    dp.message.register(cmd_polymarket,    Command("polymarket"))
-    dp.message.register(cmd_poly_buy,      Command("poly_buy"))
-    dp.message.register(cmd_poly_sell,     Command("poly_sell"))
-    dp.message.register(cmd_set_deposit,   Command("set_deposit"))
-    dp.message.register(cmd_set_withdrawn, Command("set_withdrawn"))
-
-
 def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     """
     Construct and wire up the aiogram Bot + Dispatcher.
@@ -3492,19 +3437,13 @@ async def start_bot_polling(token: str) -> None:
 async def start_nexus_project_bot_polling(token: str) -> None:
     """
     Poll ``TELEGRAM_NEXUS_BOT_TOKEN`` when it is a separate bot from the main
-    command-center token. Git sync, Polymarket alerts, and /start on that bot
-    all require this loop; outbound-only HTTP sendMessage is not enough.
+    command-center token. Uses the same dispatcher as the main bot so ``/start``
+    shows the full inline menu and all callbacks work (Polymarket, HITL, etc.).
     """
     print("[START] מאזין לבוט Nexus (פרויקט / התראות)...")
     log.info("telegram_nexus_bot_embedded_starting")
     await _preflight_cleanup(token)
-    bot = Bot(
-        token=token,
-        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2),
-    )
-    dp = TgDispatcher()
-    register_polymarket_handlers(dp)
-    register_nexus_project_bot_messages(dp)
+    bot, dp = build_bot_dispatcher(token)
     try:
         await dp.start_polling(bot)
     except asyncio.CancelledError:
@@ -3659,15 +3598,9 @@ async def run() -> None:
     poly_alert_use_inline = True
     if nexus_alert_tok and nexus_alert_tok != token:
         await _preflight_cleanup(nexus_alert_tok)
-        poly_alert_bot_extra = Bot(
-            token=nexus_alert_tok,
-            default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2),
-        )
+        poly_alert_bot_extra, nexus_poly_dp = build_bot_dispatcher(nexus_alert_tok)
         poly_alert_bot = poly_alert_bot_extra
         poly_alert_use_inline = True
-        nexus_poly_dp = TgDispatcher()
-        register_polymarket_handlers(nexus_poly_dp)
-        register_nexus_project_bot_messages(nexus_poly_dp)
     elif nexus_alert_tok and nexus_alert_tok == token:
         poly_alert_bot = bot
         poly_alert_use_inline = True
@@ -3702,7 +3635,10 @@ async def run() -> None:
             nexus_poly_dp.start_polling(poly_alert_bot_extra),
             name="nexus-poly-polling",
         )
-        log.info("nexus_project_bot_polling_started", hint="Polymarket alert inline buttons work on Nexus bot")
+        log.info(
+            "nexus_project_bot_polling_started",
+            hint="Nexus bot: full /start inline menu + Polymarket + HITL callbacks",
+        )
 
     wait_tasks: list[asyncio.Task] = [polling_task, stop_watcher]
     if nexus_poly_poll_task is not None:
