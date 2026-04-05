@@ -3,8 +3,9 @@ Central Telethon session vault (Master node).
 
 Primary layout: ``vault/sessions/*.session`` + matching ``*.json`` (override with
 ``NEXUS_SESSION_VAULT_DIR``). Legacy paths ``data/session_vault/`` and
-``data/staged_accounts/`` remain discoverable. Metadata and lease state are kept
-in Redis for the dashboard and workers.
+``data/staged_accounts/`` remain discoverable. **Disk is authoritative** for which
+Telegram accounts exist; Redis holds optional **cached** metadata, worker **leases**,
+and discovery counters — not a substitute for scanning the vault on disk.
 
 Session health is classified via Telethon (user MTProto). Aiogram is not used here
 because vault entries are user sessions; bot tokens would need a separate path.
@@ -12,7 +13,7 @@ because vault entries are user sessions; bot tokens would need a separate path.
 Environment:
 
 * ``NEXUS_SESSION_VAULT_SKIP_PROBE`` — if ``1``/``true``, :func:`sync_disk_to_redis`
-  indexes files without Telethon probes (faster API startup for large vaults).
+  warms Redis cache without Telethon probes (faster API startup for large vaults).
 """
 
 from __future__ import annotations
@@ -367,7 +368,7 @@ async def _probe_and_merge_meta(redis: Any, meta_json: Path) -> None:
 
 
 async def sync_disk_to_redis(redis: Any) -> dict[str, int]:
-    """Index every discovered meta file, verify via Telethon unless probe skipped."""
+    """Warm Redis cache from disk: index stems, optionally Telethon-probe each meta file."""
     paths = discover_all_meta_json_files()
     skip_probe = (os.getenv("NEXUS_SESSION_VAULT_SKIP_PROBE") or "").strip().lower() in (
         "1",
@@ -442,26 +443,37 @@ async def refresh_stem_status(redis: Any, stem: str) -> dict[str, Any] | None:
 
 
 async def refresh_all_statuses(redis: Any) -> int:
-    """Re-run Telethon health for every indexed session (can be slow)."""
-    stems = await redis.smembers(INDEX_KEY)
+    """Re-run Telethon health for every vault meta file on disk (can be slow)."""
     count = 0
-    for stem in stems or []:
-        if await refresh_stem_status(redis, str(stem)):
+    for path in discover_all_meta_json_files():
+        if await refresh_stem_status(redis, path.stem):
             count += 1
     return count
 
 
 async def get_commander_snapshot(redis: Any) -> list[dict[str, Any]]:
-    stems = sorted(str(s) for s in (await redis.smembers(INDEX_KEY)) or [])
+    """
+    Commander view: enumerate vault **from disk**, overlay Redis-cached meta and leases.
+    Accounts present only on disk still appear with defaults until probed or synced.
+    """
+    by_stem: dict[str, Path] = {}
+    for path in discover_all_meta_json_files():
+        by_stem.setdefault(path.stem, path)
+    stems = sorted(by_stem.keys())
     out: list[dict[str, Any]] = []
     for stem in stems:
+        meta_json = by_stem[stem]
+        row = dict(_default_meta_record(meta_json))
         raw_meta = await redis.get(meta_key(stem))
-        row: dict[str, Any] = {"session_stem": stem}
         if raw_meta:
             try:
-                row.update(json.loads(raw_meta))
+                rm = json.loads(raw_meta)
+                if isinstance(rm, dict):
+                    row.update(rm)
             except Exception:
                 pass
+        row.setdefault("session_stem", stem)
+        row["meta_path"] = str(meta_json.resolve())
         lease_raw = await redis.get(lease_key(stem))
         if lease_raw:
             try:
@@ -472,6 +484,8 @@ async def get_commander_snapshot(redis: Any) -> list[dict[str, Any]]:
                 row["lease_ttl_seconds"] = ttl if ttl and ttl > 0 else None
             except Exception:
                 row["lease_worker_id"] = None
+                row["lease_task_id"] = None
+                row["lease_ttl_seconds"] = None
         else:
             row["lease_worker_id"] = None
             row["lease_task_id"] = None

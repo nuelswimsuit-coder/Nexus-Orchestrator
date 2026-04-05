@@ -77,6 +77,21 @@ CREATE TABLE IF NOT EXISTS seo_invite_snapshot (
     ghost_delta        INTEGER NOT NULL DEFAULT 0,
     audited_at         TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS seo_churn_event (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id           INTEGER NOT NULL,
+    user_id            INTEGER NOT NULL,
+    detected_at        TEXT NOT NULL,
+    join_date          TEXT,
+    left_at            TEXT,
+    subscription_days  INTEGER NOT NULL DEFAULT 30,
+    reason             TEXT,
+    UNIQUE (group_id, user_id, detected_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_seo_churn_group ON seo_churn_event(group_id);
+CREATE INDEX IF NOT EXISTS idx_seo_churn_detected ON seo_churn_event(detected_at DESC);
 """
 
 

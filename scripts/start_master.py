@@ -634,14 +634,33 @@ async def run() -> None:
     log.info("cron_nightly_scrape_registered", at="02:00 local")
 
     if os.getenv("SEO_WATCHDOG_CRON_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
-        seo_watchdog = TaskPayload(
-            task_type="seo.watchdog.audit",
-            parameters={"session_start_offset": -1},
-            project_id="management",
-            priority=4,
+        raw_shards = (os.getenv("SEO_WATCHDOG_SHARDS") or "1").strip() or "1"
+        try:
+            seo_watchdog_shards = max(1, int(raw_shards))
+        except ValueError:
+            seo_watchdog_shards = 1
+        for shard_i in range(seo_watchdog_shards):
+            seo_watchdog = TaskPayload(
+                task_type="seo.watchdog.audit",
+                parameters={
+                    "session_start_offset": -1,
+                    "session_shard_index": shard_i,
+                    "session_shard_total": seo_watchdog_shards,
+                },
+                project_id="management",
+                priority=4,
+            )
+            dispatcher.cron.add(
+                hour=3,
+                minute=30,
+                task=seo_watchdog,
+                name=f"seo-watchdog-audit-shard-{shard_i}-of-{seo_watchdog_shards}",
+            )
+        log.info(
+            "cron_seo_watchdog_registered",
+            at="03:30 local",
+            shards=seo_watchdog_shards,
         )
-        dispatcher.cron.add(hour=3, minute=30, task=seo_watchdog, name="seo-watchdog-audit")
-        log.info("cron_seo_watchdog_registered", at="03:30 local")
 
     # Swarm Social Synthesis — AI group warmer + community classification
     if os.getenv("SWARM_SOCIAL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}:

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import os
 import random
 import uuid
@@ -19,6 +18,12 @@ from typing import Any
 
 import structlog
 
+from nexus.worker.services.tg_session import (
+    async_telegram_client,
+    classify_telethon_account_error,
+    flood_wait_seconds,
+    resolve_telethon_creds,
+)
 from nexus.worker.task_registry import registry
 
 log = structlog.get_logger(__name__)
@@ -32,25 +37,21 @@ KEY_METRICS = "nexus:swarm:factory:metrics"
 
 GROUPS_TARGET_PER_OWNER = 20
 REACTION_EMOJIS = ["🔥", "😂", "💀", "🤯", "👀", "😱", "💪", "🤦", "😅", "❤️", "🙏"]
+REACTION_TL_EMOJIS = ["👍", "❤️", "🔥", "🙏", "😂", "👀"]
 
 FACTORY_TOPICS = [
-    "קריפטו ומטבעות דיגיטליים",
-    "כלכלה אישית ומחירים בישראל",
-    "פוליטיקה ישראלית",
-    "ישראל–איראן וגיאופוליטיקה",
-    "חדשות ישראל",
-    "חדשות עולם",
-    "קניות אונליין",
-    "יד שנייה וקניות חכמות",
-    "אוכל מקומי ומסעדות",
-    "טקנולוגיה וסטארטאפים",
-    "ספורט — מכבי והפועל",
+    "קריפטו ומטבעות דיגיטליים — ביטקוין, אלטקוינים, בורסות",
+    "ישראל–איראן — מתח אזורי וגיאופוליטיקה",
+    "פוליטיקה ישראלית — קואליציה, משפט, מחאות",
+    "כלכלה בישראל — דיור, מחירים, ריבית",
+    "קניות אונליין — משלוחים, מבצעים, אתרים",
+    "יד שנייה — יד2, מרקטפלייס, טיפים לקנייה",
 ]
 
 _GEMINI_SYSTEM = (
     "אתה משתתף בקבוצת טלגרם ישראלית. כתוב הודעה קצרה אחת (עד שני משפטים) בעברית ישראלית "
     "מודרנית: סלנג (וואלה, אחי, מטורף, חזק), לפעמים קיצור או טעות הקלדה קטנה, לא רשמי. "
-    "אל תזכיר שאתה בוט. החזר רק JSON: {\"text\":\"ההודעה\"}"
+    "התאם את הטון לנושא שהמשתמש נותן. אל תזכיר שאתה בוט. החזר רק JSON: {\"text\":\"ההודעה\"}"
 )
 
 
@@ -76,10 +77,15 @@ def _discover_session_bases(sessions_dir: Path) -> list[str]:
 
 
 def _split_roles(bases: list[str]) -> tuple[list[str], list[str]]:
+    """
+    ~3% owners, remainder members. Uses rounding so large pools track nominal 3%;
+    with very few sessions, at least one owner is kept (may exceed 3% until n grows).
+    """
     n = len(bases)
     if n == 0:
         return [], []
-    owner_count = max(1, math.ceil(n * 0.03))
+    owner_count = max(1, round(n * 0.03))
+    owner_count = min(owner_count, n)
     owners = bases[:owner_count]
     members = bases[owner_count:]
     return owners, members
@@ -148,13 +154,6 @@ def _resolve_openai_key(parameters: dict[str, Any]) -> str:
     )
 
 
-def _resolve_telethon_creds(parameters: dict[str, Any]) -> tuple[int, str]:
-    sec = parameters.get("__secrets__", {})
-    api_id = int(sec.get("TELEFIX_API_ID") or os.getenv("TELEFIX_API_ID", "0") or "0")
-    api_hash = str(sec.get("TELEFIX_API_HASH") or os.getenv("TELEFIX_API_HASH", "") or "")
-    return api_id, api_hash
-
-
 def _invite_hash(link_or_hash: str) -> str:
     s = (link_or_hash or "").strip()
     if "/+" in s:
@@ -164,33 +163,57 @@ def _invite_hash(link_or_hash: str) -> str:
     return s.lstrip("+")
 
 
-def _is_ban_error(exc: BaseException) -> bool:
-    try:
-        from telethon.errors import (  # type: ignore[import-untyped]
-            AuthKeyUnregisteredError,
-            UserDeactivatedBanError,
-            UserDeactivatedError,
+async def _try_peer_reaction(client: Any, entity: Any) -> bool:
+    from telethon.tl.functions.messages import SendReactionRequest  # type: ignore[import-untyped]
+    from telethon.tl.types import ReactionEmoji  # type: ignore[import-untyped]
+
+    me = await client.get_me()
+    my_id = getattr(me, "id", None)
+    messages = await client.get_messages(entity, limit=40)
+    candidates: list[Any] = []
+    for m in messages:
+        if not m or not getattr(m, "id", None):
+            continue
+        sid = getattr(m, "sender_id", None)
+        if sid is None or sid == my_id:
+            continue
+        candidates.append(m)
+    if not candidates:
+        return False
+    msg = random.choice(candidates)
+    emo = random.choice(REACTION_TL_EMOJIS)
+    await client(
+        SendReactionRequest(
+            peer=entity,
+            msg_id=int(msg.id),
+            reaction=[ReactionEmoji(emoticon=emo)],
         )
-    except ImportError:
+    )
+    return True
+
+
+async def _try_send_pack_sticker(client: Any, entity: Any) -> bool:
+    from telethon.tl.functions.messages import GetStickerSetRequest  # type: ignore[import-untyped]
+    from telethon.tl.types import InputStickerSetShortName  # type: ignore[import-untyped]
+
+    short = (os.getenv("COMMUNITY_FACTORY_STICKER_SET", "AnimatedEmojies") or "").strip()
+    if not short:
         return False
-    return isinstance(exc, (UserDeactivatedError, UserDeactivatedBanError, AuthKeyUnregisteredError))
-
-
-def _is_flood_wait(exc: BaseException) -> bool:
     try:
-        from telethon.errors import FloodWaitError  # type: ignore[import-untyped]
-
-        return isinstance(exc, FloodWaitError)
-    except ImportError:
+        res = await client(
+            GetStickerSetRequest(
+                stickerset=InputStickerSetShortName(short_name=short),
+                hash=0,
+            )
+        )
+        docs = [d for d in (getattr(res, "documents", None) or []) if d]
+        if not docs:
+            return False
+        await client.send_file(entity, random.choice(docs))
+        return True
+    except Exception as exc:
+        log.debug("factory_sticker_skipped", error=str(exc))
         return False
-
-
-def _flood_seconds(exc: BaseException) -> int:
-    from telethon.errors import FloodWaitError  # type: ignore[import-untyped]
-
-    if isinstance(exc, FloodWaitError):
-        return int(getattr(exc, "seconds", 60) or 60)
-    return 60
 
 
 async def _mark_banned(redis: Any, session_base: str) -> None:
@@ -339,7 +362,7 @@ def _roll_converse_mode() -> str:
         return "lurk"
     if r < 0.95:
         return "reaction"
-    return "sticker_emoji"
+    return "sticker"
 
 
 @registry.register("swarm.community_factory.bootstrap")
@@ -437,9 +460,6 @@ async def community_factory_bootstrap(parameters: dict[str, Any]) -> dict[str, A
 @registry.register("swarm.community_factory.create_groups_tick")
 async def community_factory_create_groups_tick(parameters: dict[str, Any]) -> dict[str, Any]:
     redis = parameters.get("__redis__")
-    api_id, api_hash = _resolve_telethon_creds(parameters)
-    if not api_id or not api_hash:
-        return {"status": "failed", "error": "TELEFIX_API_ID / TELEFIX_API_HASH missing"}
 
     roles = await _redis_json_get(redis, KEY_ROLES)
     if not isinstance(roles, dict):
@@ -447,6 +467,13 @@ async def community_factory_create_groups_tick(parameters: dict[str, Any]) -> di
     owners: list[str] = list(roles.get("owners") or [])
     if not owners:
         return {"status": "failed", "error": "no owners"}
+
+    aid, ahash = resolve_telethon_creds(owners[0], parameters)
+    if not aid or not ahash:
+        return {
+            "status": "failed",
+            "error": "Telethon api_id/api_hash missing: set TELEFIX_* or add .json next to the first owner session",
+        }
 
     state = await _redis_json_get(redis, KEY_STATE)
     if not isinstance(state, dict):
@@ -476,7 +503,6 @@ async def community_factory_create_groups_tick(parameters: dict[str, Any]) -> di
         return {"status": "completed", "phase": "create_done", "groups_created_total": idx}
 
     try:
-        from telethon import TelegramClient  # type: ignore[import-untyped]
         from telethon.tl.functions.channels import CreateChannelRequest  # type: ignore[import-untyped]
         from telethon.tl.types import Channel  # type: ignore[import-untyped]
     except ImportError:
@@ -492,7 +518,7 @@ async def community_factory_create_groups_tick(parameters: dict[str, Any]) -> di
     invite_link = ""
 
     try:
-        async with TelegramClient(owner_base, api_id, api_hash) as client:
+        async with async_telegram_client(owner_base, parameters) as client:
             if not await client.is_user_authorized():
                 await _mark_banned(redis, owner_base)
                 await _bump_metric(redis, "bans", 1)
@@ -512,12 +538,19 @@ async def community_factory_create_groups_tick(parameters: dict[str, Any]) -> di
                 raise RuntimeError("CreateChannelRequest returned no channel")
             invite_link = await client.export_chat_invite_link(ch)
             group_id = int(ch.id)
+    except ValueError as exc:
+        log.warning("factory_create_creds_missing", owner=owner_base[:48], error=str(exc))
+        state["creation_index"] = idx + 1
+        await _redis_json_set(redis, KEY_STATE, state)
+        await _enqueue_task("swarm.community_factory.create_groups_tick", parameters)
+        return {"status": "failed", "error": str(exc), "continuing": True}
     except Exception as exc:
-        if _is_ban_error(exc):
+        kind = classify_telethon_account_error(exc)
+        if kind == "ban":
             await _mark_banned(redis, owner_base)
             await _bump_metric(redis, "bans", 1)
-        elif _is_flood_wait(exc):
-            sec = int(_flood_seconds(exc) * 1.1) + 1
+        elif kind == "flood":
+            sec = int(flood_wait_seconds(exc) * 1.1) + 1
             await _set_cooldown(redis, owner_base, sec)
             await _bump_metric(redis, "flood_waits", 1)
             await _enqueue_task("swarm.community_factory.create_groups_tick", parameters)
@@ -535,6 +568,7 @@ async def community_factory_create_groups_tick(parameters: dict[str, Any]) -> di
             "group_id": group_id,
             "owner_session": owner_base,
             "invite_link": invite_link,
+            "invite_hash": _invite_hash(invite_link),
             "title": title,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -557,9 +591,6 @@ async def community_factory_create_groups_tick(parameters: dict[str, Any]) -> di
 @registry.register("swarm.community_factory.join_tick")
 async def community_factory_join_tick(parameters: dict[str, Any]) -> dict[str, Any]:
     redis = parameters.get("__redis__")
-    api_id, api_hash = _resolve_telethon_creds(parameters)
-    if not api_id or not api_hash:
-        return {"status": "failed", "error": "TELEFIX_API_ID / TELEFIX_API_HASH missing"}
 
     roles = await _redis_json_get(redis, KEY_ROLES)
     groups = await _redis_json_get(redis, KEY_GROUPS)
@@ -571,12 +602,23 @@ async def community_factory_join_tick(parameters: dict[str, Any]) -> dict[str, A
 
     owners = list(roles.get("owners") or [])
     members = list(roles.get("members") or [])
+    if not members:
+        return {
+            "status": "failed",
+            "error": "no member sessions to join groups — need non-owner accounts in the pool",
+        }
+
+    aid, ahash = resolve_telethon_creds(members[0], parameters)
+    if not aid or not ahash:
+        return {
+            "status": "failed",
+            "error": "Telethon api_id/api_hash missing: set TELEFIX_* or add .json next to member sessions",
+        }
+
     all_sessions = owners + members
-    if not all_sessions:
-        return {"status": "failed", "error": "no sessions"}
 
     G = len(groups)
-    S = len(all_sessions)
+    S = len(members)
     flat_max = S * G
     j = int(state.get("join_flat_idx", 0))
 
@@ -587,7 +629,6 @@ async def community_factory_join_tick(parameters: dict[str, Any]) -> dict[str, A
     )
 
     try:
-        from telethon import TelegramClient  # type: ignore[import-untyped]
         from telethon.tl.functions.messages import ImportChatInviteRequest  # type: ignore[import-untyped]
     except ImportError:
         return {"status": "failed", "error": "telethon not installed"}
@@ -596,7 +637,7 @@ async def community_factory_join_tick(parameters: dict[str, Any]) -> dict[str, A
     while attempts < max(20, max_joins * 5) and j < flat_max:
         session_i = j % S
         group_i = j // S
-        session_base = all_sessions[session_i]
+        session_base = members[session_i]
         grp = groups[group_i] if group_i < len(groups) else {}
         link = str(grp.get("invite_link") or "")
 
@@ -619,7 +660,7 @@ async def community_factory_join_tick(parameters: dict[str, Any]) -> dict[str, A
             continue
 
         try:
-            async with TelegramClient(session_base, api_id, api_hash) as client:
+            async with async_telegram_client(session_base, parameters) as client:
                 if not await client.is_user_authorized():
                     await _mark_banned(redis, session_base)
                     await _bump_metric(redis, "bans", 1)
@@ -641,16 +682,20 @@ async def community_factory_join_tick(parameters: dict[str, Any]) -> dict[str, A
                     await _enqueue_task("swarm.community_factory.converse_tick", carry)
             return {"status": "completed", "joined": True, "join_flat_idx": j}
 
+        except ValueError as exc:
+            log.warning("factory_join_creds_missing", session=session_base[:32], error=str(exc))
+            await _bump_metric(redis, "joins_failed", 1)
+            continue
         except Exception as exc:
-            if _is_ban_error(exc):
+            kind = classify_telethon_account_error(exc)
+            if kind == "ban":
                 await _mark_banned(redis, session_base)
                 await _bump_metric(redis, "bans", 1)
                 continue
-            if _is_flood_wait(exc):
-                sec = int(_flood_seconds(exc) * 1.1) + 1
+            if kind == "flood":
+                sec = int(flood_wait_seconds(exc) * 1.1) + 1
                 await _set_cooldown(redis, session_base, sec)
                 await _bump_metric(redis, "flood_waits", 1)
-                # j was pre-incremented; retry same (session, group) after cooldown
                 state["join_flat_idx"] = max(0, j - 1)
                 await _redis_json_set(redis, KEY_STATE, state)
                 carry = dict(parameters)
@@ -680,9 +725,6 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
     redis = parameters.get("__redis__")
     api_key = _resolve_api_key(parameters)
     openai_key = _resolve_openai_key(parameters)
-    api_id, api_hash = _resolve_telethon_creds(parameters)
-    if not api_id or not api_hash:
-        return {"status": "failed", "error": "TELEFIX_API_ID / TELEFIX_API_HASH missing"}
 
     roles = await _redis_json_get(redis, KEY_ROLES)
     groups = await _redis_json_get(redis, KEY_GROUPS)
@@ -697,6 +739,13 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
     all_sessions = owners + members
     if not all_sessions:
         return {"status": "failed", "error": "no sessions"}
+
+    aid, ahash = resolve_telethon_creds(all_sessions[0], parameters)
+    if not aid or not ahash:
+        return {
+            "status": "failed",
+            "error": "Telethon api_id/api_hash missing: set TELEFIX_* or add .json next to sessions",
+        }
 
     stop_after = int(
         state.get("converse_chain_limit")
@@ -739,41 +788,76 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
         return {"status": "completed", "action": "lurk"}
 
     try:
-        from telethon import TelegramClient  # type: ignore[import-untyped]
+        import telethon  # noqa: F401
     except ImportError:
         return {"status": "failed", "error": "telethon not installed"}
 
     topic = random.choice(FACTORY_TOPICS)
+    carry = dict(parameters)
+    carry.pop("__redis__", None)
 
-    if mode in ("reaction", "sticker_emoji"):
+    async def _enqueue_next() -> None:
+        await _enqueue_task("swarm.community_factory.converse_tick", carry)
+
+    if mode == "reaction":
         await asyncio.sleep(random.uniform(5.0, 300.0))
         try:
-            async with TelegramClient(session_base, api_id, api_hash) as client:
+            async with async_telegram_client(session_base, parameters) as client:
                 if not await client.is_user_authorized():
                     await _mark_banned(redis, session_base)
                     await _bump_metric(redis, "bans", 1)
-                    carry = dict(parameters)
-                    carry.pop("__redis__", None)
-                    await _enqueue_task("swarm.community_factory.converse_tick", carry)
+                    await _enqueue_next()
                     return {"status": "skipped", "reason": "unauthorized"}
                 ent = await client.get_entity(int(group_id))
-                text = random.choice(REACTION_EMOJIS)
-                await client.send_message(ent, text)
+                reacted = await _try_peer_reaction(client, ent)
+                if not reacted:
+                    await client.send_message(ent, random.choice(REACTION_EMOJIS))
             await _bump_metric(redis, "messages_sent", 1)
+        except ValueError as exc:
+            log.warning("factory_converse_creds_missing", error=str(exc))
         except Exception as exc:
-            if _is_ban_error(exc):
+            kind = classify_telethon_account_error(exc)
+            if kind == "ban":
                 await _mark_banned(redis, session_base)
                 await _bump_metric(redis, "bans", 1)
-            elif _is_flood_wait(exc):
-                sec = int(_flood_seconds(exc) * 1.1) + 1
+            elif kind == "flood":
+                sec = int(flood_wait_seconds(exc) * 1.1) + 1
                 await _set_cooldown(redis, session_base, sec)
                 await _bump_metric(redis, "flood_waits", 1)
             else:
-                log.debug("factory_converse_emoji_failed", error=str(exc))
-        carry = dict(parameters)
-        carry.pop("__redis__", None)
-        await _enqueue_task("swarm.community_factory.converse_tick", carry)
-        return {"status": "completed", "action": mode}
+                log.debug("factory_converse_reaction_failed", error=str(exc))
+        await _enqueue_next()
+        return {"status": "completed", "action": "reaction"}
+
+    if mode == "sticker":
+        await asyncio.sleep(random.uniform(5.0, 300.0))
+        try:
+            async with async_telegram_client(session_base, parameters) as client:
+                if not await client.is_user_authorized():
+                    await _mark_banned(redis, session_base)
+                    await _bump_metric(redis, "bans", 1)
+                    await _enqueue_next()
+                    return {"status": "skipped", "reason": "unauthorized"}
+                ent = await client.get_entity(int(group_id))
+                sent = await _try_send_pack_sticker(client, ent)
+                if not sent:
+                    await client.send_message(ent, random.choice(REACTION_EMOJIS))
+            await _bump_metric(redis, "messages_sent", 1)
+        except ValueError as exc:
+            log.warning("factory_converse_creds_missing", error=str(exc))
+        except Exception as exc:
+            kind = classify_telethon_account_error(exc)
+            if kind == "ban":
+                await _mark_banned(redis, session_base)
+                await _bump_metric(redis, "bans", 1)
+            elif kind == "flood":
+                sec = int(flood_wait_seconds(exc) * 1.1) + 1
+                await _set_cooldown(redis, session_base, sec)
+                await _bump_metric(redis, "flood_waits", 1)
+            else:
+                log.debug("factory_converse_sticker_failed", error=str(exc))
+        await _enqueue_next()
+        return {"status": "completed", "action": "sticker"}
 
     await asyncio.sleep(random.uniform(5.0, 300.0))
     line = await _generate_hebrew_line(api_key, topic, openai_key)
@@ -781,29 +865,28 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
         cut = random.randint(1, len(line) - 1)
         line = line[:cut] + line[cut + 1 :]
     try:
-        async with TelegramClient(session_base, api_id, api_hash) as client:
+        async with async_telegram_client(session_base, parameters) as client:
             if not await client.is_user_authorized():
                 await _mark_banned(redis, session_base)
                 await _bump_metric(redis, "bans", 1)
-                carry = dict(parameters)
-                carry.pop("__redis__", None)
-                await _enqueue_task("swarm.community_factory.converse_tick", carry)
+                await _enqueue_next()
                 return {"status": "skipped", "reason": "unauthorized"}
             ent = await client.get_entity(int(group_id))
             await client.send_message(ent, line[:4096])
         await _bump_metric(redis, "messages_sent", 1)
+    except ValueError as exc:
+        log.warning("factory_converse_creds_missing", error=str(exc))
     except Exception as exc:
-        if _is_ban_error(exc):
+        kind = classify_telethon_account_error(exc)
+        if kind == "ban":
             await _mark_banned(redis, session_base)
             await _bump_metric(redis, "bans", 1)
-        elif _is_flood_wait(exc):
-            sec = int(_flood_seconds(exc) * 1.1) + 1
+        elif kind == "flood":
+            sec = int(flood_wait_seconds(exc) * 1.1) + 1
             await _set_cooldown(redis, session_base, sec)
             await _bump_metric(redis, "flood_waits", 1)
         else:
             log.warning("factory_converse_send_failed", error=str(exc))
 
-    carry = dict(parameters)
-    carry.pop("__redis__", None)
-    await _enqueue_task("swarm.community_factory.converse_tick", carry)
+    await _enqueue_next()
     return {"status": "completed", "action": "text"}

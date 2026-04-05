@@ -445,10 +445,11 @@ def sync_upsert_seo_invite_snapshot(
     usage_count: int,
     participant_count: int,
     ghost_delta: int,
+    audited_at: str | None = None,
 ) -> None:
     import sqlite3
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = audited_at or datetime.now(timezone.utc).isoformat()
     path = management_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), check_same_thread=False)
@@ -519,8 +520,9 @@ def sync_apply_member_participants(
 ) -> None:
     """
     Upsert current participants, mark absent users as Left.
-    Each row: user_id, is_premium (bool), status ('Active'|'Deleted'), invite_slug (optional).
-    Preserves join_date on conflict; sets join_date on first insert.
+    Each row: user_id, is_premium (bool), status ('Active'|'Deleted'|'Banned'),
+    invite_slug (optional), join_date (optional ISO string; else first-seen time).
+    Preserves join_date on conflict; sets join_date on first insert from row or now.
     """
     import sqlite3
 
@@ -539,6 +541,8 @@ def sync_apply_member_participants(
             st = str(r["status"])
             prem = 1 if r.get("is_premium") else 0
             slug = r.get("invite_slug")
+            row_join = r.get("join_date")
+            join_val = row_join if isinstance(row_join, str) and row_join.strip() else now
             conn.execute(
                 """
                 INSERT INTO member_audit (
@@ -558,7 +562,7 @@ def sync_apply_member_participants(
                 (
                     group_id,
                     uid,
-                    now,
+                    join_val,
                     default_subscription_days,
                     prem,
                     st,
@@ -703,4 +707,176 @@ async def aggregate_rank_projection_inputs() -> dict[str, Any]:
             "n_groups": n_groups,
             "avg_member_tenure_months": avg_tenure_mo,
             "avg_group_row_age_days": avg_gm_age_days,
+        }
+
+
+def sync_insert_seo_churn_event(
+    *,
+    group_id: int,
+    user_id: int,
+    detected_at: str,
+    join_date: str | None,
+    left_at: str,
+    subscription_days: int,
+    reason: str,
+) -> None:
+    import sqlite3
+
+    if subscription_days not in (30, 60):
+        subscription_days = 30
+    path = management_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), check_same_thread=False)
+    try:
+        conn.executescript(MANAGEMENT_DDL)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO seo_churn_event (
+                group_id, user_id, detected_at, join_date, left_at, subscription_days, reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (group_id, user_id, detected_at, join_date, left_at, subscription_days, reason),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+SEO_INVITE_REDIS_KEY_FMT = "nexus:seo:invite:{group_id}"
+SEO_INVITE_REDIS_TTL_S = 604800
+
+
+async def aggregate_seo_fleet_stats(
+    *,
+    alerts_limit: int = 100,
+    top_ghost_limit: int = 50,
+) -> dict[str, Any]:
+    """
+    Dedupe by Telegram group_id (latest member_stats row per group), join invite snapshots,
+    and list recent seo_churn_event rows for 1XPANEL.
+    """
+    alerts_limit = max(0, min(500, int(alerts_limit)))
+    top_ghost_limit = max(0, min(200, int(top_ghost_limit)))
+    path = management_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    async with aiosqlite.connect(str(path)) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("PRAGMA foreign_keys=ON")
+        await db.executescript(MANAGEMENT_DDL)
+        await db.commit()
+        cur = await db.execute(
+            """
+            WITH ranked AS (
+                SELECT
+                    gm.id AS gm_id,
+                    gm.group_id,
+                    gm.title,
+                    gm.username,
+                    COALESCE(ms.total_members, 0) AS total_members,
+                    COALESCE(ms.premium_count, 0) AS premium_count,
+                    COALESCE(ms.deleted_count, 0) AS deleted_count,
+                    COALESCE(ms.active_real_count, 0) AS active_real_count,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY gm.group_id
+                        ORDER BY datetime(COALESCE(ms.updated_at, gm.updated_at, '1970-01-01')) DESC
+                    ) AS rn
+                FROM group_metadata gm
+                LEFT JOIN member_stats ms ON ms.group_metadata_id = gm.id
+            )
+            SELECT gm_id, group_id, title, username, total_members, premium_count,
+                   deleted_count, active_real_count
+            FROM ranked
+            WHERE rn = 1
+            """
+        )
+        g_rows = await cur.fetchall()
+
+        n_groups = len(g_rows)
+        total_members = sum(int(r["total_members"] or 0) for r in g_rows)
+        total_premium = sum(int(r["premium_count"] or 0) for r in g_rows)
+        fleet_premium_ratio = (
+            round(float(total_premium) / float(total_members), 6) if total_members else 0.0
+        )
+
+        group_ids = [int(r["group_id"]) for r in g_rows]
+        snap_map: dict[int, dict[str, Any]] = {}
+        if group_ids:
+            placeholders = ",".join("?" * len(group_ids))
+            sc = await db.execute(
+                f"""
+                SELECT group_id, invite_link, usage_count, participant_count, ghost_delta, audited_at
+                FROM seo_invite_snapshot
+                WHERE group_id IN ({placeholders})
+                """,
+                group_ids,
+            )
+            for s in await sc.fetchall():
+                snap_map[int(s["group_id"])] = dict(s)
+
+        groups_out: list[dict[str, Any]] = []
+        for r in g_rows:
+            gid = int(r["group_id"])
+            tm = int(r["total_members"] or 0)
+            pc = int(r["premium_count"] or 0)
+            snap = snap_map.get(gid) or {}
+            gh = int(snap.get("ghost_delta") or 0)
+            groups_out.append({
+                "group_id": gid,
+                "group_metadata_id": int(r["gm_id"]),
+                "title": r["title"],
+                "username": r["username"],
+                "active_members": tm,
+                "premium_count": pc,
+                "premium_ratio": round(pc / tm, 6) if tm else 0.0,
+                "invite_usage": int(snap.get("usage_count") or 0),
+                "ghost_delta": gh,
+                "invite_audited_at": snap.get("audited_at"),
+            })
+
+        groups_by_ghost = sorted(groups_out, key=lambda x: (-x["ghost_delta"], -x["active_members"]))
+        top_ghosts = groups_by_ghost[:top_ghost_limit] if top_ghost_limit else []
+
+        churn_7d = 0
+        if alerts_limit:
+            c7 = await db.execute(
+                """
+                SELECT COUNT(*) AS c FROM seo_churn_event
+                WHERE datetime(detected_at) >= datetime('now', '-7 days')
+                """
+            )
+            row7 = await c7.fetchone()
+            churn_7d = int(row7["c"] or 0) if row7 else 0
+
+        alerts: list[dict[str, Any]] = []
+        if alerts_limit:
+            ac = await db.execute(
+                """
+                SELECT group_id, user_id, detected_at, join_date, left_at, subscription_days, reason
+                FROM seo_churn_event
+                ORDER BY datetime(detected_at) DESC
+                LIMIT ?
+                """,
+                (alerts_limit,),
+            )
+            for a in await ac.fetchall():
+                alerts.append({
+                    "group_id": int(a["group_id"]),
+                    "user_id": int(a["user_id"]),
+                    "detected_at": a["detected_at"],
+                    "join_date": a["join_date"],
+                    "left_at": a["left_at"],
+                    "subscription_days": int(a["subscription_days"] or 30),
+                    "reason": a["reason"],
+                })
+
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "n_groups": n_groups,
+            "total_active_members": total_members,
+            "fleet_premium_ratio": fleet_premium_ratio,
+            "total_premium_members": total_premium,
+            "replacement_alerts_count_7d": churn_7d,
+            "groups": groups_out,
+            "top_ghost_groups": top_ghosts,
+            "replacement_alerts": alerts,
         }

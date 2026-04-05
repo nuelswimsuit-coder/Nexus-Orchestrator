@@ -2,7 +2,7 @@
 Swarm Social Synthesis — dashboard API for community identity + group registry.
 
 ``/swarm/sessions/*`` endpoints deal with **Telegram (Telethon) account** inventory
-and scans; Redis keys under ``nexus:sessions:*`` only store that metadata.
+on disk (vault); Redis keys under ``nexus:sessions:*`` are optional fleet cache only.
 """
 
 from __future__ import annotations
@@ -25,6 +25,11 @@ from pydantic import BaseModel, Field
 from nexus.api.dependencies import RedisDep
 from nexus.shared.config import settings
 from nexus.shared import redis_util
+from nexus.services.tg_session_disk import (
+    count_live_telethon_session_files,
+    inventory_rows_for_local_machine,
+    tg_session_disk_scan_rows,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -235,6 +240,23 @@ async def get_session_inventory(redis: RedisDep) -> dict[str, Any]:
         except Exception:
             pass
 
+    mid = _machine_id()
+    disk_rows = inventory_rows_for_local_machine(mid)
+    if disk_rows:
+        existing = inventory_by_machine.get(mid) or []
+        have = {
+            str(x.get("session_stem") or x.get("session_id") or "").strip()
+            for x in existing
+            if isinstance(x, dict)
+        }
+        merged = list(existing)
+        for row in disk_rows:
+            st = str(row.get("session_stem") or "").strip()
+            if st and st not in have:
+                have.add(st)
+                merged.append(row)
+        inventory_by_machine[mid] = merged
+
     machines = list(inventory_by_machine.keys())
     total = sum(len(v) for v in inventory_by_machine.values())
 
@@ -264,16 +286,18 @@ async def set_session_inventory(body: dict, redis: RedisDep) -> dict[str, Any]:
 )
 async def get_all_scanned(redis: RedisDep) -> dict[str, Any]:
     """
-    Bridge endpoint: aggregates **Telegram (Telethon) session** records from
-    three Redis key namespaces into one ``sessions_by_machine`` map.
-
-    Sources (in order of priority, deduplicated by redis_key):
-    1. ``session:*`` — session_manager heartbeats for live Telegram sessions (TTL 120s)
-    2. ``nexus:sessions:*`` — deployer-published Telegram session rows (excludes inventory keys)
-    3. ``nexus:session_vault:meta:*`` — vault Telethon session metadata
+    Telegram (Telethon) accounts on this API host: **vault disk** is authoritative
+    (``*.session`` + ``*.json`` under vault roots). Redis is optional supplement:
+    deployer-published rows and cached vault metadata — not a substitute for disk.
     """
     sessions_by_machine: dict[str, list[dict[str, Any]]] = {}
     seen_keys: set[str] = set()
+    seen_stems: set[str] = set()
+
+    def _stem(entry: dict[str, Any]) -> str:
+        return str(
+            entry.get("session_id") or entry.get("dedupe_stem") or ""
+        ).strip()
 
     def _add(machine: str, entry: dict[str, Any]) -> None:
         rk = entry.get("redis_key", "")
@@ -281,37 +305,17 @@ async def get_all_scanned(redis: RedisDep) -> dict[str, Any]:
             return
         if rk:
             seen_keys.add(rk)
+        st = _stem(entry)
+        if st:
+            seen_stems.add(st)
         sessions_by_machine.setdefault(machine, []).append(entry)
 
-    # ── Source 1: session:* (session_manager — Telegram session heartbeats) ───
+    # ── Source 1: local disk (vault Telethon session files) ───────────────────
     try:
-        cursor = 0
-        while True:
-            cursor, keys = await redis.scan(cursor=cursor, match="session:*", count=200)
-            for key in keys:
-                ks = key.decode() if isinstance(key, bytes) else str(key)
-                raw = await redis.get(ks)
-                if not raw:
-                    continue
-                try:
-                    d = json.loads(raw)
-                except Exception:
-                    continue
-                if not isinstance(d, dict):
-                    continue
-                machine = str(d.get("computer_name") or _machine_id()).strip() or _machine_id()
-                _add(machine, {
-                    "redis_key": ks,
-                    "phone_number": str(d.get("session_id") or ""),
-                    "origin_machine": machine,
-                    "status": str(d.get("status") or "active"),
-                    "last_scanned_target": "session_manager",
-                    "last_seen": d.get("last_seen"),
-                    "session_id": str(d.get("session_id") or ""),
-                    "source": "session_manager",
-                })
-            if cursor == 0:
-                break
+        mid = _machine_id()
+        for row in tg_session_disk_scan_rows(machine_id=mid):
+            e = {k: v for k, v in row.items() if k != "dedupe_stem"}
+            _add(mid, e)
     except Exception:
         pass
 
@@ -340,6 +344,9 @@ async def get_all_scanned(redis: RedisDep) -> dict[str, Any]:
                     continue
                 machine = str(d.get("machine_id") or d.get("computer_name") or _machine_id()).strip()
                 phone = str(d.get("phone") or d.get("phone_number") or d.get("session_id") or "")
+                sid = str(d.get("session_id") or "").strip()
+                if sid and sid in seen_stems:
+                    continue
                 _add(machine, {
                     "redis_key": ks,
                     "phone_number": phone,
@@ -347,7 +354,7 @@ async def get_all_scanned(redis: RedisDep) -> dict[str, Any]:
                     "status": str(d.get("status") or "active"),
                     "last_scanned_target": "deployer",
                     "last_seen": d.get("last_seen") or d.get("last_heartbeat"),
-                    "session_id": str(d.get("session_id") or ""),
+                    "session_id": sid,
                     "source": "deployer",
                 })
             if cursor == 0:
@@ -373,6 +380,8 @@ async def get_all_scanned(redis: RedisDep) -> dict[str, Any]:
                     continue
                 machine = _machine_id()
                 stem = ks.replace("nexus:session_vault:meta:", "")
+                if stem in seen_stems:
+                    continue
                 phone = str(d.get("phone") or d.get("phone_number") or "")
                 username = str(d.get("username") or d.get("first_name") or stem)
                 _add(machine, {
@@ -687,19 +696,12 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
     bots = list(bots_by_phone.values())
     active_talkers = len([b for b in bots if b["is_active"]])
 
-    # total_sessions: count .session files in vault/sessions if accessible
-    total_sessions = 0
+    # Telethon accounts: recursive vault roots (paired .session + .json)
     try:
-        import pathlib as _pathlib
-        import os as _os
-        vault_sessions = _pathlib.Path(
-            _os.getenv("VAULT_SESSIONS_DIR", "") or
-            _pathlib.Path(__file__).resolve().parent.parent.parent.parent / "vault" / "sessions"
-        )
-        if vault_sessions.is_dir():
-            total_sessions = sum(1 for _ in vault_sessions.glob("*.session"))
+        tg_session_files_on_disk = count_live_telethon_session_files()
     except Exception:
-        pass
+        tg_session_files_on_disk = 0
+    total_sessions = tg_session_files_on_disk
 
     # recent_messages: last 10 events as a message feed
     recent_messages: list[dict[str, Any]] = []
@@ -788,6 +790,7 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
                 "redis_host": _ru.hostname,
                 "redis_db_index": _redis_db_index_for_log(),
                 "total_sessions": total_sessions,
+                "tg_session_files_on_disk": tg_session_files_on_disk,
             },
         }
     )
@@ -804,6 +807,7 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
         "verified_count": verified_count,
         "written_count": written_count,
         "total_sessions": total_sessions,
+        "tg_session_files_on_disk": tg_session_files_on_disk,
         "recent_messages": recent_messages,
         "last_engine_error": last_engine_error,
         "redis_degraded": redis_degraded,

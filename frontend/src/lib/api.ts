@@ -1371,6 +1371,29 @@ export function postManagementScan(body: ManagementScanBody): Promise<Management
 
 // ── Community Factory (swarm) ────────────────────────────────────────────────
 
+/** GET /api/swarm/live-feed — Telegram session count is from vault disk, not Redis PING. */
+export interface SwarmLiveFeedResponse {
+  total_in_group: number;
+  active_talkers: number;
+  last_message: string;
+  last_message_ts: number;
+  last_sender_phone: string;
+  is_running: boolean;
+  bots: unknown[];
+  verified_count?: number;
+  written_count?: number;
+  /** @deprecated same as tg_session_files_on_disk; kept for older UI */
+  total_sessions?: number;
+  /** Paired *.session + *.json under vault roots (recursive). */
+  tg_session_files_on_disk?: number;
+  recent_messages?: unknown[];
+  last_engine_error?: string;
+  redis_degraded?: boolean;
+  engine_last_seen_ts?: number;
+  broker_reachable?: boolean | null;
+  configured_redis_url_safe?: string | null;
+}
+
 export interface CommunityFactoryStatusResponse {
   phase: string | null;
   state: Record<string, unknown>;

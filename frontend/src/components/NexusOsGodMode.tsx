@@ -119,7 +119,7 @@ interface SwarmSession {
   last_scanned_target: string;
   last_seen?: number | null;
   session_id?: string;
-  source?: "session_manager" | "deployer" | "vault" | string;
+  source?: "vault_disk" | "deployer" | "vault" | string;
 }
 
 interface AllScannedResponse {
@@ -4875,7 +4875,7 @@ function SwarmMonitorView() {
                 ? "טוען מלאי סשני טלגרם (מסריקת הצי)…"
                 : bannerPick && bannerPick.sessions.length > 0
                   ? `${bannerPick.sessions.length} סשני טלגרם במלאי (מהסורק — ${bannerPick.machineId}) · ${bannerPick.sessions[0]?.phone || "—"}`
-                  : "אין סשני טלגרם רשומים במלאי — מפתחות nexus:sessions:inventory:* ריקים. «Redis: ONLINE» אומר שהברוקר עונה בלבד; צריך session_manager / סורק שמפרסמים את מלאי סשני הטלגרם לברוקר."}
+                  : "אין סשני טלגרם במלאי — בדוק שיש קבצי ‎.session + ‎.json תקינים תחת vault/sessions (סריקה רקורסיבית). Redis ONLINE = ברוקר/תור בלבד, לא מונה חשבונות טלגרם."}
             </div>
           </div>
         </div>
@@ -5158,8 +5158,8 @@ function SwarmMonitorView() {
 
 function _sourceBadge(source: string | undefined) {
   switch (source) {
-    case "session_manager":
-      return <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-cyan-500/15 text-cyan-400 whitespace-nowrap">heartbeat</span>;
+    case "vault_disk":
+      return <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-cyan-500/15 text-cyan-400 whitespace-nowrap">דיסק</span>;
     case "deployer":
       return <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-purple-500/15 text-purple-400 whitespace-nowrap">deployer</span>;
     case "vault":
@@ -5224,7 +5224,7 @@ function SessionSwarmView() {
             📡 Global Session Swarm (All Scanned)
           </h3>
           <p className="text-slate-500 text-sm mt-1">
-            סריקה מלאה של סשני טלגרם בצי — כל החשבונות הפעילים בנחיל, מקובצים לפי מחשב (מטא־דאטה דרך הברוקר)
+            מקור אמת: קבצי ‎.session ב־vault על המחשב; מטמון Redis (deployer / meta) משלים בלבד
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -5233,7 +5233,7 @@ function SessionSwarmView() {
             <span className="text-slate-500">סשני טלגרם</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-cyan-500/15 text-cyan-400">heartbeat</span>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-cyan-500/15 text-cyan-400">דיסק</span>
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-purple-500/15 text-purple-400">deployer</span>
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-amber-500/15 text-amber-400">vault</span>
           </div>
@@ -5272,7 +5272,7 @@ function SessionSwarmView() {
           <div>{q ? "לא נמצאו תוצאות לחיפוש זה." : "אין סשני טלגרם פעילים במלאי"}</div>
           {!q && (
             <div className="text-xs text-slate-700 mt-1">
-              ממתין לדיווחי סשני טלגרם מ-session_manager, deployer, או vault
+              הוסף קבצי ‎.session + ‎.json ל־vault; או מטמון deployer / vault ב־Redis אם רלוונטי
             </div>
           )}
         </div>
@@ -6933,6 +6933,8 @@ interface SwarmFeedData {
   verified_count?: number;
   written_count?: number;
   total_sessions?: number;
+  /** Paired Telethon *.session + *.json on disk (vault roots). */
+  tg_session_files_on_disk?: number;
   recent_messages?: SwarmRecentMessage[];
   /** Set by israeli_swarm when Telethon / config fails (Redis). */
   last_engine_error?: string;
@@ -7072,6 +7074,7 @@ function LiveSwarmView() {
             engine_last_seen_ts: data.engine_last_seen_ts ?? null,
             redis_degraded: data.redis_degraded ?? null,
             total_sessions: data.total_sessions ?? null,
+            tg_session_files_on_disk: data.tg_session_files_on_disk ?? null,
           },
           timestamp: Date.now(),
         }),
@@ -7230,7 +7233,9 @@ function LiveSwarmView() {
           <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">
             סשני טלגרם מסריקה (‎.session)
           </div>
-          <div className="text-2xl font-black text-purple-400">{feed?.total_sessions ?? 0}</div>
+          <div className="text-2xl font-black text-purple-400">
+            {feed?.tg_session_files_on_disk ?? feed?.total_sessions ?? 0}
+          </div>
         </div>
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
           <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">בקבוצה</div>

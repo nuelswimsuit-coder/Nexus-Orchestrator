@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from nexus.master.services import session_factory as session_factory_svc
+from nexus.services.session_vault import lease_key as vault_lease_key
 
 log = structlog.get_logger(__name__)
 
@@ -123,13 +124,13 @@ async def vault_commander(request: Request) -> dict:
             lease_task_id:   str | None = None
             lease_ttl:       int | None = None
             try:
-                lease_key = f"nexus:session:lease:{stem}"
-                raw_lease = await redis.get(lease_key)
+                lk = vault_lease_key(stem)
+                raw_lease = await redis.get(lk)
                 if raw_lease:
                     lease_data     = json.loads(raw_lease)
                     lease_worker_id = lease_data.get("worker_id")
                     lease_task_id   = lease_data.get("task_id")
-                    lease_ttl_raw   = await redis.ttl(lease_key)
+                    lease_ttl_raw   = await redis.ttl(lk)
                     lease_ttl       = int(lease_ttl_raw) if lease_ttl_raw and lease_ttl_raw > 0 else None
             except Exception:
                 pass

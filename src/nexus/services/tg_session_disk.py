@@ -59,7 +59,7 @@ def tg_session_disk_scan_rows(*, machine_id: str) -> list[dict[str, Any]]:
 
 
 def inventory_rows_for_local_machine(machine_id: str) -> list[dict[str, Any]]:
-    """Shape compatible with ``/swarm/sessions/inventory`` session list entries."""
+    """Rows merged into ``/swarm/sessions/inventory`` (dashboard expects redis_key, machine_id, …)."""
     out: list[dict[str, Any]] = []
     for meta in discover_meta_paths_from_session_sqlite():
         stem = meta.stem
@@ -72,10 +72,14 @@ def inventory_rows_for_local_machine(machine_id: str) -> list[dict[str, Any]]:
             pass
         out.append(
             {
+                "redis_key": f"disk:inventory:{machine_id}:{stem}",
                 "session_stem": stem,
-                "phone": phone,
+                "phone": phone or stem,
+                "machine_id": machine_id,
                 "origin_machine": machine_id,
                 "status": "on_disk",
+                "last_active": "",
+                "current_task": None,
                 "source": "vault_disk",
             }
         )

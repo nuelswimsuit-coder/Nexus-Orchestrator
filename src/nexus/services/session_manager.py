@@ -1,14 +1,18 @@
 """
-Global session registry in Redis (``session:*``).
+Runtime / process presence in Redis (``nexus:infra:runtime_presence:*``).
 
-Processes (Nexus core supervisor, ARQ workers, etc.) publish JSON blobs on a
-fixed interval; dashboards scan matching keys for fleet-wide session visibility.
+Nexus processes (supervisor, ARQ workers, etc.) publish JSON heartbeats for
+fleet visibility. This is **not** Telegram: Telethon accounts live on disk under
+the vault; see :mod:`nexus.services.tg_session_disk`.
+
+New publishers write only ``nexus:infra:runtime_presence:*``; older binaries may still
+emit ``session:*`` until restarted — :func:`scan_runtime_presence_records` reads both.
 
 Payload (per key)::
 
     {
         "computer_name": str,
-        "session_id": str,
+        "publisher_id": str,
         "status": "active" | "idle",
         "last_seen": float (unix),
         "started_at": float (unix, process boot on publisher)
@@ -16,10 +20,8 @@ Payload (per key)::
 
 Environment:
 
-* ``NEXUS_SESSION_ROLE`` — disambiguates multiple publishers sharing ``NODE_ID``
-  (e.g. ``nexus_core`` vs ``arq_worker``).
-* ``NEXUS_GLOBAL_SESSION_INCLUDE_VAULT`` — if truthy, also publishes one row per
-  Telethon vault stem (best-effort; status ``idle``).
+* ``NEXUS_RUNTIME_PRESENCE_ROLE`` — disambiguates publishers sharing ``NODE_ID``
+  (e.g. ``nexus_core`` vs ``arq_worker``). Falls back to ``NEXUS_SESSION_ROLE``.
 """
 
 from __future__ import annotations
@@ -33,10 +35,15 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-SESSION_SCAN_PATTERN = "session:*"
-SESSION_KEY_PREFIX = "session:"
+RUNTIME_PRESENCE_SCAN_PATTERN = "nexus:infra:runtime_presence:*"
+RUNTIME_PRESENCE_KEY_PREFIX = "nexus:infra:runtime_presence:"
+LEGACY_SESSION_SCAN_PATTERN = "session:*"
 TTL_SECONDS = 120
 HEARTBEAT_INTERVAL_SEC = 30
+
+# Backward-compatible names (deprecated)
+SESSION_SCAN_PATTERN = RUNTIME_PRESENCE_SCAN_PATTERN
+SESSION_KEY_PREFIX = RUNTIME_PRESENCE_KEY_PREFIX
 
 _PROCESS_BOOT_WALL = time.time()
 
@@ -46,8 +53,13 @@ def _slug(s: str, max_len: int = 72) -> str:
     return t[:max_len]
 
 
+def runtime_presence_redis_key(computer_name: str, publisher_id: str) -> str:
+    return f"{RUNTIME_PRESENCE_KEY_PREFIX}{_slug(computer_name)}:{_slug(publisher_id)}"
+
+
 def session_redis_key(computer_name: str, session_id: str) -> str:
-    return f"{SESSION_KEY_PREFIX}{_slug(computer_name)}:{_slug(session_id)}"
+    """Deprecated alias for :func:`runtime_presence_redis_key`."""
+    return runtime_presence_redis_key(computer_name, session_id)
 
 
 def _infer_active_idle() -> str:
@@ -61,7 +73,19 @@ def _infer_active_idle() -> str:
 
 
 @dataclass(frozen=True)
+class RuntimePresenceRecord:
+    redis_key: str
+    computer_name: str
+    publisher_id: str
+    status: str
+    last_seen: float
+    started_at: float
+
+
+@dataclass(frozen=True)
 class GlobalSessionRecord:
+    """Deprecated alias for :class:`RuntimePresenceRecord` (``session_id`` = ``publisher_id``)."""
+
     redis_key: str
     computer_name: str
     session_id: str
@@ -70,10 +94,28 @@ class GlobalSessionRecord:
     started_at: float
 
 
-def build_session_payload(
+def _record_from_payload(
+    ks: str,
+    cn: str,
+    publisher_id: str,
+    st: str,
+    ls: float,
+    sa: float,
+) -> RuntimePresenceRecord:
+    return RuntimePresenceRecord(
+        redis_key=ks,
+        computer_name=cn,
+        publisher_id=publisher_id,
+        status=st,
+        last_seen=ls,
+        started_at=sa,
+    )
+
+
+def build_runtime_presence_payload(
     *,
     computer_name: str,
-    session_id: str,
+    publisher_id: str,
     status: str | None = None,
     last_seen: float | None = None,
     started_at: float | None = None,
@@ -85,11 +127,47 @@ def build_session_payload(
     boot = float(started_at) if started_at is not None else _PROCESS_BOOT_WALL
     return {
         "computer_name": computer_name,
-        "session_id": session_id,
+        "publisher_id": publisher_id,
         "status": st,
         "last_seen": ts,
         "started_at": boot,
     }
+
+
+def build_session_payload(
+    *,
+    computer_name: str,
+    session_id: str,
+    status: str | None = None,
+    last_seen: float | None = None,
+    started_at: float | None = None,
+) -> dict[str, Any]:
+    """Deprecated: use :func:`build_runtime_presence_payload` (``session_id`` → ``publisher_id``)."""
+    return build_runtime_presence_payload(
+        computer_name=computer_name,
+        publisher_id=session_id,
+        status=status,
+        last_seen=last_seen,
+        started_at=started_at,
+    )
+
+
+def publish_runtime_presence(
+    redis_client: Any,
+    *,
+    computer_name: str,
+    publisher_id: str,
+    status: str | None = None,
+    started_at: float | None = None,
+) -> None:
+    payload = build_runtime_presence_payload(
+        computer_name=computer_name,
+        publisher_id=publisher_id,
+        status=status,
+        started_at=started_at,
+    )
+    key = runtime_presence_redis_key(computer_name, publisher_id)
+    redis_client.set(key, json.dumps(payload), ex=TTL_SECONDS)
 
 
 def publish_session(
@@ -100,109 +178,113 @@ def publish_session(
     status: str | None = None,
     started_at: float | None = None,
 ) -> None:
-    payload = build_session_payload(
+    """Deprecated alias for :func:`publish_runtime_presence`."""
+    publish_runtime_presence(
+        redis_client,
         computer_name=computer_name,
-        session_id=session_id,
+        publisher_id=session_id,
         status=status,
         started_at=started_at,
     )
-    key = session_redis_key(computer_name, session_id)
-    redis_client.set(key, json.dumps(payload), ex=TTL_SECONDS)
+
+
+def _runtime_presence_role() -> str:
+    r = (os.getenv("NEXUS_RUNTIME_PRESENCE_ROLE") or "").strip()
+    if r:
+        return r
+    return (os.getenv("NEXUS_SESSION_ROLE") or "runtime").strip() or "runtime"
+
+
+def publish_local_runtime_presence(redis_client: Any) -> None:
+    """Write this process's runtime presence row to Redis."""
+    computer = socket.gethostname()
+    node_id = (os.getenv("NODE_ID") or computer).strip() or computer
+    role = _runtime_presence_role()
+    publisher_id = f"{node_id}:{role}"
+    publish_runtime_presence(
+        redis_client,
+        computer_name=computer,
+        publisher_id=publisher_id,
+        started_at=_PROCESS_BOOT_WALL,
+    )
 
 
 def publish_local_sessions_bundle(redis_client: Any) -> None:
-    """Write this process's global session row(s) to Redis."""
-    computer = socket.gethostname()
-    node_id = (os.getenv("NODE_ID") or computer).strip() or computer
-    role = (os.getenv("NEXUS_SESSION_ROLE") or "runtime").strip() or "runtime"
-    session_id = f"{node_id}:{role}"
-    publish_session(
-        redis_client,
-        computer_name=computer,
-        session_id=session_id,
-        started_at=_PROCESS_BOOT_WALL,
-    )
-    if os.getenv("NEXUS_GLOBAL_SESSION_INCLUDE_VAULT", "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        try:
-            from nexus.services.session_vault import (
-                discover_meta_paths_from_session_sqlite,
-            )
-
-            for meta in discover_meta_paths_from_session_sqlite()[:200]:
-                stem = meta.stem
-                publish_session(
-                    redis_client,
-                    computer_name=computer,
-                    session_id=f"vault:{stem}",
-                    status="idle",
-                    started_at=_PROCESS_BOOT_WALL,
-                )
-        except Exception:
-            pass
+    """Deprecated alias for :func:`publish_local_runtime_presence`."""
+    publish_local_runtime_presence(redis_client)
 
 
-def scan_global_sessions(redis_client: Any) -> list[GlobalSessionRecord]:
-    """Load and parse all ``session:*`` keys (sync Redis client)."""
-    out: list[GlobalSessionRecord] = []
+def _scan_one_pattern(
+    redis_client: Any, pattern: str, out: list[RuntimePresenceRecord]
+) -> None:
+    cursor = 0
+    while True:
+        cursor, keys = redis_client.scan(cursor=cursor, match=pattern, count=200)
+        for key in keys:
+            ks = key.decode() if isinstance(key, bytes) else str(key)
+            raw = redis_client.get(ks)
+            if not raw:
+                continue
+            try:
+                d = json.loads(str(raw))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(d, dict):
+                continue
+            cn = str(d.get("computer_name") or "").strip()
+            sid = str(d.get("publisher_id") or d.get("session_id") or "").strip()
+            st = str(d.get("status") or "active").lower()
+            if st not in ("active", "idle"):
+                st = "active"
+            try:
+                ls = float(d.get("last_seen") or 0.0)
+            except (TypeError, ValueError):
+                ls = 0.0
+            try:
+                sa = float(d.get("started_at") or ls)
+            except (TypeError, ValueError):
+                sa = ls
+            if cn and sid:
+                out.append(_record_from_payload(ks, cn, sid, st, ls, sa))
+        if cursor == 0:
+            break
+
+
+def scan_runtime_presence_records(redis_client: Any) -> list[RuntimePresenceRecord]:
+    """Load runtime presence from current and legacy Redis key prefixes."""
+    by_key: dict[str, RuntimePresenceRecord] = {}
     try:
-        cursor = 0
-        while True:
-            cursor, keys = redis_client.scan(
-                cursor=cursor, match=SESSION_SCAN_PATTERN, count=200
-            )
-            for key in keys:
-                ks = key.decode() if isinstance(key, bytes) else str(key)
-                raw = redis_client.get(ks)
-                if not raw:
-                    continue
-                try:
-                    d = json.loads(str(raw))
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(d, dict):
-                    continue
-                cn = str(d.get("computer_name") or "").strip()
-                sid = str(d.get("session_id") or "").strip()
-                st = str(d.get("status") or "active").lower()
-                if st not in ("active", "idle"):
-                    st = "active"
-                try:
-                    ls = float(d.get("last_seen") or 0.0)
-                except (TypeError, ValueError):
-                    ls = 0.0
-                try:
-                    sa = float(d.get("started_at") or ls)
-                except (TypeError, ValueError):
-                    sa = ls
-                if cn and sid:
-                    out.append(
-                        GlobalSessionRecord(
-                            redis_key=ks,
-                            computer_name=cn,
-                            session_id=sid,
-                            status=st,
-                            last_seen=ls,
-                            started_at=sa,
-                        )
-                    )
-            if cursor == 0:
-                break
+        for pattern in (RUNTIME_PRESENCE_SCAN_PATTERN, LEGACY_SESSION_SCAN_PATTERN):
+            batch: list[RuntimePresenceRecord] = []
+            _scan_one_pattern(redis_client, pattern, batch)
+            for r in batch:
+                by_key[r.redis_key] = r
     except Exception:
         pass
-    out.sort(key=lambda r: (r.computer_name.lower(), r.session_id.lower()))
+    out = sorted(
+        by_key.values(),
+        key=lambda r: (r.computer_name.lower(), r.publisher_id.lower()),
+    )
     return out
 
 
-def start_heartbeat_daemon(dsn: str, stop: threading.Event) -> threading.Thread:
-    """
-    Background thread: publish ``publish_local_sessions_bundle`` every
-    :data:`HEARTBEAT_INTERVAL_SEC` until ``stop`` is set.
-    """
+def scan_global_sessions(redis_client: Any) -> list[GlobalSessionRecord]:
+    """Deprecated: returns :class:`GlobalSessionRecord` rows from :func:`scan_runtime_presence_records`."""
+    return [
+        GlobalSessionRecord(
+            redis_key=r.redis_key,
+            computer_name=r.computer_name,
+            session_id=r.publisher_id,
+            status=r.status,
+            last_seen=r.last_seen,
+            started_at=r.started_at,
+        )
+        for r in scan_runtime_presence_records(redis_client)
+    ]
+
+
+def start_runtime_presence_heartbeat(dsn: str, stop: threading.Event) -> threading.Thread:
+    """Background thread: publish :func:`publish_local_runtime_presence` on an interval."""
 
     def _run() -> None:
         try:
@@ -214,7 +296,7 @@ def start_heartbeat_daemon(dsn: str, stop: threading.Event) -> threading.Thread:
             client = redis_sync.Redis.from_url(dsn, decode_responses=True)
             while True:
                 try:
-                    publish_local_sessions_bundle(client)
+                    publish_local_runtime_presence(client)
                 except Exception:
                     pass
                 if stop.wait(HEARTBEAT_INTERVAL_SEC):
@@ -226,21 +308,37 @@ def start_heartbeat_daemon(dsn: str, stop: threading.Event) -> threading.Thread:
                 except Exception:
                     pass
 
-    t = threading.Thread(target=_run, name="nexus-global-session-hb", daemon=True)
+    t = threading.Thread(target=_run, name="nexus-runtime-presence-hb", daemon=True)
     t.start()
     return t
+
+
+def start_heartbeat_daemon(dsn: str, stop: threading.Event) -> threading.Thread:
+    """Deprecated alias for :func:`start_runtime_presence_heartbeat`."""
+    return start_runtime_presence_heartbeat(dsn, stop)
 
 
 __all__ = [
     "GlobalSessionRecord",
     "HEARTBEAT_INTERVAL_SEC",
+    "LEGACY_SESSION_SCAN_PATTERN",
+    "RUNTIME_PRESENCE_KEY_PREFIX",
+    "RUNTIME_PRESENCE_SCAN_PATTERN",
+    "RuntimePresenceRecord",
     "SESSION_SCAN_PATTERN",
+    "SESSION_KEY_PREFIX",
+    "build_runtime_presence_payload",
     "build_session_payload",
+    "publish_local_runtime_presence",
     "publish_local_sessions_bundle",
+    "publish_runtime_presence",
     "publish_session",
+    "runtime_presence_redis_key",
     "scan_global_sessions",
+    "scan_runtime_presence_records",
     "session_redis_key",
     "start_heartbeat_daemon",
+    "start_runtime_presence_heartbeat",
     "SessionHarvester",
     "harvest_sessions",
 ]

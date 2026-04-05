@@ -54,6 +54,17 @@ elif os.environ.get("ENVIRONMENT", "PRODUCTION").upper() == "PRODUCTION":
     except Exception:
         pass
 
+
+def _count_tg_sessions_on_disk() -> int | None:
+    """Paired Telethon *.session + *.json under vault roots (authoritative)."""
+    try:
+        from nexus.services.tg_session_disk import count_live_telethon_session_files
+
+        return count_live_telethon_session_files()
+    except Exception:
+        return None
+
+
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 import structlog  # noqa: E402
@@ -390,9 +401,9 @@ def create_deployer_app() -> FastAPI:
         response_model=None,
     )
     async def sessions_all(request: Request) -> JSONResponse:
-        """Return every ``nexus:sessions:*`` key: each value describes a **Telegram (Telethon)**
-        session row published by workers — Redis is only the index, not “a Redis session”.
-        Used by the legacy dashboard to display the full worker list (e.g. 153 workers)."""
+        """Return every ``nexus:sessions:*`` key: each value is a **fleet cache row** for a
+        Telethon login published by workers — not the source of truth for “accounts on disk”
+        (see vault ``*.session`` pairs). Used by the legacy dashboard for worker lists."""
         r = getattr(request.app.state, "redis", None)
         if r is None:
             return JSONResponse(
@@ -530,6 +541,7 @@ def create_deployer_app() -> FastAPI:
         redis_status = "OFFLINE"
         trading_status = "UNKNOWN"
         active_sessions = "N/A"
+        redis_tg_row_keys = "N/A"
         last_buy_order = "N/A"
         daily_profit = None
         new_users = None
@@ -542,15 +554,17 @@ def create_deployer_app() -> FastAPI:
                     trading_status = trading_status_raw.decode() if isinstance(trading_status_raw, (bytes, bytearray)) else str(trading_status_raw)
                 else:
                     trading_status = "IDLE"
-                # Count Redis keys that index Telegram (Telethon) sessions (nexus:sessions:*).
-                _session_count = 0
+                # Fleet cache: Redis keys under nexus:sessions:* (not a substitute for vault disk).
+                _redis_tg_rows = 0
                 _cursor = 0
                 while True:
                     _cursor, _keys = await r.scan(cursor=_cursor, match="nexus:sessions:*", count=200)
-                    _session_count += len(_keys)
+                    _redis_tg_rows += len(_keys)
                     if _cursor == 0:
                         break
-                active_sessions = str(_session_count)
+                _disk = _count_tg_sessions_on_disk()
+                active_sessions = str(_disk) if _disk is not None else str(_redis_tg_rows)
+                redis_tg_row_keys = str(_redis_tg_rows)
                 last_buy_raw = await r.get("nexus:trading:last_buy_order")
                 last_buy_order = last_buy_raw.decode() if last_buy_raw else "—"
                 # Analytics from telefix.db poller.
@@ -809,8 +823,9 @@ def create_deployer_app() -> FastAPI:
       </div>
       <div class="card">
         <span class="card-icon">&#9679;</span>
-        <div class="card-label">&#9632; Active Telegram sessions</div>
+        <div class="card-label">&#9632; Telegram vault (disk .session pairs)</div>
         <div class="card-value">{active_sessions}</div>
+        <div style="font-size:0.72rem;opacity:0.65;margin-top:0.35rem">Redis nexus:sessions:* keys (cache): {redis_tg_row_keys}</div>
       </div>
       <div class="card">
         <span class="card-icon">&#8679;</span>
@@ -992,7 +1007,9 @@ def create_deployer_app() -> FastAPI:
         """
         JSON stats consumed by the Nexus OS dashboard.
 
-        - ``active_sessions``: count of ``nexus:sessions:*`` keys (each key indexes one Telegram/Telethon session row).
+        - ``tg_session_files_on_disk``: paired ``*.session`` + ``*.json`` under vault roots (authoritative).
+        - ``redis_telegram_row_keys``: count of ``nexus:sessions:*`` keys (fleet cache only).
+        - ``active_sessions``: deprecated alias for ``redis_telegram_row_keys`` (legacy UI).
         - ``trading_status``: value of ``nexus:trading:status`` (defaults to ``"IDLE"``).
         - ``redis_status``: ``"ONLINE"`` | ``"OFFLINE"``.
         """
@@ -1007,20 +1024,29 @@ def create_deployer_app() -> FastAPI:
         except Exception as exc:
             return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                content={"redis_status": "OFFLINE", "active_sessions": 0, "trading_status": "IDLE", "detail": str(exc)},
+                content={
+                    "redis_status": "OFFLINE",
+                    "active_sessions": 0,
+                    "redis_telegram_row_keys": 0,
+                    "tg_session_files_on_disk": _count_tg_sessions_on_disk(),
+                    "trading_status": "IDLE",
+                    "detail": str(exc),
+                },
             )
 
-        # Count Telegram session rows indexed under nexus:sessions:*.
-        session_count = 0
+        # Fleet cache: keys under nexus:sessions:* (not vault disk).
+        redis_row_keys = 0
         try:
             cursor = 0
             while True:
                 cursor, keys = await r.scan(cursor=cursor, match="nexus:sessions:*", count=200)
-                session_count += len(keys)
+                redis_row_keys += len(keys)
                 if cursor == 0:
                     break
         except Exception:
-            session_count = 0
+            redis_row_keys = 0
+
+        tg_disk = _count_tg_sessions_on_disk()
 
         # Read trading status; treat missing key as IDLE.
         trading_status = "IDLE"
@@ -1046,7 +1072,9 @@ def create_deployer_app() -> FastAPI:
             status_code=200,
             content={
                 "redis_status": "ONLINE",
-                "active_sessions": session_count,
+                "active_sessions": redis_row_keys,
+                "redis_telegram_row_keys": redis_row_keys,
+                "tg_session_files_on_disk": tg_disk,
                 "trading_status": trading_status,
                 "daily_profit": daily_profit,
                 "new_users": new_users,
@@ -1061,10 +1089,9 @@ def create_deployer_app() -> FastAPI:
         response_model=None,
     )
     async def swarm_inventory(request: Request) -> JSONResponse:
-        """Scan ``nexus:sessions:*`` and return **Telegram (Telethon)** sessions grouped by machine_id.
+        """Scan ``nexus:sessions:*`` for **fleet-published** Telethon session rows (Redis cache).
 
-        Redis keys hold orchestration metadata; each entry describes one Telegram login row
-        (phone, machine_id, status, current_task, etc.).
+        For authoritative inventory on the master host, scan vault disk (``*.session`` pairs).
         """
         r = getattr(request.app.state, "redis", None)
         if r is None:

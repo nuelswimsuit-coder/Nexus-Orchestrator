@@ -727,7 +727,8 @@ async def _telefix_groups_factory_scope(redis: Any) -> TelefixGroupsResponse:
                     count=0,
                     source="telefix.db:managed_groups",
                     hint="אין מזהי סשני טלגרם זמינים מסריקת הצי (או טלפון בטבלת sessions). "
-                    "ודאו שסורק/session_manager מפרסמים סשני טלגרם לברוקר וש-owner_session ב-managed_groups תואם למספר או מזהה סשן.",
+                    "ודאו שיש קבצי ‎.session ב־vault/sessions, שהמלאי מסונכרן לדשבורד, "
+                    "וש-owner_session ב-managed_groups תואם למספר או מזהה סשן.",
                 )
 
             has_groups_tbl = _sqlite_table_exists(cur, "groups")

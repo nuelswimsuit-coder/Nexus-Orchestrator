@@ -1,17 +1,31 @@
 """
 SEO dashboard API for 1XPANEL — health metrics from telefix.db (member_stats, snapshots).
+
+Env (worker / ops): SEO_WATCHDOG_SHARDS, SEO_GROUP_IDS_JSON, SEO_DEFAULT_SUBSCRIPTION_DAYS,
+NEXUS_HEALTH_PARTICIPANT_LIMIT — see seo.watchdog.audit task.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+import json
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from nexus.api.schemas.seo import (
     GroupHealthResponse,
+    GroupSeoStatRow,
     InviteSnapshotOut,
     RankProjectionResponse,
+    ReplacementAlertOut,
+    SeoStatsResponse,
 )
-from nexus.shared.management_store import aggregate_rank_projection_inputs, get_group_health_bundle
+from nexus.shared.management_store import (
+    SEO_INVITE_REDIS_KEY_FMT,
+    aggregate_rank_projection_inputs,
+    aggregate_seo_fleet_stats,
+    get_group_health_bundle,
+)
 
 router = APIRouter(prefix="/seo", tags=["seo"])
 
@@ -113,4 +127,76 @@ async def get_rank_projection() -> RankProjectionResponse:
                 "scale": _W_SCALE,
             },
         },
+    )
+
+
+def _decode_redis_raw(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, (bytes, bytearray)):
+        return raw.decode("utf-8", errors="replace")
+    return str(raw)
+
+
+async def _overlay_redis_invite_fields(redis: Any, rows: list[dict[str, Any]]) -> None:
+    for g in rows:
+        key = SEO_INVITE_REDIS_KEY_FMT.format(group_id=int(g["group_id"]))
+        try:
+            raw = await redis.get(key)
+        except Exception:
+            continue
+        if not raw:
+            continue
+        try:
+            data = json.loads(_decode_redis_raw(raw))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(data, dict):
+            if data.get("usage_count") is not None:
+                g["redis_invite_usage"] = int(data["usage_count"])
+            if data.get("audited_at"):
+                g["redis_invite_audited_at"] = str(data["audited_at"])
+
+
+@router.get("/stats", response_model=SeoStatsResponse)
+async def get_seo_stats(
+    request: Request,
+    alerts_limit: int = Query(100, ge=0, le=500),
+    top_ghost_limit: int = Query(50, ge=0, le=200),
+    merge_redis_invites: bool = Query(
+        False,
+        description="Merge latest nexus:seo:invite:{group_id} keys when Redis is available.",
+    ),
+) -> SeoStatsResponse:
+    raw = await aggregate_seo_fleet_stats(
+        alerts_limit=alerts_limit,
+        top_ghost_limit=top_ghost_limit,
+    )
+    groups = list(raw.get("groups") or [])
+    top_ghost = list(raw.get("top_ghost_groups") or [])
+
+    r = getattr(request.app.state, "redis", None)
+    if merge_redis_invites and r is not None:
+        try:
+            await r.ping()
+        except Exception:
+            r = None
+        if r is not None:
+            await _overlay_redis_invite_fields(r, groups)
+            await _overlay_redis_invite_fields(r, top_ghost)
+
+    def _row(m: dict[str, Any]) -> GroupSeoStatRow:
+        return GroupSeoStatRow(**{k: v for k, v in m.items() if k in GroupSeoStatRow.model_fields})
+
+    alerts_raw = raw.get("replacement_alerts") or []
+    return SeoStatsResponse(
+        generated_at=str(raw.get("generated_at") or ""),
+        n_groups=int(raw.get("n_groups") or 0),
+        total_active_members=int(raw.get("total_active_members") or 0),
+        fleet_premium_ratio=float(raw.get("fleet_premium_ratio") or 0.0),
+        total_premium_members=int(raw.get("total_premium_members") or 0),
+        replacement_alerts_count_7d=int(raw.get("replacement_alerts_count_7d") or 0),
+        groups=[_row(x) for x in groups],
+        top_ghost_groups=[_row(x) for x in top_ghost],
+        replacement_alerts=[ReplacementAlertOut(**a) for a in alerts_raw],
     )

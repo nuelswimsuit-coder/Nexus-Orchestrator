@@ -4,6 +4,12 @@ seo.watchdog.audit — SEO invite usage, member_audit rows, premium density supp
 Uses owner (staged) Telethon sessions. Invite usage comes from MTProto
 ``messages.GetExportedChatInvitesRequest`` (exported invites expose ``usage``),
 not ``GetInviteStatusRequest`` (not exposed in Telethon under that name).
+
+Sharding (4k+ sessions): pass ``session_shard_index`` and ``session_shard_total`` so each
+job processes every Nth staged session; combine with ``max_sessions_per_job`` to cap runtime.
+Cron: ``SEO_WATCHDOG_SHARDS`` in start_master fans out multiple jobs when enabled.
+
+Env: ``SEO_GROUP_IDS_JSON``, ``SEO_DEFAULT_SUBSCRIPTION_DAYS``, ``NEXUS_HEALTH_PARTICIPANT_LIMIT``.
 """
 
 from __future__ import annotations
@@ -20,11 +26,16 @@ from typing import Any, Callable
 import structlog
 
 from nexus.shared.management_store import (
+    SEO_INVITE_REDIS_KEY_FMT,
+    SEO_INVITE_REDIS_TTL_S,
     sync_apply_member_participants,
     sync_get_member_audit_map,
+    sync_insert_seo_churn_event,
     sync_list_groups_minimal,
+    sync_upsert_group_bundle,
     sync_upsert_seo_invite_snapshot,
 )
+from nexus.worker.tasks.health_check import _creator_id_from_full
 from nexus.shared.staged_accounts import discover_session_meta_json_files, staged_accounts_root
 from nexus.worker.task_registry import registry
 from nexus.worker.tasks.account_mapper import (
@@ -101,6 +112,104 @@ def _parse_iso_utc(s: str | None) -> datetime | None:
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _participant_date_iso(p: Any) -> str | None:
+    d = getattr(p, "date", None)
+    if d is None:
+        return None
+    if isinstance(d, datetime):
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return d.astimezone(timezone.utc).isoformat()
+    return None
+
+
+def _rows_from_megagroup_participants(
+    client: Any,
+    entity: Any,
+    participant_limit: int | None,
+) -> tuple[list[dict[str, Any]], int, int, int] | None:
+    """
+    Paginate ``GetParticipantsRequest`` for supergroups to obtain join dates on
+    ``ChannelParticipant`` rows. Returns None to fall back to ``iter_participants``.
+    """
+    from telethon.tl.functions.channels import GetParticipantsRequest  # type: ignore
+    from telethon.tl.types import (  # type: ignore
+        Channel,
+        ChannelParticipantBanned,
+        ChannelParticipantsSearch,
+    )
+
+    if not isinstance(entity, Channel) or not entity.megagroup:
+        return None
+
+    rows: list[dict[str, Any]] = []
+    premium = 0
+    deleted = 0
+    offset = 0
+    page = 200
+
+    while True:
+        try:
+            res = _with_flood_retry(
+                lambda off=offset: client(
+                    GetParticipantsRequest(
+                        entity,
+                        ChannelParticipantsSearch(""),
+                        off,
+                        page,
+                        hash=0,
+                    )
+                ),
+                context="get_participants",
+            )
+        except Exception as exc:
+            log.debug("seo_auditor_get_participants_failed", error=str(exc))
+            return None
+
+        parts = getattr(res, "participants", None) or []
+        if not parts:
+            break
+        users = {int(u.id): u for u in (getattr(res, "users", None) or [])}
+
+        for p in parts:
+            if participant_limit is not None and len(rows) >= participant_limit:
+                break
+            uid_raw = getattr(p, "user_id", None)
+            if uid_raw is None:
+                continue
+            uid = int(uid_raw)
+            u = users.get(uid)
+            join_iso = _participant_date_iso(p)
+            if isinstance(p, ChannelParticipantBanned):
+                st = "Banned"
+            elif u is not None and getattr(u, "deleted", False):
+                st = "Deleted"
+                deleted += 1
+            elif u is not None and getattr(u, "restricted", False):
+                st = "Banned"
+            else:
+                st = "Active"
+            is_prem = bool(u is not None and getattr(u, "premium", False))
+            if is_prem:
+                premium += 1
+            rows.append({
+                "user_id": uid,
+                "is_premium": is_prem,
+                "status": st,
+                "invite_slug": None,
+                "join_date": join_iso,
+            })
+
+        offset += len(parts)
+        if participant_limit is not None and len(rows) >= participant_limit:
+            break
+        if len(parts) < page:
+            break
+
+    scanned = len(rows)
+    return rows, premium, deleted, scanned
 
 
 def _with_flood_retry(
@@ -186,6 +295,7 @@ def _check_early_churn(
     present_ids: set[int],
 ) -> None:
     now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
     for uid, meta in prev.items():
         if meta.get("status") != "Active" or uid in present_ids:
             continue
@@ -195,6 +305,8 @@ def _check_early_churn(
         if jd.tzinfo is None:
             jd = jd.replace(tzinfo=timezone.utc)
         dur = int(meta.get("subscription_duration_days") or 30)
+        if dur not in (30, 60):
+            dur = 30
         period_end = jd + timedelta(days=dur)
         if now < period_end:
             log.warning(
@@ -204,6 +316,15 @@ def _check_early_churn(
                 join_date=meta.get("join_date"),
                 subscription_days=dur,
                 period_end=period_end.isoformat(),
+            )
+            sync_insert_seo_churn_event(
+                group_id=group_id,
+                user_id=uid,
+                detected_at=now_iso,
+                join_date=meta.get("join_date"),
+                left_at=now_iso,
+                subscription_days=dur,
+                reason="early_churn_before_subscription_window",
             )
 
 
@@ -228,36 +349,42 @@ def _audit_one_group(
     total_members = _member_count(client, entity)
     prev = sync_get_member_audit_map(group_id)
 
-    rows: list[dict[str, Any]] = []
-    scanned = 0
-    premium = 0
-    deleted = 0
     slug = _invite_slug(stored_invite or _invite_row_for_entity(group_id, session_label, minimal_rows))
 
-    try:
-        for u in client.iter_participants(entity):
-            scanned += 1
-            if participant_limit is not None and scanned > participant_limit:
-                break
-            uid = int(u.id)
-            if getattr(u, "premium", False):
-                premium += 1
-            if getattr(u, "deleted", False):
-                deleted += 1
-                st = "Deleted"
-            elif getattr(u, "restricted", False):
-                st = "Banned"
-            else:
-                st = "Active"
-            rows.append({
-                "user_id": uid,
-                "is_premium": bool(getattr(u, "premium", False)),
-                "status": st,
-                "invite_slug": slug,
-            })
-    except Exception as exc:
-        log.warning("seo_auditor_iter_participants_failed", group_id=group_id, error=str(exc))
-        return {"group_id": group_id, "error": str(exc)}
+    packed = _rows_from_megagroup_participants(client, entity, participant_limit)
+    if packed is None:
+        rows = []
+        premium = 0
+        deleted = 0
+        scanned = 0
+        try:
+            for u in client.iter_participants(entity):
+                scanned += 1
+                if participant_limit is not None and scanned > participant_limit:
+                    break
+                uid = int(u.id)
+                if getattr(u, "premium", False):
+                    premium += 1
+                if getattr(u, "deleted", False):
+                    deleted += 1
+                    st = "Deleted"
+                elif getattr(u, "restricted", False):
+                    st = "Banned"
+                else:
+                    st = "Active"
+                rows.append({
+                    "user_id": uid,
+                    "is_premium": bool(getattr(u, "premium", False)),
+                    "status": st,
+                    "invite_slug": slug,
+                })
+        except Exception as exc:
+            log.warning("seo_auditor_iter_participants_failed", group_id=group_id, error=str(exc))
+            return {"group_id": group_id, "error": str(exc)}
+    else:
+        rows, premium, deleted, scanned = packed
+        for r in rows:
+            r["invite_slug"] = slug
 
     present_ids = {int(r["user_id"]) for r in rows}
     _check_early_churn(group_id=group_id, prev=prev, present_ids=present_ids)
@@ -283,13 +410,46 @@ def _audit_one_group(
         usage = 0
 
     ghost_delta = max(0, int(usage) - int(total_members))
+    audited_iso = datetime.now(timezone.utc).isoformat()
     sync_upsert_seo_invite_snapshot(
         group_id=group_id,
         invite_link=inv_link,
         usage_count=int(usage),
         participant_count=int(total_members),
         ghost_delta=int(ghost_delta),
+        audited_at=audited_iso,
     )
+
+    title = getattr(entity, "title", None) or str(group_id)
+    username = getattr(entity, "username", None)
+    if isinstance(entity, Channel) and entity.megagroup:
+        is_public = bool(username)
+    elif isinstance(entity, Channel):
+        is_public = bool(
+            not getattr(entity, "megagroup", False) and getattr(entity, "username", None)
+        )
+    else:
+        is_public = False
+
+    creator_id = _creator_id_from_full(client, entity) if isinstance(entity, Channel) else None
+    active_real = max(0, scanned - deleted) if scanned else max(0, int(total_members) - deleted)
+
+    try:
+        sync_upsert_group_bundle(
+            session_owner=session_label,
+            group_id=group_id,
+            title=str(title) if title else None,
+            username=str(username) if username else None,
+            is_public=is_public,
+            invite_link=inv_link,
+            creator_id=creator_id,
+            total_members=int(total_members),
+            premium_count=int(premium),
+            deleted_count=int(deleted),
+            active_real_count=int(active_real),
+        )
+    except Exception as exc:
+        log.warning("seo_auditor_member_stats_upsert_failed", group_id=group_id, error=str(exc))
 
     prem_pct = round(100.0 * premium / scanned, 2) if scanned else 0.0
     alive_ratio = round((scanned - deleted) / scanned, 4) if scanned else 0.0
@@ -310,6 +470,14 @@ def _audit_one_group(
         flush=True,
     )
 
+    redis_payload = {
+        "group_id": group_id,
+        "usage_count": int(usage),
+        "ghost_delta": int(ghost_delta),
+        "audited_at": audited_iso,
+        "invite_link": inv_link,
+    }
+
     return {
         "group_id": group_id,
         "premium_pct": prem_pct,
@@ -317,6 +485,7 @@ def _audit_one_group(
         "invite_usage": int(usage),
         "ghost_delta": int(ghost_delta),
         "participants_scanned": scanned,
+        "redis_invite_payload": redis_payload,
     }
 
 
@@ -404,29 +573,54 @@ def _run_audit_job(
     session_start_offset: int,
     participant_limit: int | None,
     default_sub_days: int,
+    session_shard_index: int,
+    session_shard_total: int,
+    max_sessions_per_job: int | None,
 ) -> dict[str, Any]:
     staged_dir = Path(staged_dir)
-    metas = discover_session_meta_json_files(staged_dir)
-    if not metas:
+    metas_all = discover_session_meta_json_files(staged_dir)
+    if not metas_all:
         return {
             "status": "completed",
             "sessions": [],
             "message": "no staged session meta files",
+            "invite_redis_updates": [],
         }
 
+    st = max(1, int(session_shard_total))
+    si = int(session_shard_index) % st
+    metas = [m for i, m in enumerate(metas_all) if i % st == si]
+
     n = len(metas)
+    if n == 0:
+        return {
+            "status": "completed",
+            "sessions": [],
+            "message": f"no sessions in shard {si}/{st}",
+            "invite_redis_updates": [],
+            "session_shard_index": si,
+            "session_shard_total": st,
+        }
+
     off = int(session_start_offset) % n
     metas_rotated = metas[off:] + metas[:off]
+
+    if max_sessions_per_job is not None and max_sessions_per_job > 0:
+        metas_rotated = metas_rotated[: int(max_sessions_per_job)]
 
     pool = _parse_proxy_pool()
     minimal_rows = sync_list_groups_minimal()
     group_filter = _parse_seo_group_filter()
 
+    sleep_lo, sleep_hi = (0.8, 2.5) if st > 1 else (2.0, 6.0)
+
     sessions_out: list[dict[str, Any]] = []
+    invite_redis_updates: list[dict[str, Any]] = []
+
     for idx, meta_path in enumerate(metas_rotated):
         proxy = _proxy_for_index(pool, idx) if pool else None
         if idx > 0:
-            time.sleep(random.uniform(2.0, 6.0))
+            time.sleep(random.uniform(sleep_lo, sleep_hi))
         try:
             one = _scan_one_session(
                 meta_path,
@@ -437,6 +631,10 @@ def _run_audit_job(
                 minimal_rows=minimal_rows,
             )
             sessions_out.append(one)
+            for a in one.get("audited") or []:
+                pl = a.get("redis_invite_payload")
+                if isinstance(pl, dict):
+                    invite_redis_updates.append(pl)
         except Exception as exc:
             log.error("seo_auditor_session_failed", session=meta_path.stem, error=str(exc))
             sessions_out.append({
@@ -447,6 +645,10 @@ def _run_audit_job(
                 "errors": [str(exc)],
             })
 
+    for s in sessions_out:
+        for a in s.get("audited") or []:
+            a.pop("redis_invite_payload", None)
+
     total_audits = sum(len(s.get("audited") or []) for s in sessions_out)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -454,7 +656,29 @@ def _run_audit_job(
         "sessions": sessions_out,
         "total_group_audits": total_audits,
         "status": "completed",
+        "invite_redis_updates": invite_redis_updates,
+        "session_shard_index": si,
+        "session_shard_total": st,
     }
+
+
+async def _push_invite_redis_snapshots(redis: Any, payloads: list[dict[str, Any]]) -> None:
+    if not redis or not payloads:
+        return
+    for pl in payloads:
+        try:
+            gid = int(pl["group_id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        key = SEO_INVITE_REDIS_KEY_FMT.format(group_id=gid)
+        try:
+            await redis.set(
+                key,
+                json.dumps(pl, ensure_ascii=False),
+                ex=int(SEO_INVITE_REDIS_TTL_S),
+            )
+        except Exception as exc:
+            log.debug("seo_auditor_redis_invite_set_failed", key=key, error=str(exc))
 
 
 @registry.register("seo.watchdog.audit")
@@ -483,6 +707,25 @@ async def seo_watchdog_audit(parameters: dict[str, Any]) -> dict[str, Any]:
             participant_limit = None
 
     try:
+        session_shard_total = int(parameters.get("session_shard_total", 1))
+    except (TypeError, ValueError):
+        session_shard_total = 1
+    try:
+        session_shard_index = int(parameters.get("session_shard_index", 0))
+    except (TypeError, ValueError):
+        session_shard_index = 0
+
+    max_sessions_raw = parameters.get("max_sessions_per_job")
+    max_sessions_per_job: int | None = None
+    if max_sessions_raw is not None and str(max_sessions_raw).strip() != "":
+        try:
+            max_sessions_per_job = int(max_sessions_raw)
+        except (TypeError, ValueError):
+            max_sessions_per_job = None
+        if max_sessions_per_job is not None and max_sessions_per_job <= 0:
+            max_sessions_per_job = None
+
+    try:
         result = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: _run_audit_job(
@@ -490,6 +733,9 @@ async def seo_watchdog_audit(parameters: dict[str, Any]) -> dict[str, Any]:
                 session_start_offset=session_start_offset,
                 participant_limit=participant_limit,
                 default_sub_days=default_sub_days,
+                session_shard_index=session_shard_index,
+                session_shard_total=session_shard_total,
+                max_sessions_per_job=max_sessions_per_job,
             ),
         )
     except Exception as exc:
@@ -499,6 +745,15 @@ async def seo_watchdog_audit(parameters: dict[str, Any]) -> dict[str, Any]:
             "error": str(exc),
             "duration_s": round(time.monotonic() - t0, 2),
         }
+
+    redis = parameters.get("__redis__")
+    if redis is not None and not os.getenv("SEO_WATCHDOG_DISABLE_REDIS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        await _push_invite_redis_snapshots(redis, list(result.get("invite_redis_updates") or []))
 
     result["duration_s"] = round(time.monotonic() - t0, 2)
     return result
