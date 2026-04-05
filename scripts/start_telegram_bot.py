@@ -774,9 +774,9 @@ async def _acquire_bot_lock() -> None:
 
 # ── Command / button handlers ─────────────────────────────────────────────────
 
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, bot: Bot) -> None:
     """Show the primary control-panel inline menu and welcome message (admin only)."""
-    admin_id = _resolved_admin_chat_id()
+    admin_id = _admin_chat_for_tg_bot(bot)
     uid = message.from_user.id if message.from_user else None
     if not _telegram_admin_allowed(chat_id=message.chat.id, user_id=uid, admin_chat_id=admin_id):
         try:

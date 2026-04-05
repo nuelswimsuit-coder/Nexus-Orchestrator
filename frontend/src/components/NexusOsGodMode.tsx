@@ -6914,21 +6914,15 @@ function DecisionNode({
 // ── Live Swarm View — rich text + terminal styling ───────────────────────────
 
 function _swarmLogLineClass(line: string, topic?: string): string {
-  if (
-    /error|fail|exception|critical|שגיאה|(\[שגיאה\])|(\[error\])/i.test(line)
-  ) {
+  if (/(\[שגיאה\])|(\[error\])/i.test(line)) {
     return "text-rose-400/90 [text-shadow:0_0_10px_rgba(251,113,133,0.35)]";
   }
-  if (
-    /success|הצלחה|✅|\bok\b|dispatched|started|(\[הצלחה\])|(\[success\])/i.test(
-      line,
-    )
-  ) {
+  if (/(\[הצלחה\])|(\[success\])/i.test(line)) {
     return "text-emerald-400 [text-shadow:0_0_10px_rgba(52,211,153,0.45)]";
   }
   const topicLow = (topic ?? "").toLowerCase();
-  if (topicLow === "engine" || /\[\s*מנוע\s*\]/.test(line)) {
-    return "text-violet-400/95 [text-shadow:0_0_10px_rgba(167,139,250,0.4)]";
+  if (/\[מנוע\]/.test(line) || topicLow === "engine") {
+    return "text-purple-400/95 [text-shadow:0_0_10px_rgba(192,132,252,0.35)]";
   }
   return "text-slate-400/90";
 }
@@ -7628,7 +7622,7 @@ function LiveSwarmView() {
       </div>
 
       {/* Stats row — tactical grid + metric glow */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-6 gap-2 sm:gap-3">
         <div className="rounded-2xl border border-purple-500/25 bg-gradient-to-br from-slate-950/80 to-purple-950/20 p-3 sm:p-3.5 shadow-[0_0_28px_rgba(168,85,247,0.12)]">
           <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1">
             סשני טלגרם מסריקה (‎.session)
@@ -7661,7 +7655,7 @@ function LiveSwarmView() {
             {feed?.written_count ?? 0}
           </div>
         </div>
-        <div className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-950/90 to-slate-900/50 p-3 sm:p-3.5 col-span-2 sm:col-span-1 lg:col-span-1 min-h-0">
+        <div className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-950/90 to-slate-900/50 p-3 sm:p-3.5 col-span-2 sm:col-span-1 lg:col-span-3 xl:col-span-1 min-h-0">
           <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1">הודעה אחרונה</div>
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
@@ -7969,22 +7963,27 @@ function LiveSwarmView() {
           )}
 
           {swarmTab === "feed" && (
-            <div className="rounded-2xl border border-emerald-500/20 bg-[#05080c] overflow-hidden shadow-[inset_0_1px_0_rgba(52,211,153,0.06)]">
-              <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-800/90 bg-slate-950/90 font-[family-name:var(--font-jetbrains)]">
-                <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-500/90">
-                  swarm://live-feed
+            <div className="rounded-2xl border border-emerald-500/20 bg-[#050810] overflow-hidden shadow-[inset_0_1px_0_rgba(52,211,153,0.06)]">
+              <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-800/90 bg-slate-950/95 font-mono">
+                <div className="flex items-center gap-1.5 shrink-0" aria-hidden>
+                  <div className="w-2.5 h-2.5 rounded-full bg-rose-500/75" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-amber-500/75" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-500/75" />
+                </div>
+                <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-500/90 truncate">
+                  nexus-swarm · live log
                 </span>
-                <span className="text-[9px] text-slate-600 tabular-nums" dir="ltr">
-                  {recentMessages.length} evt
+                <span className="text-[9px] text-slate-600 tabular-nums mr-auto shrink-0" dir="ltr">
+                  {recentMessages.length} lines
                 </span>
               </div>
               {recentMessages.length === 0 ? (
-                <div className="px-6 py-10 text-center text-slate-600 text-sm font-bold font-[family-name:var(--font-jetbrains)]">
+                <div className="px-6 py-10 text-center text-slate-600 text-sm font-bold font-mono">
                   אין הודעות עדיין — הנחיל טרם שלח
                 </div>
               ) : (
                 <div
-                  className="max-h-[min(420px,52vh)] overflow-y-auto nexus-os-scrollbar px-3 py-2 text-[11px] leading-relaxed"
+                  className="max-h-[min(420px,52vh)] overflow-y-auto nexus-os-scrollbar px-3 py-2 text-[11px] leading-relaxed font-mono"
                   dir="rtl"
                 >
                   {recentMessages.map((msg, i) => {
@@ -7998,27 +7997,39 @@ function LiveSwarmView() {
                         })()
                       : "";
                     const line = msg.message ?? "";
-                    const lineCls = _swarmLogLineClass(line);
+                    const lineCls = _swarmLogLineClass(line, msg.topic);
+                    const who = msg.display_name?.trim() || msg.phone?.trim() || "";
                     return (
                       <div
-                        key={`${msg.ts ?? ""}-${i}`}
-                        className="flex gap-2 py-1.5 border-b border-slate-800/40 last:border-b-0 hover:bg-slate-900/50 rounded-md px-1 -mx-1 transition-colors items-start"
+                        key={`${msg.ts ?? ""}-${msg.topic ?? ""}-${i}`}
+                        className="group py-2 border-b border-slate-800/50 last:border-b-0 hover:bg-slate-900/40 rounded-lg px-2 -mx-1 transition-colors"
                       >
-                        <div className="min-w-0 flex-1">
+                        <div className={`flex flex-wrap items-start justify-between gap-x-2 gap-y-0.5 ${lineCls}`}>
+                          <div className="flex flex-wrap items-center gap-2 min-w-0">
+                            {who ? (
+                              <span className="text-[10px] font-black tracking-tight truncate max-w-[14rem]">
+                                {who}
+                              </span>
+                            ) : null}
+                            {msg.topic ? (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-slate-900/90 border border-slate-700/70 text-slate-500 font-bold uppercase tracking-wider shrink-0">
+                                {msg.topic}
+                              </span>
+                            ) : null}
+                          </div>
+                          <span
+                            className="text-[9px] text-slate-600 tabular-nums shrink-0 select-none"
+                            dir="ltr"
+                          >
+                            {msgTime || "—"}
+                          </span>
+                        </div>
+                        <div className={`mt-1 min-w-0 pl-0.5 ${lineCls}`}>
                           <SwarmRichMessageBody
                             text={line}
-                            className={`text-[11px] font-[family-name:var(--font-jetbrains)] [&_a]:font-[family-name:var(--font-jetbrains)] ${lineCls}`}
+                            className="text-[11px] font-mono [&_*]:font-mono [&_a]:text-cyan-400 [&_a]:underline [&_p]:text-inherit [&_li]:text-inherit [&_strong]:text-inherit"
                           />
                         </div>
-                        <span className="shrink-0 w-16 text-center uppercase tracking-tighter text-slate-500 font-[family-name:var(--font-jetbrains)] text-[10px] pt-0.5">
-                          {msg.topic ? msg.topic.slice(0, 12) : "—"}
-                        </span>
-                        <span
-                          className="text-slate-600 shrink-0 w-[52px] text-left tabular-nums select-none font-[family-name:var(--font-jetbrains)] text-[10px] pt-0.5"
-                          dir="ltr"
-                        >
-                          {msgTime || "—"}
-                        </span>
                       </div>
                     );
                   })}

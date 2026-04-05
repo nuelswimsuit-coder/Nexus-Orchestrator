@@ -636,9 +636,12 @@ async def _generate_amcha_turn(
         if not isinstance(out, dict):
             return None
         if rich_media_mode:
-            if out.get("action_type") is not None or (out.get("message_text") is not None and str(out.get("message_text")).strip()):
-                return _normalize_rich_turn(out)
-            if out.get("primary_message") or out.get("text"):
+            if (
+                out.get("action_type")
+                or out.get("primary_message")
+                or out.get("text")
+                or out.get("message_text") is not None
+            ):
                 return _normalize_rich_turn(out)
             return None
         if out.get("primary_message") or out.get("text"):
@@ -715,6 +718,394 @@ async def _generate_amcha_turn(
         "article_url": "",
         "link_label": "",
     }
+
+
+def _converse_batch_size() -> int:
+    raw = (os.getenv("COMMUNITY_FACTORY_CONVERSE_BATCH", "15") or "15").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 15
+    return max(1, min(20, n))
+
+
+async def _generate_amcha_turn_media(
+    api_key: str,
+    topic: str,
+    openai_key: str,
+    *,
+    persona_seed: str,
+    role: Literal["opener", "replier"],
+    stance_he: str,
+    last_five_block: str,
+    typo_must_correct: bool,
+    anchor_preview: str | None = None,
+    recent_texts: list[str] | None = None,
+    active_topic_line: str | None = None,
+    opener_fresh_event: bool = False,
+    news_opener: bool = False,
+    global_outgoing_lines: list[str] | None = None,
+) -> dict[str, Any]:
+    anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
+    go = _global_outgoing_prompt_suffix(list(global_outgoing_lines or []))
+    rich_json = (
+        "החזר אך ורק JSON תקף (בלי טקסט נוסף) עם המפתחות: "
+        '"action_type","message_text","image_query","primary_message",'
+        '"needs_correction","correction_message","article_url","link_label". '
+        'action_type חייב להיות בדיוק אחד מ: "text", "text_with_emoji", "sticker", "gif", "image". '
+        "message_text — טקסט סלנג עברי (אפשר ריק אם שליחת מדיה בלבד). "
+        "image_query — מילת מפתח קצרה לתמונה או ל-GIF (מומלץ באנגלית). "
+        "primary_message — אותו תוכן כמו message_text לתאימות. "
+        "יעדי תדירות משוערים: ~60% text או text_with_emoji, ~15% sticker, ~15% gif, ~10% image."
+    )
+    if typo_must_correct:
+        typo_rule = (
+            "חובה: needs_correction=true — שים ב-message_text טעות הקלדה עברית נפוצה "
+            "(למשל בוט במקום טוב), "
+            "וב-correction_message תיקון אותנטי קצר כמו 'טוב*' או 'סליחה טוב*'."
+        )
+    else:
+        typo_rule = "needs_correction חייב להיות false; correction_message יכול להיות מחרוזת ריקה."
+
+    opener_news_clause = ""
+    if news_opener:
+        opener_news_clause = (
+            'תפקיד: פותח חדשות. action_type חייב להיות "text" או "text_with_emoji" בלבד (בלי sticker/gif/image). '
+            "message_text — שורות קצרות כמו בווטסאפ על הכתבה/פלאש (בלי URL גולמי בגוף ההודעה). "
+            "חובה למלא article_url עם קישור https plausibly לאתר חדשות ישראלי, "
+            "ול-link_label משפט עברית לכפתור הקישור."
+        )
+
+    if role == "opener" and not news_opener:
+        ctx = (active_topic_line or "").strip()[:400] or topic
+        user_he = (
+            f"{last_five_block}\n\n{stance_he}\n\n"
+            f'הקבוצה כבר רותחת סביב: "{ctx}". '
+            "עוד משפט או שניים — זווית אחרת, לא פורמלי.\n"
+            f"{opener_news_clause}\n{typo_rule}\n{anti}\n{go}\n{rich_json}"
+        )
+    elif role == "opener" and news_opener:
+        user_he = (
+            f"{last_five_block}\n\n{stance_he}\n\n"
+            f"הנחיה: שמועה/פלאש/מה זה עכשיו — קבוצת חדשות בטלגרם. "
+            f'רקע רחב בלבד: "{topic}".\n'
+            f"{opener_news_clause}\n{typo_rule}\n{anti}\n{go}\n{rich_json}"
+        )
+    else:
+        ap = (anchor_preview or "").strip()[:800] or "(אין טקסט — תגיב בקצרה)"
+        if (active_topic_line or "").strip():
+            head = f'הנושא הפעיל בקבוצה: "{(active_topic_line or "").strip()[:400]}". '
+        else:
+            head = ""
+        user_he = (
+            f"{last_five_block}\n\n{stance_he}\n\n"
+            f"{head}"
+            f'אתה משיב להודעה/שורה הזו (או לקונטקסט שלה): "{ap}"\n'
+            f"{typo_rule}\n{anti}\n{go}\n{rich_json}"
+        )
+
+    temperature = 0.95
+    frequency_penalty = 0.8
+    presence_penalty = 0.5
+    sys_prompt = _amcha_system_prompt_with_persona(persona_seed)
+
+    def _rich_ok(d: dict[str, Any]) -> bool:
+        if d.get("action_type") in ("sticker", "gif", "image"):
+            return True
+        return bool(d.get("message_text") or d.get("primary_message") or d.get("text"))
+
+    if api_key:
+        try:
+            from nexus.modules.community_vibe import _gemini_json  # type: ignore[attr-defined]
+
+            out = await _gemini_json(
+                api_key,
+                sys_prompt,
+                user_he,
+                temperature=temperature,
+                max_tokens=400,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
+            )
+            if isinstance(out, dict) and _rich_ok(out):
+                return _normalize_rich_turn(out)
+        except Exception as exc:
+            log.warning("factory_gemini_media_failed", error=str(exc))
+
+    if openai_key:
+        try:
+            import httpx
+
+            url = "https://api.openai.com/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {openai_key}"}
+            payload = {
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_he},
+                ],
+                "temperature": temperature,
+                "max_tokens": 400,
+                "frequency_penalty": frequency_penalty,
+                "presence_penalty": presence_penalty,
+            }
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.post(url, json=payload, headers=headers)
+                r.raise_for_status()
+                data = r.json()
+                choice = (data.get("choices") or [{}])[0]
+                raw_msg = (choice.get("message") or {}).get("content") or ""
+                obj = _parse_llm_json_object(raw_msg) if raw_msg.strip() else None
+                if obj and _rich_ok(obj):
+                    return _normalize_rich_turn(obj)
+        except Exception as exc:
+            log.warning("factory_openai_media_failed", error=str(exc))
+
+    fb_pm = "וואלה הזייה אחי" if role == "opener" else "אין מצב"
+    return _normalize_rich_turn(
+        {
+            "action_type": "text",
+            "message_text": fb_pm,
+            "primary_message": fb_pm,
+            "needs_correction": False,
+            "correction_message": "",
+            "article_url": "",
+            "link_label": "",
+            "image_query": "",
+        }
+    )
+
+
+def _sticker_set_short_names() -> list[str]:
+    packs_env = (os.getenv("COMMUNITY_FACTORY_STICKER_SETS") or "").strip()
+    if packs_env:
+        return [p.strip() for p in packs_env.split(",") if p.strip()]
+    single = (os.getenv("COMMUNITY_FACTORY_STICKER_SET") or "").strip()
+    if single:
+        return [single]
+    return list(_DEFAULT_STICKER_PACKS)
+
+
+async def _http_get_bytes(url: str) -> bytes | None:
+    u = (url or "").strip()
+    if not u.startswith(("http://", "https://")):
+        return None
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as hc:
+            r = await hc.get(u)
+            if r.status_code == 200 and r.content:
+                return bytes(r.content)
+    except Exception as exc:
+        log.debug("factory_http_get_bytes_failed", url=u[:120], error=str(exc))
+    return None
+
+
+def _picsum_image_url(image_query: str, persona_seed: str) -> str:
+    h = hashlib.sha256(f"{image_query}|{persona_seed}".encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return f"https://picsum.photos/seed/{h}/800/600"
+
+
+async def _unsplash_random_image_url(query: str) -> str | None:
+    key = (os.getenv("UNSPLASH_ACCESS_KEY") or "").strip()
+    if not key:
+        return None
+    try:
+        import httpx
+
+        q = quote((query or "landscape").strip() or "landscape", safe="")
+        u = f"https://api.unsplash.com/photos/random?query={q}&client_id={key}"
+        async with httpx.AsyncClient(timeout=25.0) as hc:
+            r = await hc.get(u, headers={"Accept-Version": "v1"})
+            if r.status_code != 200:
+                return None
+            data = r.json()
+            if isinstance(data, list) and data:
+                data = data[0]
+            urls = (data or {}).get("urls") or {}
+            return str(urls.get("regular") or urls.get("full") or "").strip() or None
+    except Exception as exc:
+        log.debug("factory_unsplash_random_failed", error=str(exc))
+    return None
+
+
+async def _resolve_gif_media_url(query: str) -> str | None:
+    q = (query or "fun").strip() or "fun"
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=25.0) as hc:
+            tenor = (os.getenv("TENOR_API_KEY") or os.getenv("TENOR_KEY") or "").strip()
+            if tenor:
+                u = (
+                    "https://tenor.googleapis.com/v2/search?"
+                    f"q={quote(q, safe='')}&key={quote(tenor, safe='')}&limit=8&random=true"
+                )
+                r = await hc.get(u)
+                if r.status_code == 200:
+                    data = r.json()
+                    results = data.get("results") or []
+                    if results:
+                        pick = random.choice(results)
+                        mf = pick.get("media_formats") or {}
+                        for key in ("gif", "tinygif", "nanogif", "mediumgif"):
+                            g = mf.get(key) or {}
+                            url = str(g.get("url") or "").strip()
+                            if url:
+                                return url
+            giphy = (os.getenv("GIPHY_API_KEY") or "").strip()
+            if giphy:
+                u = (
+                    "https://api.giphy.com/v1/gifs/random?"
+                    f"api_key={quote(giphy, safe='')}&tag={quote(q, safe='')}"
+                )
+                r = await hc.get(u)
+                if r.status_code == 200:
+                    dj = r.json()
+                    d0 = (dj.get("data") or {}) if isinstance(dj.get("data"), dict) else {}
+                    imgs = d0.get("images") or {}
+                    orig = imgs.get("original") or {}
+                    url = str(orig.get("url") or "").strip()
+                    if url:
+                        return url
+    except Exception as exc:
+        log.debug("factory_gif_resolve_failed", error=str(exc))
+    return None
+
+
+async def _fetch_image_bytes_for_query(image_query: str, persona_seed: str) -> tuple[bytes | None, str]:
+    unsplash = await _unsplash_random_image_url(image_query)
+    if unsplash:
+        b = await _http_get_bytes(unsplash)
+        if b:
+            return b, "photo.jpg"
+    url = _picsum_image_url(image_query, persona_seed)
+    b = await _http_get_bytes(url)
+    return b, "photo.jpg"
+
+
+async def _send_rich_turn_telethon(
+    client: Any,
+    entity: Any,
+    turn: dict[str, Any],
+    *,
+    reply_to_id: int | None,
+    news_opener: bool,
+) -> list[Any]:
+    await asyncio.sleep(random.uniform(0.5, 4.0))
+    sent: list[Any] = []
+
+    async def _append_correction() -> None:
+        if not turn.get("needs_correction"):
+            return
+        cm = str(turn.get("correction_message") or "").strip()
+        if not cm:
+            return
+        await asyncio.sleep(random.uniform(2.0, 4.0))
+        fix = _finalize_correction_message(cm)[:4096]
+        if fix:
+            msg2 = await client.send_message(entity, fix, reply_to=None, parse_mode=None)
+            sent.append(msg2)
+
+    if news_opener:
+        url = await _maybe_tinyurl_shorten(str(turn.get("article_url") or ""))
+        primary_out, use_md = _format_opener_with_md_link(
+            str(turn.get("primary_message") or turn.get("message_text") or ""),
+            url,
+            str(turn.get("link_label") or ""),
+        )
+        out = await _send_amcha_messages(
+            client,
+            entity,
+            primary=primary_out,
+            needs_correction=bool(turn.get("needs_correction")),
+            correction=str(turn.get("correction_message") or ""),
+            reply_to_id=reply_to_id,
+            parse_mode="md" if use_md else None,
+        )
+        return out
+
+    at = str(turn.get("action_type") or "text").strip().lower()
+    mt = _finalize_primary_message(str(turn.get("message_text") or turn.get("primary_message") or ""))
+
+    try:
+        if at in ("text", "text_with_emoji"):
+            text = (mt[:4096] if mt else _finalize_primary_message("וואלה")) or "וואלה"
+            msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
+            sent.append(msg)
+        elif at == "sticker":
+            ok = await _try_send_pack_sticker(client, entity, reply_to=reply_to_id)
+            if not ok:
+                text = (mt[:4096] if mt else "😂") or "😂"
+                msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
+                sent.append(msg)
+        elif at == "gif":
+            q = str(turn.get("image_query") or "funny") or "funny"
+            gif_url = await _resolve_gif_media_url(q)
+            if gif_url:
+                try:
+                    msg = await client.send_file(
+                        entity,
+                        gif_url,
+                        caption=(mt[:1024] if mt else None),
+                        reply_to=reply_to_id,
+                    )
+                    sent.append(msg)
+                except Exception:
+                    ok = await _try_send_pack_sticker(client, entity, reply_to=reply_to_id)
+                    if ok:
+                        pass
+                    else:
+                        text = (mt or "וואלה")[:4096]
+                        msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
+                        sent.append(msg)
+            else:
+                ok = await _try_send_pack_sticker(client, entity, reply_to=reply_to_id)
+                if not ok:
+                    text = (mt or "וואלה")[:4096]
+                    msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
+                    sent.append(msg)
+        elif at == "image":
+            iq = str(turn.get("image_query") or "city") or "city"
+            seed = str(turn.get("_persona_seed") or "")
+            data, fname = await _fetch_image_bytes_for_query(iq, seed)
+            if data:
+                bio = BytesIO(data)
+                try:
+                    msg = await client.send_file(
+                        entity,
+                        file=(fname, bio),
+                        caption=(mt[:1024] if mt else None),
+                        reply_to=reply_to_id,
+                        force_document=False,
+                    )
+                    sent.append(msg)
+                except Exception:
+                    text = (mt or "וואלה")[:4096]
+                    msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
+                    sent.append(msg)
+            else:
+                text = (mt or "וואלה")[:4096]
+                msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
+                sent.append(msg)
+        else:
+            text = (mt[:4096] if mt else "וואלה") or "וואלה"
+            msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
+            sent.append(msg)
+    except Exception as exc:
+        log.debug("factory_rich_send_failed", action=at, error=str(exc))
+        try:
+            text = (mt or "וואלה")[:4096]
+            msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
+            sent.append(msg)
+        except Exception as exc2:
+            log.warning("factory_rich_send_fallback_failed", error=str(exc2))
+            return sent
+
+    if not news_opener:
+        await _append_correction()
+    return sent
 
 
 async def _redis_delete_keys_with_prefix(redis: Any, prefix: str) -> None:
@@ -1505,6 +1896,7 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         active_topic_line=active_topic_line,
                         opener_fresh_event=False,
                         news_opener=False,
+                        persona_seed=_session_persona_seed(session_base),
                     )
                     body = _finalize_primary_message(turn["primary_message"])
                     async with client.action(ent, "typing"):
@@ -1539,6 +1931,216 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
             log.debug("factory_burst_skipped_no_session")
 
     return {"status": "completed", "burst_replies_attempted": count, "messages_sent": sent_n}
+
+
+async def _factory_converse_slot(
+    *,
+    redis: Any,
+    parameters: dict[str, Any],
+    api_key: str,
+    openai_key: str,
+    slot_index: int,
+    groups: list[dict[str, Any]],
+    all_sessions: list[str],
+    carry: dict[str, Any],
+) -> dict[str, Any]:
+    """One session×group converse attempt; exceptions should be caught by the gather wrapper."""
+    gi = slot_index % len(groups)
+    si = slot_index % len(all_sessions)
+    session_base = all_sessions[si]
+    grp = groups[gi]
+    group_id = grp.get("group_id")
+    base_out: dict[str, Any] = {"slot": slot_index, "session": session_base[:48], "group_id": group_id}
+
+    if group_id is None:
+        return {**base_out, "status": "skipped", "reason": "group_id missing"}
+
+    gid_int = int(group_id)
+    persona = _session_persona_seed(session_base)
+    global_recent = await _redis_recent_outgoing_fetch(redis)
+
+    if await _is_session_banned(redis, session_base):
+        return {**base_out, "status": "skipped", "reason": "banned"}
+
+    until = await _cooldown_until(redis, session_base)
+    if until and datetime.now(timezone.utc) < until:
+        return {**base_out, "status": "deferred", "reason": "cooldown"}
+
+    try:
+        import telethon  # noqa: F401
+    except ImportError:
+        return {**base_out, "status": "failed", "error": "telethon not installed"}
+
+    thread_ids = await _thread_ids_read(redis, gid_int)
+    has_thread = len(thread_ids) > 0
+    role = _roll_thread_role(has_thread)
+    if role == "replier" and not has_thread:
+        role = "opener"
+    if role == "reactor" and not has_thread:
+        role = "opener"
+
+    topic = random.choice(FACTORY_TOPICS)
+    active_record = await _active_topic_read(redis, gid_int)
+    event_threshold_sec = random.uniform(7200.0, 10800.0)
+    opener_fresh_event = False
+    active_topic_line: str | None = None
+    if role == "opener":
+        opener_fresh_event = _active_topic_should_refresh(active_record, event_threshold_sec)
+        if not opener_fresh_event and active_record:
+            active_topic_line = str(active_record.get("text") or "").strip() or None
+    elif role == "replier" and active_record:
+        active_topic_line = str(active_record.get("text") or "").strip() or None
+
+    if role == "lurk":
+        return {**base_out, "status": "completed", "action": "lurk"}
+
+    if role == "reactor":
+        anchor_id = thread_ids[-1]
+        try:
+            async with async_telegram_client(session_base, parameters) as client:
+                if not await client.is_user_authorized():
+                    await _mark_banned(redis, session_base)
+                    await _bump_metric(redis, "bans", 1)
+                    return {**base_out, "status": "skipped", "reason": "unauthorized"}
+                ent = await client.get_entity(gid_int)
+                await _ensure_factory_profile(client, redis, session_base)
+                await asyncio.sleep(random.uniform(0.5, 4.0))
+                ok = await _send_thread_reaction(client, ent, anchor_id)
+                if ok:
+                    await _bump_metric(redis, "messages_sent", 1)
+        except ValueError as exc:
+            log.warning("factory_converse_creds_missing", error=str(exc))
+        except Exception as exc:
+            kind = classify_telethon_account_error(exc)
+            if kind == "ban":
+                await _mark_banned(redis, session_base)
+                await _bump_metric(redis, "bans", 1)
+            elif kind == "flood":
+                sec = int(flood_wait_seconds(exc) * 1.1) + 1
+                await _set_cooldown(redis, session_base, sec)
+                await _bump_metric(redis, "flood_waits", 1)
+            else:
+                log.debug("factory_converse_reactor_failed", error=str(exc))
+        return {**base_out, "status": "completed", "action": "reactor"}
+
+    reply_to_id: int | None = None
+    stance = random.choice(AMCHA_STANCES_HE)
+    typo_must_correct = random.random() < 0.15
+    news_opener = role == "opener" and opener_fresh_event
+
+    sent_list: list[Any] = []
+    try:
+        async with async_telegram_client(session_base, parameters) as client:
+            if not await client.is_user_authorized():
+                await _mark_banned(redis, session_base)
+                await _bump_metric(redis, "bans", 1)
+                return {**base_out, "status": "skipped", "reason": "unauthorized"}
+            await _ensure_factory_profile(client, redis, session_base)
+            ent = await client.get_entity(gid_int)
+            refs_newest_first: list[tuple[int, str]] = []
+            recent_texts: list[str] = []
+            try:
+                hist = await client.get_messages(ent, limit=RECENT_GROUP_MSG_CAP)
+                if hist:
+                    chronological = list(hist)
+                    chronological.reverse()
+                    refs_newest_first = _message_refs_newest_first(chronological)
+                    recent_texts = [t for _, t in reversed(refs_newest_first)]
+            except Exception as exc:
+                log.debug("factory_recent_messages_failed", group_id=gid_int, error=str(exc))
+            last_five_block = _last_five_prompt_block(refs_newest_first)
+            pick_pool = refs_newest_first[:5]
+            if pick_pool and random.random() < 0.6:
+                reply_to_id = random.choice(pick_pool)[0]
+            ref_by_id = {mid: txt for mid, txt in refs_newest_first}
+            anchor_preview: str | None = ref_by_id.get(reply_to_id) if reply_to_id is not None else None
+            if reply_to_id is not None and anchor_preview is None:
+                try:
+                    msgs = await client.get_messages(ent, ids=reply_to_id)
+                    m0 = msgs[0] if msgs else None
+                    if m0 is not None:
+                        anchor_preview = (getattr(m0, "message", None) or "")[:500]
+                except Exception:
+                    anchor_preview = None
+
+            turn = await _generate_amcha_turn(
+                api_key,
+                topic,
+                openai_key,
+                role="opener" if role == "opener" else "replier",
+                stance_he=stance,
+                last_five_block=last_five_block,
+                typo_must_correct=typo_must_correct,
+                anchor_preview=anchor_preview,
+                recent_texts=recent_texts,
+                active_topic_line=active_topic_line,
+                opener_fresh_event=opener_fresh_event,
+                news_opener=news_opener,
+                persona_seed=persona,
+                rich_media_mode=True,
+                global_recent_outgoing=global_recent,
+            )
+
+            use_md = False
+            summary_line = _finalize_primary_message(
+                str(turn.get("primary_message") or turn.get("message_text") or "")
+            )
+            if news_opener:
+                url = await _maybe_tinyurl_shorten(str(turn.get("article_url") or ""))
+                summary_line, use_md = _format_opener_with_md_link(
+                    str(turn.get("primary_message") or ""),
+                    url,
+                    str(turn.get("link_label") or ""),
+                )
+            elif not summary_line:
+                at = str(turn.get("action_type") or "text")
+                summary_line = {"sticker": "🎭 סטיקר", "gif": "🎞 גיף", "image": "🖼 תמונה"}.get(
+                    at, "הודעה"
+                )
+
+            async with client.action(ent, "typing"):
+                await asyncio.sleep(random.uniform(2.0, 8.0))
+
+            sent_list = await _send_rich_factory_messages(
+                client,
+                ent,
+                turn,
+                reply_to_id=reply_to_id,
+                news_opener=news_opener,
+                use_md=use_md,
+            )
+            sent = sent_list[0] if sent_list else None
+            mid = getattr(sent, "id", None) if sent is not None else None
+            if mid is not None and role == "opener":
+                await _thread_ids_push(redis, gid_int, int(mid))
+            if role == "opener" and opener_fresh_event:
+                await _active_topic_write(redis, gid_int, summary_line)
+            if mid is not None and news_opener:
+                burst_carry = dict(carry)
+                burst_carry["burst_group_id"] = gid_int
+                burst_carry["burst_reply_to_msg_id"] = int(mid)
+                burst_carry["burst_count"] = random.randint(4, 8)
+                await _enqueue_task("swarm.community_factory.burst_reply_chain", burst_carry)
+
+            recent_frag = summary_line or str(turn.get("message_text") or turn.get("primary_message") or "")
+            await _redis_recent_outgoing_push(redis, recent_frag)
+
+        await _bump_metric(redis, "messages_sent", len(sent_list))
+    except ValueError as exc:
+        log.warning("factory_converse_creds_missing", error=str(exc))
+    except Exception as exc:
+        kind = classify_telethon_account_error(exc)
+        if kind == "ban":
+            await _mark_banned(redis, session_base)
+            await _bump_metric(redis, "bans", 1)
+        elif kind == "flood":
+            sec = int(flood_wait_seconds(exc) * 1.1) + 1
+            await _set_cooldown(redis, session_base, sec)
+            await _bump_metric(redis, "flood_waits", 1)
+        else:
+            log.warning("factory_converse_send_failed", error=str(exc))
+
+    return {**base_out, "status": "completed", "action": role}
 
 
 @registry.register("swarm.community_factory.converse_tick")
@@ -1579,194 +2181,53 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
         await _redis_json_set(redis, KEY_STATE, state)
         return {"status": "completed", "phase": "chat_cap"}
 
-    gi = cidx % len(groups)
-    si = cidx % len(all_sessions)
-    session_base = all_sessions[si]
-    grp = groups[gi]
-    group_id = grp.get("group_id")
     carry = dict(parameters)
     carry.pop("__redis__", None)
-    if group_id is None:
-        await _enqueue_task("swarm.community_factory.converse_tick", carry)
-        return {"status": "failed", "error": "group_id missing"}
 
-    state["converse_idx"] = cidx + 1
+    remaining = stop_after - cidx
+    desired = int(
+        parameters.get("converse_batch_size") or os.getenv("COMMUNITY_FACTORY_CONVERSE_BATCH", "15")
+    )
+    desired = max(1, min(20, desired))
+    if remaining >= 10:
+        batch_size = min(20, remaining, max(10, desired))
+    else:
+        batch_size = min(20, remaining)
+
+    any_missing_group = False
+    for k in range(batch_size):
+        gi = (cidx + k) % len(groups)
+        if groups[gi].get("group_id") is None:
+            any_missing_group = True
+            break
+
+    state["converse_idx"] = cidx + batch_size
     await _redis_json_set(redis, KEY_STATE, state)
 
     async def _enqueue_next() -> None:
         await _enqueue_task("swarm.community_factory.converse_tick", carry)
 
+    if any_missing_group:
+        await _enqueue_next()
+        return {"status": "failed", "error": "group_id missing", "batch_size": batch_size}
+
     await asyncio.sleep(random.uniform(900.0, 2700.0))
 
-    if await _is_session_banned(redis, session_base):
-        await _enqueue_next()
-        return {"status": "skipped", "reason": "banned"}
-
-    until = await _cooldown_until(redis, session_base)
-    if until and datetime.now(timezone.utc) < until:
-        await _enqueue_next()
-        return {"status": "deferred", "reason": "cooldown"}
-
-    try:
-        import telethon  # noqa: F401
-    except ImportError:
-        return {"status": "failed", "error": "telethon not installed"}
-
-    gid_int = int(group_id)
-    thread_ids = await _thread_ids_read(redis, gid_int)
-    has_thread = len(thread_ids) > 0
-    role = _roll_thread_role(has_thread)
-    if role == "replier" and not has_thread:
-        role = "opener"
-    if role == "reactor" and not has_thread:
-        role = "opener"
-
-    topic = random.choice(FACTORY_TOPICS)
-    active_record = await _active_topic_read(redis, gid_int)
-    event_threshold_sec = random.uniform(7200.0, 10800.0)
-    opener_fresh_event = False
-    active_topic_line: str | None = None
-    if role == "opener":
-        opener_fresh_event = _active_topic_should_refresh(active_record, event_threshold_sec)
-        if not opener_fresh_event and active_record:
-            active_topic_line = str(active_record.get("text") or "").strip() or None
-    elif role == "replier" and active_record:
-        active_topic_line = str(active_record.get("text") or "").strip() or None
-
-    if role == "lurk":
-        await _enqueue_next()
-        return {"status": "completed", "action": "lurk"}
-
-    if role == "reactor":
-        anchor_id = thread_ids[-1]
+    async def _safe_slot(k: int) -> None:
         try:
-            async with async_telegram_client(session_base, parameters) as client:
-                if not await client.is_user_authorized():
-                    await _mark_banned(redis, session_base)
-                    await _bump_metric(redis, "bans", 1)
-                    await _enqueue_next()
-                    return {"status": "skipped", "reason": "unauthorized"}
-                ent = await client.get_entity(gid_int)
-                await _ensure_factory_profile(client, redis, session_base)
-                ok = await _send_thread_reaction(client, ent, anchor_id)
-                if ok:
-                    await _bump_metric(redis, "messages_sent", 1)
-        except ValueError as exc:
-            log.warning("factory_converse_creds_missing", error=str(exc))
+            await _factory_converse_slot(
+                redis=redis,
+                parameters=parameters,
+                api_key=api_key,
+                openai_key=openai_key,
+                slot_index=cidx + k,
+                groups=groups,
+                all_sessions=all_sessions,
+                carry=carry,
+            )
         except Exception as exc:
-            kind = classify_telethon_account_error(exc)
-            if kind == "ban":
-                await _mark_banned(redis, session_base)
-                await _bump_metric(redis, "bans", 1)
-            elif kind == "flood":
-                sec = int(flood_wait_seconds(exc) * 1.1) + 1
-                await _set_cooldown(redis, session_base, sec)
-                await _bump_metric(redis, "flood_waits", 1)
-            else:
-                log.debug("factory_converse_reactor_failed", error=str(exc))
-        await _enqueue_next()
-        return {"status": "completed", "action": "reactor"}
+            log.warning("factory_converse_slot_failed", slot=cidx + k, error=str(exc))
 
-    reply_to_id: int | None = None
-    stance = random.choice(AMCHA_STANCES_HE)
-    typo_must_correct = random.random() < 0.15
-
-    sent_list: list[Any] = []
-    try:
-        async with async_telegram_client(session_base, parameters) as client:
-            if not await client.is_user_authorized():
-                await _mark_banned(redis, session_base)
-                await _bump_metric(redis, "bans", 1)
-                await _enqueue_next()
-                return {"status": "skipped", "reason": "unauthorized"}
-            await _ensure_factory_profile(client, redis, session_base)
-            ent = await client.get_entity(gid_int)
-            refs_newest_first: list[tuple[int, str]] = []
-            recent_texts: list[str] = []
-            try:
-                hist = await client.get_messages(ent, limit=RECENT_GROUP_MSG_CAP)
-                if hist:
-                    chronological = list(hist)
-                    chronological.reverse()
-                    refs_newest_first = _message_refs_newest_first(chronological)
-                    recent_texts = [t for _, t in reversed(refs_newest_first)]
-            except Exception as exc:
-                log.debug("factory_recent_messages_failed", group_id=gid_int, error=str(exc))
-            last_five_block = _last_five_prompt_block(refs_newest_first)
-            pick_pool = refs_newest_first[:5]
-            if pick_pool and random.random() < 0.6:
-                reply_to_id = random.choice(pick_pool)[0]
-            ref_by_id = {mid: txt for mid, txt in refs_newest_first}
-            anchor_preview: str | None = ref_by_id.get(reply_to_id) if reply_to_id is not None else None
-            if reply_to_id is not None and anchor_preview is None:
-                try:
-                    msgs = await client.get_messages(ent, ids=reply_to_id)
-                    m0 = msgs[0] if msgs else None
-                    if m0 is not None:
-                        anchor_preview = (getattr(m0, "message", None) or "")[:500]
-                except Exception:
-                    anchor_preview = None
-            news_opener = role == "opener" and opener_fresh_event
-            turn = await _generate_amcha_turn(
-                api_key,
-                topic,
-                openai_key,
-                role="opener" if role == "opener" else "replier",
-                stance_he=stance,
-                last_five_block=last_five_block,
-                typo_must_correct=typo_must_correct,
-                anchor_preview=anchor_preview,
-                recent_texts=recent_texts,
-                active_topic_line=active_topic_line,
-                opener_fresh_event=opener_fresh_event,
-                news_opener=news_opener,
-            )
-            use_md = False
-            primary_out = _finalize_primary_message(turn["primary_message"])
-            if news_opener:
-                url = await _maybe_tinyurl_shorten(str(turn.get("article_url") or ""))
-                primary_out, use_md = _format_opener_with_md_link(
-                    turn["primary_message"],
-                    url,
-                    str(turn.get("link_label") or ""),
-                )
-            async with client.action(ent, "typing"):
-                await asyncio.sleep(random.uniform(2.0, 8.0))
-            sent_list = await _send_amcha_messages(
-                client,
-                ent,
-                primary=primary_out,
-                needs_correction=bool(turn.get("needs_correction")),
-                correction=str(turn.get("correction_message") or ""),
-                reply_to_id=reply_to_id,
-                parse_mode="md" if use_md else None,
-            )
-            sent = sent_list[0] if sent_list else None
-            mid = getattr(sent, "id", None) if sent is not None else None
-            if mid is not None and role == "opener":
-                await _thread_ids_push(redis, gid_int, int(mid))
-            if role == "opener" and opener_fresh_event:
-                await _active_topic_write(redis, gid_int, primary_out)
-            if mid is not None and news_opener:
-                burst_carry = dict(carry)
-                burst_carry["burst_group_id"] = gid_int
-                burst_carry["burst_reply_to_msg_id"] = int(mid)
-                burst_carry["burst_count"] = random.randint(4, 8)
-                await _enqueue_task("swarm.community_factory.burst_reply_chain", burst_carry)
-        await _bump_metric(redis, "messages_sent", len(sent_list))
-    except ValueError as exc:
-        log.warning("factory_converse_creds_missing", error=str(exc))
-    except Exception as exc:
-        kind = classify_telethon_account_error(exc)
-        if kind == "ban":
-            await _mark_banned(redis, session_base)
-            await _bump_metric(redis, "bans", 1)
-        elif kind == "flood":
-            sec = int(flood_wait_seconds(exc) * 1.1) + 1
-            await _set_cooldown(redis, session_base, sec)
-            await _bump_metric(redis, "flood_waits", 1)
-        else:
-            log.warning("factory_converse_send_failed", error=str(exc))
-
+    await asyncio.gather(*[_safe_slot(k) for k in range(batch_size)])
     await _enqueue_next()
-    return {"status": "completed", "action": role}
+    return {"status": "completed", "batch_size": batch_size, "parallel_slots": batch_size}

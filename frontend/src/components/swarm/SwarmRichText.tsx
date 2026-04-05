@@ -1,6 +1,6 @@
 "use client";
 
-import DOMPurify from "isomorphic-dompurify";
+import isoPurify, { addHook as swarmHtmlAddHook } from "isomorphic-dompurify";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
@@ -10,8 +10,8 @@ let purifyLinkHookInstalled = false;
 function sanitizeSwarmHtml(raw: string): string {
   if (!purifyLinkHookInstalled) {
     purifyLinkHookInstalled = true;
-    DOMPurify.addHook("afterSanitizeAttributes", (node) => {
-      if (node.tagName === "A") {
+    swarmHtmlAddHook("afterSanitizeAttributes", (node) => {
+      if (node.tagName === "A" && node instanceof Element) {
         const href = node.getAttribute("href") ?? "";
         if (/^\s*javascript:/i.test(href) || /^\s*data:/i.test(href)) {
           node.removeAttribute("href");
@@ -22,7 +22,7 @@ function sanitizeSwarmHtml(raw: string): string {
       }
     });
   }
-  return DOMPurify.sanitize(raw, {
+  return isoPurify.sanitize(raw, {
     ALLOWED_TAGS: [
       "a",
       "b",
@@ -67,7 +67,7 @@ export function SwarmRichText({
     if (!html.trim()) return null;
     return (
       <div
-        className={`swarm-rich-html break-words [&_a]:text-cyan-400 [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-cyan-300 [&_p]:my-1 [&_p]:last:mb-0 [&_code]:rounded [&_code]:bg-slate-950/80 [&_code]:px-1 [&_code]:text-[0.9em] ${className}`}
+        className={`swarm-rich-html break-words [&_a]:text-cyan-400 [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-cyan-300 [&_p]:my-1 [&_p]:last:mb-0 [&_ul]:my-1 [&_ul]:list-disc [&_ul]:ps-4 [&_ol]:my-1 [&_ol]:list-decimal [&_ol]:ps-4 [&_code]:rounded [&_code]:bg-slate-950/80 [&_code]:px-1 [&_code]:text-[0.9em] ${className}`}
         dir="auto"
         // eslint-disable-next-line react/no-danger -- sanitized with DOMPurify
         dangerouslySetInnerHTML={{ __html: html }}
