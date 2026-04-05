@@ -53,6 +53,8 @@ from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any, Literal
 
+from nexus.services.recent_news_digest import append_article_link_to_text, telegram_image_filename_from_bytes
+
 log = logging.getLogger("hatan.israeli_swarm")
 _HEARTBEAT_REDIS_WARNED = False
 
@@ -475,36 +477,6 @@ def _strip_hashtags_and_cleanup(text: str) -> str:
     s = re.sub(r"#\S+", "", text or "")
     s = re.sub(r"\s{2,}", " ", s).strip()
     return s
-
-
-def _image_filename_from_bytes(data: bytes) -> str:
-    """Telegram/Telethon use the filename hint for MIME when uploading from memory."""
-    if len(data) >= 3 and data[:3] == b"\xff\xd8\xff":
-        return "photo.jpg"
-    if len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n":
-        return "photo.png"
-    if len(data) >= 6 and data[:6] in (b"GIF87a", b"GIF89a"):
-        return "photo.gif"
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "photo.webp"
-    return "photo.jpg"
-
-
-def _append_article_link(text: str, link: str, *, max_total: int = 1024) -> str:
-    """Append grounded article URL under the chat line (Telegram caption/message limit)."""
-    u = (link or "").strip()
-    if not u or not u.startswith(("http://", "https://")):
-        return (text or "").strip()[:max_total]
-    base = (text or "").strip()
-    if u in base:
-        return base[:max_total]
-    suffix = f"\n{u}"
-    if len(base) + len(suffix) <= max_total:
-        return (base + suffix)[:max_total]
-    room = max_total - len(suffix)
-    if room < 12:
-        return u[:max_total]
-    return (base[:room].rstrip() + suffix)[:max_total]
 
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
@@ -1156,7 +1128,11 @@ class CommunityEngine:
                     news_digest=news_digest_str,
                     anchor_headline=news_anchor_str,
                 )
-                message = _append_article_link(message, news_anchor_link)
+                message, msg_parse_mode = append_article_link_to_text(
+                    message,
+                    news_anchor_link,
+                    title=news_anchor_str or None,
+                )
                 log.info(
                     "[COMMUNITY] Bot %s role=%s → msg=%s reply_to=%s",
                     phone,
@@ -1175,6 +1151,7 @@ class CommunityEngine:
                     group_link,
                     reply_to=reply_to,
                     photo_bytes=photo_bytes,
+                    parse_mode=msg_parse_mode,
                 )
                 if sent:
                     any_sent = True
@@ -1206,6 +1183,7 @@ class CommunityEngine:
         *,
         reply_to: int | None = None,
         photo_bytes: bytes | None = None,
+        parse_mode: str | None = None,
     ) -> tuple[bool, int | None]:
         if not group_link:
             return False, None
@@ -1258,7 +1236,7 @@ class CommunityEngine:
                         async with client.action(target, "typing"):
                             await asyncio.sleep(random.uniform(2.0, 8.0))
                         if photo_bytes:
-                            fname = _image_filename_from_bytes(photo_bytes)
+                            fname = telegram_image_filename_from_bytes(photo_bytes)
                             bio = BytesIO(photo_bytes)
                             try:
                                 sent = await client.send_file(
@@ -1267,6 +1245,7 @@ class CommunityEngine:
                                     caption=message[:1024],
                                     reply_to=reply_to if reply_to else None,
                                     force_document=False,
+                                    parse_mode=parse_mode,
                                 )
                             except Exception as photo_exc:
                                 log.warning(
@@ -1274,11 +1253,17 @@ class CommunityEngine:
                                     photo_exc,
                                 )
                                 sent = await client.send_message(
-                                    target, message, reply_to=reply_to if reply_to else None
+                                    target,
+                                    message,
+                                    reply_to=reply_to if reply_to else None,
+                                    parse_mode=parse_mode,
                                 )
                         else:
                             sent = await client.send_message(
-                                target, message, reply_to=reply_to if reply_to else None
+                                target,
+                                message,
+                                reply_to=reply_to if reply_to else None,
+                                parse_mode=parse_mode,
                             )
                         mid_raw = getattr(sent, "id", None)
                         mid = int(mid_raw) if mid_raw is not None else None

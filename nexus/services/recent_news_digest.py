@@ -6,8 +6,10 @@ No extra dependencies beyond httpx + stdlib XML.
 
 from __future__ import annotations
 
+import html as html_module
 import os
 import random
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -18,6 +20,15 @@ import httpx
 import structlog
 
 log = structlog.get_logger(__name__)
+
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+}
 
 # Hebrew / Israel–oriented feeds (public RSS)
 DEFAULT_RSS_FEEDS: tuple[tuple[str, str], ...] = (
@@ -97,7 +108,11 @@ def _rss_items_from_xml(xml_text: str, source_label: str) -> list[NewsItem]:
         link_el = _child_by_local(item, "link")
         pub_el = _child_by_local(item, "pubDate", "published", "updated")
         title = (title_el.text or "").strip() if title_el is not None and title_el.text else ""
-        link = (link_el.text or "").strip() if link_el is not None and link_el.text else ""
+        link = ""
+        if link_el is not None:
+            link = (link_el.text or "").strip()
+            if not link:
+                link = (link_el.get("href") or "").strip()
         pub_raw = (pub_el.text or "").strip() if pub_el is not None and pub_el.text else ""
         if not title:
             continue
@@ -236,7 +251,7 @@ async def build_tick_news_bundle(
     """
     Pull recent headlines; prefer GNews rows (often include ``image``) when key is set.
     """
-    async with httpx.AsyncClient(headers={"User-Agent": "NexusOrchestrator/1.0"}) as client:
+    async with httpx.AsyncClient(headers=_BROWSER_HEADERS) as client:
         g_items = await _fetch_gnews_items(client, max_items=10)
         r_items = await _fetch_rss_digest(client, max_age_hours=max_age_hours, max_lines=digest_lines)
 
@@ -264,19 +279,116 @@ async def build_tick_news_bundle(
         )
 
     anchor = random.choice(pick_pool)
+    img_url = anchor.image_url
+    if not img_url and (anchor.link or "").strip().startswith(("http://", "https://")):
+        try:
+            async with httpx.AsyncClient(
+                timeout=14.0, follow_redirects=True, headers=_BROWSER_HEADERS
+            ) as og_client:
+                img_url = await _try_resolve_og_image_url(og_client, anchor.link.strip())
+        except Exception as exc:
+            log.debug("og_image_resolve_failed", error=str(exc))
+
     return TickNewsBundle(
         digest_text=digest_text,
         anchor_title=anchor.title,
         anchor_link=anchor.link,
-        image_url=anchor.image_url,
+        image_url=img_url,
     )
+
+
+def telegram_image_filename_from_bytes(data: bytes) -> str:
+    """Filename hint for Telethon ``send_file`` when uploading from memory."""
+    if len(data) >= 3 and data[:3] == b"\xff\xd8\xff":
+        return "photo.jpg"
+    if len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "photo.png"
+    if len(data) >= 6 and data[:6] in (b"GIF87a", b"GIF89a"):
+        return "photo.gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "photo.webp"
+    return "photo.jpg"
+
+
+def append_article_link_to_text(
+    text: str,
+    link: str,
+    *,
+    title: str | None = None,
+    max_total: int = 1024,
+) -> tuple[str, str | None]:
+    """
+    Append article under the chat line (Telegram message/caption limit).
+
+    When ``title`` is non-empty, formats the link as Telegram HTML so the group
+    sees a short clickable headline instead of a raw URL. Returns
+    ``(message, parse_mode)`` where ``parse_mode`` is ``\"html\"`` or ``None``.
+    """
+    u = (link or "").strip()
+    if not u or not u.startswith(("http://", "https://")):
+        return (text or "").strip()[:max_total], None
+    base = (text or "").strip()
+    if u in base:
+        return base[:max_total], None
+
+    label = (title or "").strip()
+    if label:
+        href_esc = html_module.escape(u, quote=True)
+        label_esc = html_module.escape(label)
+        suffix = f'\n<a href="{href_esc}">{label_esc}</a>'
+        b = base
+        while True:
+            safe_b = html_module.escape(b)
+            piece = f"{safe_b}{suffix}" if safe_b else suffix.lstrip("\n")
+            if len(piece) <= max_total:
+                return piece[:max_total], "html"
+            if not b:
+                break
+            b = b[:-1]
+
+    suffix = f"\n{u}"
+    if len(base) + len(suffix) <= max_total:
+        return (base + suffix)[:max_total], None
+    room = max_total - len(suffix)
+    if room < 12:
+        return u[:max_total], None
+    return (base[:room].rstrip() + suffix)[:max_total], None
+
+
+_OG_IMAGE_PATTERNS = (
+    r'property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']',
+    r'content=["\']([^"\']+)["\'][^>]*property=["\']og:image["\']',
+    r'name=["\']twitter:image["\'][^>]*content=["\']([^"\']+)["\']',
+)
+
+
+async def _try_resolve_og_image_url(client: httpx.AsyncClient, page_url: str) -> str | None:
+    """Best-effort og/twitter image from article HTML (RSS often has no per-item image)."""
+    try:
+        r = await client.get(page_url)
+        r.raise_for_status()
+    except Exception:
+        return None
+    ct = (r.headers.get("content-type") or "").lower()
+    if "html" not in ct and "xml" not in ct:
+        return None
+    body = r.text[:500_000]
+    for pat in _OG_IMAGE_PATTERNS:
+        m = re.search(pat, body, flags=re.I)
+        if m:
+            u = html_module.unescape(m.group(1)).strip()
+            if u.startswith(("http://", "https://")):
+                return u
+    return None
 
 
 async def download_image_bytes(url: str, *, max_bytes: int = 3_500_000) -> bytes | None:
     if not url or not url.startswith(("http://", "https://")):
         return None
     try:
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=20.0, follow_redirects=True, headers=_BROWSER_HEADERS
+        ) as client:
             r = await client.get(url)
             r.raise_for_status()
             data = r.content

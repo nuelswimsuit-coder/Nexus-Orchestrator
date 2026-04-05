@@ -24,7 +24,13 @@ from nexus.modules.community_vibe import (
     compose_chatter_line,
     refresh_emerging_topic,
 )
-from nexus.services.recent_news_digest import TickNewsBundle, build_tick_news_bundle, download_image_bytes
+from nexus.services.recent_news_digest import (
+    TickNewsBundle,
+    append_article_link_to_text,
+    build_tick_news_bundle,
+    download_image_bytes,
+    telegram_image_filename_from_bytes,
+)
 from nexus.services.tg_message_text import telethon_display_text
 from nexus.worker.task_registry import registry
 
@@ -394,6 +400,11 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                     anchor_headline=ah,
                 )
                 text = str(line.get("text", "")).strip()
+                text, link_parse_mode = append_article_link_to_text(
+                    text,
+                    (news_bundle.anchor_link or "").strip(),
+                    title=(ah or None),
+                )
                 reply_id = line.get("reply_to_id")
                 if reply_id is not None:
                     try:
@@ -407,26 +418,48 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                 message_id: int | None = None
                 if text and action == "tick":
                     photo_bytes: bytes | None = None
-                    if turn_i == 0 and news_bundle.image_url and random.random() < 0.55:
+                    if turn_i == 0 and news_bundle.image_url:
                         photo_bytes = await download_image_bytes(news_bundle.image_url)
+                        if photo_bytes is None:
+                            log.debug(
+                                "warmer_image_download_empty",
+                                url=(news_bundle.image_url or "")[:160],
+                            )
                     async with TelegramClient(session_path, api_id, api_hash) as poster:
                         post_entity = await poster.get_entity(int(group_id))
                         try:
                             if photo_bytes:
-                                sent = await poster.send_file(
-                                    post_entity,
-                                    file=BytesIO(photo_bytes),
-                                    caption=text[:1024],
-                                    reply_to=reply_id if reply_id else None,
-                                )
-                                sent_media = True
+                                fname = telegram_image_filename_from_bytes(photo_bytes)
+                                bio = BytesIO(photo_bytes)
+                                try:
+                                    sent = await poster.send_file(
+                                        post_entity,
+                                        file=(fname, bio),
+                                        caption=text[:1024],
+                                        reply_to=reply_id if reply_id else None,
+                                        force_document=False,
+                                        parse_mode=link_parse_mode,
+                                    )
+                                    sent_media = True
+                                except Exception as photo_exc:
+                                    log.warning("warmer_send_file_failed", error=str(photo_exc))
+                                    sent = await poster.send_message(
+                                        post_entity,
+                                        text,
+                                        reply_to=reply_id if reply_id else None,
+                                        parse_mode=link_parse_mode,
+                                    )
+                                    message_id = int(sent.id) if sent else None
+                                else:
+                                    message_id = int(sent.id) if sent else None
                             else:
                                 sent = await poster.send_message(
                                     post_entity,
                                     text,
                                     reply_to=reply_id if reply_id else None,
+                                    parse_mode=link_parse_mode,
                                 )
-                            message_id = int(sent.id) if sent else None
+                                message_id = int(sent.id) if sent else None
                         except Exception as exc:
                             log.warning("warmer_send_failed", error=str(exc))
                             try:
@@ -434,6 +467,7 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                                     post_entity,
                                     text,
                                     reply_to=reply_id if reply_id else None,
+                                    parse_mode=link_parse_mode,
                                 )
                                 message_id = int(sent.id) if sent else None
                             except Exception as exc2:
