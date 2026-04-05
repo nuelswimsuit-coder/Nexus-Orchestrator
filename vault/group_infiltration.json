@@ -1,4 +1,35 @@
 {
-  "updated_at": "2026-03-26T00:00:00Z",
-  "groups": []
+  "updated_at": "2026-04-05T01:11:38Z",
+  "groups": [
+    {
+      "id": "g1",
+      "name_he": "קהילת משקיעים תל אביב",
+      "is_private": true,
+      "in_search": true,
+      "joined_at": "2026-03-22T01:11:36Z",
+      "telegram_link": null,
+      "force_searched_at": "2026-04-05T01:11:36Z",
+      "source": "force_search_upsert"
+    },
+    {
+      "id": "g2",
+      "name_he": "ערוץ הזדמנויות נדל״ן",
+      "is_private": true,
+      "in_search": true,
+      "joined_at": "2026-03-22T01:11:37Z",
+      "telegram_link": null,
+      "force_searched_at": "2026-04-05T01:11:37Z",
+      "source": "force_search_upsert"
+    },
+    {
+      "id": "g3",
+      "name_he": "מועדון קריפטו שקט",
+      "is_private": true,
+      "in_search": true,
+      "joined_at": "2026-03-22T01:11:38Z",
+      "telegram_link": null,
+      "force_searched_at": "2026-04-05T01:11:38Z",
+      "source": "force_search_upsert"
+    }
+  ]
 }

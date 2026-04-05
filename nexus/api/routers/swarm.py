@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import pathlib
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import structlog
@@ -365,6 +366,32 @@ _ISRAELI_STATUS_KEY = "nexus:swarm:israeli:status"
 _ISRAELI_LAST_ENGINE_ERROR_KEY = "nexus:swarm:israeli:last_engine_error"
 
 
+async def _append_swarm_feed_line(
+    redis: Any,
+    message: str,
+    *,
+    topic: str = "api",
+    engine: str = "nexus_api",
+) -> None:
+    """Visible in GET /live-feed recent_messages (phone empty → no fake bot row)."""
+    payload = json.dumps(
+        {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "phone": "",
+            "message": message,
+            "topic": topic,
+            "engine": engine,
+        },
+        ensure_ascii=False,
+    )
+    await redis.rpush(_ISRAELI_EVENTS_KEY, payload)
+    await redis.ltrim(_ISRAELI_EVENTS_KEY, -500, -1)
+    try:
+        await redis.publish("nexus:swarm:events", payload)
+    except Exception:
+        pass
+
+
 # #region agent log
 def _dbg_swarm43(location: str, message: str, data: dict[str, Any], hypothesis_id: str) -> None:
     import time as _t
@@ -547,6 +574,30 @@ async def start_swarm(body: SwarmStartBody, redis: RedisDep) -> dict[str, Any]:
     if body.target_group:
         await redis.set("nexus:swarm:israeli:target_group", body.target_group)
     log.info("swarm_start_requested", target_group=body.target_group or "(env)")
+
+    redis_ping = "לא ידוע"
+    try:
+        if await redis.ping():
+            redis_ping = "OK"
+        else:
+            redis_ping = "לא תקין"
+    except Exception as exc:
+        redis_ping = f"שגיאה: {type(exc).__name__}"
+
+    tg = (body.target_group or "").strip()
+    tg_preview = (tg[:48] + "…") if len(tg) > 48 else tg
+    if tg_preview:
+        start_line = (
+            f"[דשבורד] הנחיל הופעל — סטטוס Redis=running · PING={redis_ping} · "
+            f"יעד נשמר: {tg_preview}"
+        )
+    else:
+        start_line = (
+            f"[דשבורד] הנחיל הופעל — סטטוס Redis=running · PING={redis_ping} · "
+            "יעד קבוצה: (לא נשלח בבקשה — המנוע יקרא מ-SWARM_GROUP_LINK אם קיים)"
+        )
+    await _append_swarm_feed_line(redis, start_line, topic="api_start")
+
     # #region agent log
     _dbg_swarm43(
         "swarm.py:start_swarm",
@@ -565,6 +616,19 @@ async def stop_swarm(redis: RedisDep) -> dict[str, Any]:
     """
     await redis.set(_ISRAELI_STATUS_KEY, "stopped")
     log.info("swarm_stop_requested")
+    redis_ping = "לא ידוע"
+    try:
+        if await redis.ping():
+            redis_ping = "OK"
+        else:
+            redis_ping = "לא תקין"
+    except Exception as exc:
+        redis_ping = f"שגיאה: {type(exc).__name__}"
+    await _append_swarm_feed_line(
+        redis,
+        f"[דשבורד] הנחיל הופסק — סטטוס Redis=stopped · PING={redis_ping}",
+        topic="api_stop",
+    )
     return {"ok": True, "status": "stopped"}
 
 

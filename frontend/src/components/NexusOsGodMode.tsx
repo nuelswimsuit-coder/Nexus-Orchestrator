@@ -6914,6 +6914,7 @@ function LiveSwarmView() {
       if (data.ok) {
         setSwarmRunning(true);
         setStatusMsg("✅ הנחיל הופעל בהצלחה!");
+        void fetchFeed();
       } else {
         setStatusMsg(`❌ שגיאה: ${data.detail || "unknown"}`);
       }
@@ -6929,6 +6930,7 @@ function LiveSwarmView() {
       await fetch(`${API_BASE}/api/swarm/stop`, { method: "POST" });
       setSwarmRunning(false);
       setStatusMsg("⏹ הנחיל הופסק");
+      void fetchFeed();
     } catch {
       setStatusMsg("❌ שגיאה בעצירת הנחיל");
     }
