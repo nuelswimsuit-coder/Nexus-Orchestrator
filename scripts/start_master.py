@@ -670,6 +670,24 @@ async def run() -> None:
         asyncio.create_task(_swarm_sched.run_loop(60.0), name="swarm-social-scheduler")
         log.info("swarm_social_scheduler_registered", interval_s=60)
 
+    # Group Factory — private warm-up → public t.me indexing probes (vault state + Redis UI)
+    if os.getenv("NEXUS_GROUP_FACTORY_ENABLED", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        try:
+            from src.nexus.services.group_factory import GroupFactoryService
+
+            asyncio.create_task(
+                GroupFactoryService(dispatcher._arq).run_loop(300.0),
+                name="group-factory",
+            )
+            log.info("group_factory_service_registered", interval_s=300)
+        except Exception as exc:
+            log.warning("group_factory_service_failed", error=str(exc))
+
     # Also update the docstring
     log.info(
         "startup_sequence",

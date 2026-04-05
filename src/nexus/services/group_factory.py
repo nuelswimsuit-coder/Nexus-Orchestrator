@@ -30,7 +30,7 @@ from typing import Any
 import httpx
 import structlog
 
-from nexus.services.swarm_social_scheduler import SWARM_GROUPS_KEY
+from nexus.master.services.swarm_social_scheduler import SWARM_GROUPS_KEY
 from nexus.shared.db_util import TELEFIX_DB_PATH
 
 log = structlog.get_logger(__name__)

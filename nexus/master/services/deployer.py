@@ -49,7 +49,6 @@ import io
 import json
 import os
 import socket
-import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,25 +88,6 @@ DeployStep = Literal[
 ]
 
 DeployStatus = Literal["running", "done", "error"]
-
-# region agent log
-def _agent_dbg_sync(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    try:
-        payload = {
-            "sessionId": "8093f9",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with (NEXUS_ROOT / "debug-8093f9.log").open("a", encoding="utf-8") as _af:
-            _af.write(json.dumps(payload, default=str) + "\n")
-    except Exception:
-        pass
-
-
-# endregion
 
 # Human-readable labels shown in the dashboard status ticker
 STEP_LABELS: dict[str, str] = {
@@ -500,21 +480,6 @@ class DeployerService:
                 _ckw2["password"] = ssh_pass
             if ssh_key and os.path.isfile(ssh_key):
                 _ckw2["key_filename"] = ssh_key
-            # region agent log
-            _agent_dbg_sync(
-                "H4",
-                "deployer.py:sync_to_worker:pre_connect",
-                "ssh_connect_params",
-                {
-                    "worker_ip": ip,
-                    "ssh_user": ssh_user,
-                    "paramiko_timeout": _ckw2.get("timeout"),
-                    "banner_timeout": _ckw2.get("banner_timeout"),
-                    "has_password": bool(ssh_pass),
-                    "key_file_configured": bool(ssh_key),
-                    "key_file_exists": bool(ssh_key and os.path.isfile(ssh_key)),
-                },
-            )
 
             def _tcp_probe_22() -> dict:
                 try:
@@ -527,63 +492,19 @@ class DeployerService:
                     return {"tcp_ok": False, "errno": None, "err": str(e)[:240]}
 
             _probe = await loop.run_in_executor(None, _tcp_probe_22)
-            _agent_dbg_sync(
-                "H1",
-                "deployer.py:sync_to_worker:tcp_probe",
-                "port_22_reachability",
-                {"worker_ip": ip, **_probe},
-            )
             if not _probe.get("tcp_ok"):
                 err_tail = str(_probe.get("err") or "connection failed")[:200]
                 detail = (
                     f"No TCP route to {ip}:22 ({err_tail}). "
                     "Check VPN, same LAN, firewall, WORKER_IP, and that sshd is running on the worker."
                 )
-                _agent_dbg_sync(
-                    "H1",
-                    "deployer.py:sync_to_worker:tcp_unreachable_abort",
-                    "skipping_paramiko_after_tcp_failure",
-                    {"worker_ip": ip, "detail": detail[:300]},
-                )
                 await self._emit(node_id, "error", "error", detail)
                 return f"error: {detail}"
 
-            def _paramiko_connect() -> None:
-                _t0 = time.monotonic()
-                _agent_dbg_sync(
-                    "H2",
-                    "deployer.py:sync_to_worker:paramiko_start",
-                    "paramiko_connect_begin",
-                    {"worker_ip": ip, "ssh_user": ssh_user},
-                )
-                try:
-                    ssh.connect(**_ckw2)
-                except Exception as _e:
-                    _agent_dbg_sync(
-                        "H2",
-                        "deployer.py:sync_to_worker:paramiko_exc",
-                        "paramiko_connect_failed",
-                        {
-                            "worker_ip": ip,
-                            "elapsed_ms": int((time.monotonic() - _t0) * 1000),
-                            "exc_type": type(_e).__name__,
-                            "exc_module": getattr(type(_e), "__module__", ""),
-                            "exc_str": str(_e)[:500],
-                        },
-                    )
-                    raise
-                _agent_dbg_sync(
-                    "H5",
-                    "deployer.py:sync_to_worker:paramiko_ok",
-                    "paramiko_connect_ok",
-                    {
-                        "worker_ip": ip,
-                        "elapsed_ms": int((time.monotonic() - _t0) * 1000),
-                    },
-                )
-
-            await loop.run_in_executor(None, _paramiko_connect)
-            # endregion
+            await loop.run_in_executor(
+                None,
+                lambda: ssh.connect(**_ckw2),
+            )
             _t2 = ssh.get_transport()
             # Apply KexAlgorithms preference after transport is established
             _harden_ssh_transport(_t2)
