@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import useSWR from "swr";
 import {
@@ -6851,6 +6851,30 @@ interface SwarmFeedData {
   last_engine_error?: string;
   /** True when API uses in-memory Redis (degraded) — not the same broker as israeli_swarm. */
   redis_degraded?: boolean;
+  /** Unix seconds (UTC) when israeli_swarm last finished a cycle (Redis heartbeat). */
+  engine_last_seen_ts?: number;
+}
+
+function _formatEngineHeartbeatLine(
+  ts: number | undefined,
+  swarmRunning: boolean,
+): { text: string; stale: boolean } {
+  if (!swarmRunning) return { text: "", stale: false };
+  const now = Date.now() / 1000;
+  if (ts === undefined || ts <= 0) {
+    return {
+      text: "מנוע: אין דופק ב-Redis — אם הנחיל מסומן כרץ, ודא ש-israeli-swarm רץ ומחובר לאותו Redis כמו ה-API.",
+      stale: true,
+    };
+  }
+  const age = now - ts;
+  if (age < 0) return { text: "מנוע: דופק עודכן כרגע", stale: false };
+  if (age < 60) return { text: `מנוע: פעיל — דופק לפני ${Math.floor(age)} שניות`, stale: age > 45 };
+  if (age < 3600) {
+    const stale = age > 600;
+    return { text: `מנוע: דופק לפני ${Math.floor(age / 60)} דקות`, stale };
+  }
+  return { text: `מנוע: דופק לפני ${Math.floor(age / 3600)} שעות`, stale: true };
 }
 
 function SwarmBotCard({ bot }: { bot: SwarmBot }) {
@@ -6901,9 +6925,18 @@ function LiveSwarmView() {
   const [feed, setFeed] = useState<SwarmFeedData | null>(null);
   const [swarmRunning, setSwarmRunning] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [startCooldown, setStartCooldown] = useState(false);
+  const startCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startInFlightRef = useRef(false);
   const [targetGroup, setTargetGroup] = useState("");
   const [statusMsg, setStatusMsg] = useState("");
   const [swarmTab, setSwarmTab] = useState<"bots" | "feed">("bots");
+
+  useEffect(() => {
+    return () => {
+      if (startCooldownTimerRef.current) clearTimeout(startCooldownTimerRef.current);
+    };
+  }, []);
 
   const fetchFeed = useCallback(async () => {
     try {
@@ -6928,6 +6961,8 @@ function LiveSwarmView() {
       setStatusMsg("⚠️ הכנס קישור לקבוצה");
       return;
     }
+    if (startInFlightRef.current) return;
+    startInFlightRef.current = true;
     setStarting(true);
     setStatusMsg("מפעיל נחיל...");
     try {
@@ -6953,6 +6988,12 @@ function LiveSwarmView() {
       if (data.ok) {
         setSwarmRunning(true);
         setStatusMsg("✅ הנחיל הופעל בהצלחה!");
+        if (startCooldownTimerRef.current) clearTimeout(startCooldownTimerRef.current);
+        setStartCooldown(true);
+        startCooldownTimerRef.current = setTimeout(() => {
+          setStartCooldown(false);
+          startCooldownTimerRef.current = null;
+        }, 2500);
         void fetchFeed();
       } else {
         setStatusMsg(`❌ שגיאה: ${typeof data.detail === "string" ? data.detail : "unknown"}`);
@@ -6961,6 +7002,7 @@ function LiveSwarmView() {
       setStatusMsg(`❌ שגיאת רשת: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setStarting(false);
+      startInFlightRef.current = false;
     }
   }
 
@@ -6986,11 +7028,12 @@ function LiveSwarmView() {
     : "—";
 
   const recentMessages = feed?.recent_messages ?? [];
+  const engineHb = _formatEngineHeartbeatLine(feed?.engine_last_seen_ts, swarmRunning);
 
   return (
     <div className="space-y-6" dir="rtl">
       {feed?.redis_degraded && (
-        <div className="rounded-2xl border border-rose-500/50 bg-rose-950/50 px-4 py-3 text-[12px] text-rose-100/95 leading-relaxed">
+        <div className="sticky top-0 z-20 rounded-2xl border border-rose-500/50 bg-rose-950/50 px-4 py-3 text-[12px] text-rose-100/95 leading-relaxed shadow-lg shadow-black/20 backdrop-blur-sm">
           <span className="font-black text-rose-400 uppercase tracking-widest text-[10px] block mb-1">
             Redis — מצב degraded (זיכרון מקומי)
           </span>
@@ -7011,9 +7054,20 @@ function LiveSwarmView() {
           </p>
         </div>
         {swarmRunning && (
-          <div className="mr-auto flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl">
-            <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
-            <span className="text-[11px] font-black text-emerald-400 uppercase tracking-widest">LIVE</span>
+          <div className="mr-auto flex flex-col items-end gap-1">
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl">
+              <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
+              <span className="text-[11px] font-black text-emerald-400 uppercase tracking-widest">LIVE</span>
+            </div>
+            {engineHb.text && (
+              <div
+                className={`max-w-[min(100%,22rem)] text-[10px] font-bold text-right leading-snug ${
+                  engineHb.stale ? "text-amber-400/95" : "text-slate-500"
+                }`}
+              >
+                {engineHb.text}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -7065,10 +7119,10 @@ function LiveSwarmView() {
             <button
               type="button"
               onClick={handleStartSwarm}
-              disabled={starting}
+              disabled={starting || startCooldown}
               className="px-6 py-2.5 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-black text-sm rounded-xl transition shadow-[0_0_20px_rgba(168,85,247,0.4)] disabled:opacity-50 disabled:cursor-not-allowed uppercase tracking-wider"
             >
-              {starting ? "מפעיל..." : "🚀 Start Swarm"}
+              {starting ? "מפעיל..." : startCooldown ? "המתן… (2.5ש׳)" : "🚀 Start Swarm"}
             </button>
           ) : (
             <button
