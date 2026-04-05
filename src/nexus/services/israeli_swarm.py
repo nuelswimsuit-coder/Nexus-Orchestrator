@@ -51,7 +51,7 @@ import time
 import threading
 import zipfile
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 log = logging.getLogger("hatan.israeli_swarm")
 _HEARTBEAT_REDIS_WARNED = False
@@ -113,6 +113,55 @@ _ISRAELI_EVENTS_KEY = "nexus:swarm:israeli:events"
 _REDIS_POKE_KEY = "nexus:swarm:israeli:poke"
 _ISRAELI_HEARTBEAT_KEY = "nexus:swarm:israeli:heartbeat"
 _ISRAELI_ENGINE_PID_KEY = "nexus:swarm:israeli:engine_pid"
+_ISRAELI_SCHEDULE_KEY = "nexus:swarm:israeli:schedule"
+
+
+def _write_israeli_schedule_sync(payload: dict[str, Any]) -> None:
+    """Dashboard: phase cycle|waiting, next_cycle_at, delay_total_s, cycle_started_at."""
+    try:
+        import redis as redis_sync
+
+        body = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            **payload,
+        }
+        r = redis_sync.Redis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            r.set(
+                _ISRAELI_SCHEDULE_KEY,
+                json.dumps(body, ensure_ascii=False),
+                ex=7200,
+            )
+        finally:
+            r.close()
+    except Exception:
+        pass
+
+
+def _rpush_israeli_attempt_sync(phone: str, display_name: str) -> None:
+    try:
+        import redis as redis_sync
+
+        payload = json.dumps(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "phone": phone,
+                "topic": "attempt",
+                "message": "מנסה לשלוח הודעה…",
+                "display_name": display_name,
+                "engine": "israeli_swarm",
+            },
+            ensure_ascii=False,
+        )
+        r = redis_sync.Redis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            r.rpush(_ISRAELI_EVENTS_KEY, payload)
+            r.ltrim(_ISRAELI_EVENTS_KEY, -500, -1)
+            r.publish("nexus:swarm:events", payload)
+        finally:
+            r.close()
+    except Exception:
+        pass
 
 
 def _touch_engine_heartbeat_sync() -> None:
@@ -409,17 +458,49 @@ _NEWS_ANGLES = [
 ]
 
 _FALLBACK_CHAT_LINES = [
-    "נשמע לי מוגזם קצת, יש לכם מקור על זה?",
-    "אני חושב שצריך לחכות לעוד פרטים לפני שמספקים.",
-    "מסכים חלקית — תלוי איך זה יתפתח בשבוע הקרוב.",
-    "מישהו ראה את זה גם בכתבה אחרת או שזה רק כאן?",
-    "לא בטוח שזה משקף את המציאות, נראה לי שחסר קונטקסט.",
-    "וואי, אם זה נכון זה משנה את התמונה לגמרי.",
-    "בעיקרון זה מה שדיברו עליו אתמול בתכנית, לא?",
-    "אני פחות מכיר את הנושא — מישהו יכול לפרק את זה בקצרה?",
-    "יש פה כמה נקודות טובות, אבל גם נקודה שמפריעה לי.",
-    "תכל'ס, מה זה אומר בשבילנו בפועל?",
+    "וואלה הזייה",
+    "אמאלה רצח",
+    "אין מצב אחי",
+    "פיגוע פלילי",
+    "מטורף מה שקורה",
+    "תכלס וואלה",
+    "שמעתם כבר?",
+    "זה לא נורמלי",
+    "אני בלי מילים",
+    "הם באמת רציניים?",
 ]
+
+ISRAELI_NEWS_SYSTEM_PROMPT = (
+    "You are an Israeli Telegram user in a local news/politics group. \n"
+    "RULES:\n"
+    "1. Write in extremely casual, modern colloquial Hebrew slang (e.g., 'אמאלה', 'הזייה', 'אין מצב', 'אחי', 'וואלה', 'פיגוע פלילי'). \n"
+    "2. NEVER use hashtags (#). Real people don't use them in chats.\n"
+    "3. Keep it short (1-10 words). People type fast on phones.\n"
+    "4. Occasional minor Hebrew typos are encouraged to simulate human typing.\n"
+    "5. Do not sound poetic, formal, or like a translated article. Express cynical, stressed, or typical Israeli attitudes towards news."
+)
+
+ISRAELI_DISPLAY_NAMES_LATIN = [
+    "Yossi",
+    "Avi C.",
+    "Rotem",
+    "Shir",
+    "Kobi_88",
+    "David",
+    "Noam",
+    "Tomer",
+    "Lior_77",
+    "Maya S.",
+    "Guy",
+    "Dana",
+    "Itai",
+    "Omer",
+    "Nir",
+]
+
+_REDIS_SWARM_PROFILE_GATE = "nexus:swarm:israeli:profile_gate"
+_THREAD_ID_CAP = 5
+_THREAD_REACTION_EMOJIS = ["👍", "🤦‍♂️", "🤬"]
 
 
 def _swarm_identity_path(stem: str) -> pathlib.Path:
@@ -488,6 +569,147 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
         return json.loads(t[i:j])
     except Exception:
         return None
+
+
+def _redis_thread_key(group_link: str) -> str:
+    d = hashlib.sha256(group_link.strip().encode("utf-8")).hexdigest()[:16]
+    return f"nexus:swarm:israeli:thread:{d}"
+
+
+def _cap_hebrew_words(text: str, max_words: int = 10) -> str:
+    parts = (text or "").split()
+    if len(parts) <= max_words:
+        return (text or "").strip()
+    return " ".join(parts[:max_words])
+
+
+def _finalize_swarm_llm_line(text: str) -> str:
+    return _cap_hebrew_words(_strip_hashtags_and_cleanup(text), 10)
+
+
+def _display_name_is_non_israeli(first: str, last: str) -> bool:
+    combined = f"{first or ''} {last or ''}".strip()
+    if not combined:
+        return True
+    if re.search(r"[\u0590-\u05FF]", combined):
+        return False
+    latin = re.sub(r"[^A-Za-z]", "", combined)
+    if len(latin) < 2:
+        return False
+    return True
+
+
+def _anchor_from_transcript(transcript: str, msg_id: int) -> str | None:
+    prefix = f"[{int(msg_id)}]"
+    for line in (transcript or "").splitlines():
+        s = line.strip()
+        if s.startswith(prefix):
+            return s[len(prefix) :].strip()[:500]
+    return None
+
+
+def _roll_thread_role(has_thread: bool) -> Literal["lurk", "opener", "replier", "reactor"]:
+    if random.random() < 0.10:
+        return "lurk"
+    if not has_thread:
+        return "opener"
+    u = random.random()
+    if u < 0.35:
+        return "opener"
+    if u < 0.75:
+        return "replier"
+    return "reactor"
+
+
+async def _async_thread_ids_read(group_link: str) -> list[int]:
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import]
+    except Exception:
+        return []
+    r = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+    try:
+        raw = await r.get(_redis_thread_key(group_link))
+        if not raw:
+            return []
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            return []
+        out: list[int] = []
+        for x in data:
+            try:
+                out.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        return out
+    except Exception:
+        return []
+    finally:
+        await r.aclose()
+
+
+async def _async_thread_ids_push(group_link: str, msg_id: int) -> None:
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import]
+    except Exception:
+        return
+    r = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+    try:
+        key = _redis_thread_key(group_link)
+        raw = await r.get(key)
+        cur: list[int] = []
+        if raw:
+            try:
+                data = json.loads(raw)
+                if isinstance(data, list):
+                    for x in data:
+                        try:
+                            cur.append(int(x))
+                        except (TypeError, ValueError):
+                            pass
+            except Exception:
+                pass
+        cur.append(int(msg_id))
+        cur = cur[-_THREAD_ID_CAP:]
+        await r.set(key, json.dumps(cur, ensure_ascii=False))
+    except Exception:
+        pass
+    finally:
+        await r.aclose()
+
+
+async def _ensure_swarm_profile_ascii_fix(client: Any, stem: str) -> None:
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import]
+
+        r = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            if await r.sismember(_REDIS_SWARM_PROFILE_GATE, stem):
+                return
+        finally:
+            await r.aclose()
+    except Exception:
+        pass
+    try:
+        me = await client.get_me()
+        fn = str(getattr(me, "first_name", None) or "")
+        ln = str(getattr(me, "last_name", None) or "")
+        if _display_name_is_non_israeli(fn, ln):
+            from telethon.tl.functions.account import UpdateProfileRequest  # type: ignore[import]
+
+            label = random.choice(ISRAELI_DISPLAY_NAMES_LATIN)
+            await client(UpdateProfileRequest(first_name=label[:64], last_name=""))
+    except Exception as exc:
+        log.debug("[COMMUNITY] On-the-fly profile fix skipped: %s", exc)
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import]
+
+        r2 = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            await r2.sadd(_REDIS_SWARM_PROFILE_GATE, stem)
+        finally:
+            await r2.aclose()
+    except Exception:
+        pass
 
 
 def _download_file_sync(url: str, dest: pathlib.Path) -> bool:
@@ -607,40 +829,42 @@ async def _generate_community_message(
     meta_newest_first: list[dict[str, Any]],
     speaker_first: str,
     speaker_last: str,
+    *,
+    role: Literal["opener", "replier"] = "opener",
+    anchor_preview: str | None = None,
+    forced_reply_to: int | None = None,
 ) -> tuple[str, int | None]:
-    """
-    One short Hebrew group line; optional reply_to_id must appear in meta.
-    """
-    allowed_ids = {int(x["id"]) for x in meta_newest_first if x.get("id") is not None}
+    """Short colloquial Hebrew line; reply_to is forced for replier role (Redis thread)."""
     angle = random.choice(_NEWS_ANGLES)
     display = f"{speaker_first} {speaker_last}".strip()
+    reply_out: int | None = forced_reply_to if role == "replier" and forced_reply_to else None
 
     if not _GEMINI_KEY:
         text = random.choice(_FALLBACK_CHAT_LINES)
-        reply_id: int | None = None
-        if meta_newest_first and random.random() < 0.65:
-            reply_id = int(meta_newest_first[0]["id"])
-        return _strip_hashtags_and_cleanup(text), reply_id
+        return _finalize_swarm_llm_line(text), reply_out
 
-    sys_prompt = (
-        "אתה משתתף בקבוצת טלגרם ישראלית על חדשות ואקטואליה. "
-        "כתוב הודעה אחת קצרה (עד 2–3 משפטים) בעברית מדוברת, טבעית, כמו בני אדם — "
-        "אפשר להסכים, להתווכח, לשאול שאלת המשך, או להוסיף פרט/ספק. "
-        "חובה: להתייחס לתוכן מהצ'אט האחרון כשיש (לא לדבר לריק). "
-        "אסור: האשטגים (#), קישורים מומצאים, 'כבוט', או ניסוח שיווקי. "
-        "אימוג'י — לכל היותר אחד, רק אם זה באמת מתאים. "
-        'החזר אך ורק JSON תקין: {"text":"...","reply_to_id":null או מספר שלם} '
-        "כאשר reply_to_id הוא מזהה הודעה מהרשימה בלבד אם אתה משיב ישירות למישהו, אחרת null."
-    )
-    user_obj = {
-        "group_theme": "קהילת חדשות ישראל — דיון אקטואלי",
-        "angle_hint": angle,
-        "your_display_name": display,
-        "recent_chat_chronological": (transcript or "(אין הודעות אחרונות — תפתח נושא אקטואלי עדין)")[
-            -5500:
-        ],
-        "message_ids_newest_first": meta_newest_first[:20],
-    }
+    if role == "opener":
+        user_obj: dict[str, Any] = {
+            "role": "opener",
+            "angle_hint": angle,
+            "your_display_name": display,
+            "recent_chat_chronological": (
+                transcript or "(אין הודעות אחרונות — תפתח בניחוש חדשותי קצר)"
+            )[-5500:],
+            "task": 'פתיח קצר בסגנון פלאש חדשות / "ראיתם מה...?" — עברית מדוברת בלבד.',
+            "output_contract": 'החזר אך ורק JSON: {"text":"..."}',
+        }
+    else:
+        ap = (anchor_preview or "").strip()[:800] or "(אין טקסט — תגיב בקצרה)"
+        user_obj = {
+            "role": "replier",
+            "angle_hint": angle,
+            "your_display_name": display,
+            "message_you_reply_to": ap,
+            "recent_chat_chronological": (transcript or "")[-5500:],
+            "task": "תגובה קצרצרה בשרשור למה שכתוב למעלה.",
+            "output_contract": 'החזר אך ורק JSON: {"text":"..."}',
+        }
     user_payload = json.dumps(user_obj, ensure_ascii=False)
 
     try:
@@ -650,11 +874,11 @@ async def _generate_community_message(
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"gemini-pro:generateContent?key={_GEMINI_KEY}"
         )
-        prompt = f"{sys_prompt}\n\nהקשר JSON:\n{user_payload}"
+        prompt = f"{ISRAELI_NEWS_SYSTEM_PROMPT}\n\nהקשר JSON:\n{user_payload}"
         body = json.dumps(
             {
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"maxOutputTokens": 200, "temperature": 0.88},
+                "generationConfig": {"maxOutputTokens": 120, "temperature": 0.9},
             }
         ).encode("utf-8")
         req = urllib.request.Request(
@@ -677,21 +901,14 @@ async def _generate_community_message(
             .strip()
         )
         parsed = _extract_json_object(raw) or {}
-        text = _strip_hashtags_and_cleanup(str(parsed.get("text") or "").strip())
-        rid = parsed.get("reply_to_id")
-        reply_to: int | None = None
-        if rid is not None and str(rid).strip().lstrip("-").isdigit():
-            cand = int(rid)
-            if cand in allowed_ids:
-                reply_to = cand
+        text = _finalize_swarm_llm_line(str(parsed.get("text") or "").strip())
         if text:
-            return text, reply_to
+            return text, reply_out
     except Exception as exc:
         log.debug("[GEMINI] Community message failed (%s) — fallback", exc)
 
-    text = random.choice(_FALLBACK_CHAT_LINES)
-    reply_id_fb = int(meta_newest_first[0]["id"]) if meta_newest_first else None
-    return _strip_hashtags_and_cleanup(text), reply_id_fb
+    text_fb = random.choice(_FALLBACK_CHAT_LINES)
+    return _finalize_swarm_llm_line(text_fb), reply_out
 
 
 # ── Session Harvester ─────────────────────────────────────────────────────────
@@ -789,8 +1006,8 @@ class CommunityEngine:
     Each active session gets a random delay to simulate organic behaviour.
     """
 
-    MIN_DELAY_S = 45
-    MAX_DELAY_S = 180
+    MIN_DELAY_S = 60
+    MAX_DELAY_S = 600
 
     def __init__(self) -> None:
         self._stop = threading.Event()
@@ -816,11 +1033,30 @@ class CommunityEngine:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
+            now_iso = datetime.now(timezone.utc).isoformat()
+            _write_israeli_schedule_sync(
+                {
+                    "phase": "cycle",
+                    "cycle_started_at": now_iso,
+                    "next_cycle_at": None,
+                    "delay_total_s": None,
+                }
+            )
             try:
                 asyncio.run(self._cycle())
             except Exception as exc:
                 log.warning("[COMMUNITY] Cycle error: %s", exc)
             delay = random.randint(self.MIN_DELAY_S, self.MAX_DELAY_S)
+            next_ts = datetime.now(timezone.utc).timestamp() + delay
+            next_iso = datetime.fromtimestamp(next_ts, tz=timezone.utc).isoformat()
+            _write_israeli_schedule_sync(
+                {
+                    "phase": "waiting",
+                    "cycle_started_at": None,
+                    "next_cycle_at": next_iso,
+                    "delay_total_s": delay,
+                }
+            )
             remaining = delay
             while remaining > 0 and not self._stop.is_set():
                 chunk = min(remaining, 5)
@@ -899,6 +1135,8 @@ class CommunityEngine:
             has_api = bool(
                 int(os.getenv("TELEGRAM_API_ID", "0") or os.getenv("TELEFIX_API_ID", "0") or "0")
             )
+            thread_ids = await _async_thread_ids_read(group_link)
+            has_thread = len(thread_ids) > 0
             for _attempt in range(per):
                 pool = [s for s in sessions if s.stem not in used_stems] or sessions
                 session_file = random.choice(pool)
@@ -907,19 +1145,59 @@ class CommunityEngine:
                 ident = _load_or_create_swarm_identity(phone)
                 sf = str(ident.get("first_name") or "")
                 sl = str(ident.get("last_name") or "")
+                role = _roll_thread_role(has_thread)
+                if role == "replier" and not has_thread:
+                    role = "opener"
+                if role == "reactor" and not has_thread:
+                    role = "opener"
+
+                if role == "lurk":
+                    continue
+
+                if role == "reactor":
+                    anchor_id = thread_ids[-1]
+                    who_try = f"{sf} {sl}".strip() or phone
+                    _rpush_israeli_attempt_sync(phone, who_try)
+                    ok_r = await self._try_react_telethon(session_file, group_link, anchor_id)
+                    if ok_r:
+                        any_sent = True
+                        self.messages_sent += 1
+                        await self._push_redis_event(phone, "חדשות", f"[reaction] → msg {anchor_id}")
+                        await self._mark_verified_written(phone)
+                    continue
+
+                forced_reply = thread_ids[-1] if role == "replier" and thread_ids else None
+                anchor_txt = (
+                    _anchor_from_transcript(transcript, forced_reply) if forced_reply else None
+                )
                 message, reply_to = await _generate_community_message(
-                    transcript, meta_nf, sf, sl
+                    transcript,
+                    meta_nf,
+                    sf,
+                    sl,
+                    role="replier" if role == "replier" else "opener",
+                    anchor_preview=anchor_txt,
+                    forced_reply_to=forced_reply,
                 )
                 log.info(
-                    "[COMMUNITY] Bot %s → msg=%s reply_to=%s",
-                    phone, message[:60], reply_to,
+                    "[COMMUNITY] Bot %s role=%s → msg=%s reply_to=%s",
+                    phone,
+                    role,
+                    message[:60],
+                    reply_to,
                 )
-                sent = await self._try_send_telethon(
+                who_try = f"{sf} {sl}".strip() or phone
+                _rpush_israeli_attempt_sync(phone, who_try)
+                sent, new_mid = await self._try_send_telethon(
                     session_file, message, group_link, reply_to=reply_to
                 )
                 if sent:
                     any_sent = True
                     self.messages_sent += 1
+                    if new_mid is not None:
+                        await _async_thread_ids_push(group_link, int(new_mid))
+                        thread_ids = await _async_thread_ids_read(group_link)
+                        has_thread = len(thread_ids) > 0
                     topic_tag = "חדשות"
                     await self._push_redis_event(phone, topic_tag, message)
                     await self._mark_verified_written(phone)
@@ -942,9 +1220,9 @@ class CommunityEngine:
         group_link: str,
         *,
         reply_to: int | None = None,
-    ) -> bool:
+    ) -> tuple[bool, int | None]:
         if not group_link:
-            return False
+            return False, None
         try:
             timeout_s = float(os.getenv("SWARM_TELETHON_TIMEOUT_S", "90") or "90")
         except ValueError:
@@ -966,11 +1244,11 @@ class CommunityEngine:
                 msg = "חסר TELEGRAM_API_ID/HASH או TELEFIX_API_ID/HASH ב-.env"
                 log.warning("[COMMUNITY] %s", msg)
                 _publish_engine_error(msg)
-                return False
+                return False, None
 
             session_path = str(session_file.with_suffix(""))
 
-            async def _run_client() -> bool:
+            async def _run_client() -> tuple[bool, int | None]:
                 # Telethon's ``async with TelegramClient`` calls ``start()``, which prompts
                 # for phone/OTP via ``input()`` — headless israeli-swarm has no TTY → EOFError.
                 from telethon import errors
@@ -986,14 +1264,19 @@ class CommunityEngine:
                         )
                         log.warning("[COMMUNITY] %s", detail)
                         _publish_engine_error(detail)
-                        return False
+                        return False, None
                     try:
                         await _apply_swarm_identity(client, session_file.stem)
+                        await _ensure_swarm_profile_ascii_fix(client, session_file.stem)
                         target = await _ensure_swarm_target_entity(client, group_link)
-                        await client.send_message(
+                        async with client.action(target, "typing"):
+                            await asyncio.sleep(random.uniform(2.0, 8.0))
+                        sent = await client.send_message(
                             target, message, reply_to=reply_to if reply_to else None
                         )
-                        return True
+                        mid_raw = getattr(sent, "id", None)
+                        mid = int(mid_raw) if mid_raw is not None else None
+                        return True, mid
                     except errors.ChatWriteForbiddenError as cw_exc:
                         detail = (
                             f"{session_file.stem}: אין הרשאת כתיבה בצ'אט (אולי ערוץ הכרזות או חסימת משתמשים). "
@@ -1001,7 +1284,7 @@ class CommunityEngine:
                         )
                         log.warning("[COMMUNITY] %s", detail)
                         _publish_engine_error(detail[:500])
-                        return False
+                        return False, None
                 finally:
                     await client.disconnect()
 
@@ -1012,7 +1295,7 @@ class CommunityEngine:
                 log.warning("[COMMUNITY] %s", detail)
                 _publish_engine_error(detail)
                 _rpush_feed_line(f"[מנוע] {detail}", "engine")
-                return False
+                return False, None
 
         except ImportError:
             msg = "חבילת telethon לא מותקנת בסביבת israeli-swarm"
@@ -1022,7 +1305,76 @@ class CommunityEngine:
             err = f"{session_file.stem}: {exc}"
             log.warning("[COMMUNITY] Send failed — %s", err)
             _publish_engine_error(err[:500])
-        return False
+        return False, None
+
+    async def _try_react_telethon(
+        self,
+        session_file: pathlib.Path,
+        group_link: str,
+        msg_id: int,
+    ) -> bool:
+        if not group_link or not msg_id:
+            return False
+        try:
+            timeout_s = float(os.getenv("SWARM_TELETHON_TIMEOUT_S", "90") or "90")
+        except ValueError:
+            timeout_s = 90.0
+        timeout_s = max(15.0, min(timeout_s, 300.0))
+
+        try:
+            from telethon import TelegramClient  # type: ignore[import]
+
+            api_id = int(os.getenv("TELEGRAM_API_ID", "0") or "0")
+            if not api_id:
+                api_id = int(os.getenv("TELEFIX_API_ID", "0") or "0")
+            api_hash = (
+                os.getenv("TELEGRAM_API_HASH", "")
+                or os.getenv("TELEFIX_API_HASH", "")
+                or ""
+            ).strip()
+            if not api_id or not api_hash:
+                return False
+
+            session_path = str(session_file.with_suffix(""))
+
+            async def _run_client() -> bool:
+                from telethon import errors
+                from telethon.tl.functions.messages import SendReactionRequest  # type: ignore[import]
+                from telethon.tl.types import ReactionEmoji  # type: ignore[import]
+
+                client = TelegramClient(session_path, api_id, api_hash)
+                await client.connect()
+                try:
+                    if not await client.is_user_authorized():
+                        return False
+                    try:
+                        await _apply_swarm_identity(client, session_file.stem)
+                        await _ensure_swarm_profile_ascii_fix(client, session_file.stem)
+                        target = await _ensure_swarm_target_entity(client, group_link)
+                        emojis = list(_THREAD_REACTION_EMOJIS)
+                        random.shuffle(emojis)
+                        for emo in emojis:
+                            try:
+                                await client(
+                                    SendReactionRequest(
+                                        peer=target,
+                                        msg_id=int(msg_id),
+                                        reaction=[ReactionEmoji(emoticon=emo)],
+                                    )
+                                )
+                                return True
+                            except Exception:
+                                continue
+                        return False
+                    except errors.ChatWriteForbiddenError:
+                        return False
+                finally:
+                    await client.disconnect()
+
+            return await asyncio.wait_for(_run_client(), timeout=timeout_s)
+        except Exception as exc:
+            log.debug("[COMMUNITY] Reaction failed — %s", exc)
+            return False
 
     async def _push_join_event(self, phone: str, group_link: str) -> None:
         try:
@@ -1090,6 +1442,10 @@ class CommunityEngine:
 
     async def _push_redis_event(self, phone: str, topic: str, message: str) -> None:
         ts = datetime.now(timezone.utc).isoformat()
+        ident_ev = _load_or_create_swarm_identity(phone)
+        fn = str(ident_ev.get("first_name") or "")
+        ln = str(ident_ev.get("last_name") or "")
+        display_name = f"{fn} {ln}".strip() or phone
         payload = json.dumps({
             "ts": ts,
             "phone": phone,
@@ -1098,6 +1454,9 @@ class CommunityEngine:
             "verified": 1,
             "written": 1,
             "engine": "israeli_swarm",
+            "display_name": display_name,
+            "first_name": fn,
+            "last_name": ln,
         }, ensure_ascii=False)
         # Update DB: mark this phone as verified=1 and written=1
         self._update_db_verification(phone)

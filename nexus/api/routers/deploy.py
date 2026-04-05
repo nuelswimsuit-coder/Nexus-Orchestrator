@@ -23,8 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
-from pathlib import Path
 from datetime import datetime, timezone
 from typing import AsyncGenerator
 
@@ -288,25 +286,6 @@ async def trigger_sync(
 
     Stream live progress via GET /api/deploy/progress/worker_linux (SSE).
     """
-    # #region agent log
-    try:
-        _dbg_path = Path(__file__).resolve().parents[3] / "debug-b7d870.log"
-        _dbg_path.open("a", encoding="utf-8").write(
-            json.dumps(
-                {
-                    "sessionId": "b7d870",
-                    "hypothesisId": "B",
-                    "location": "deploy.py:trigger_sync:entry",
-                    "message": "sync_handler_entered",
-                    "data": {"has_redis": redis is not None},
-                    "timestamp": int(time.time() * 1000),
-                },
-            )
-            + "\n",
-        )
-    except Exception:
-        pass
-    # #endregion
     # Cancel stale tasks
     stale = [jid for jid, t in _active_deploys.items() if t.done()]
     for jid in stale:

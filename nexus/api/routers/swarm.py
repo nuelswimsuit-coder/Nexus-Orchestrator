@@ -12,7 +12,6 @@ import json
 import os
 import subprocess
 import sys
-import time as _time_module
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,27 +33,6 @@ from nexus.services.tg_session_disk import (
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/swarm", tags=["swarm"])
-
-
-# #region agent log
-def _agent_debug_fd2e46(payload: dict[str, Any]) -> None:
-    try:
-        root = Path(__file__).resolve().parents[3]
-        line = json.dumps(
-            {
-                "sessionId": "fd2e46",
-                "timestamp": int(_time_module.time() * 1000),
-                **payload,
-            },
-            ensure_ascii=False,
-        ) + "\n"
-        with open(root / "debug-fd2e46.log", "a", encoding="utf-8") as _df:
-            _df.write(line)
-    except Exception:
-        pass
-
-
-# #endregion
 
 _SWARM_DEGRADED_MSG = (
     "הדשבורד רץ במצב זמני מקומי ולא מסונכן עם שירות הנחיל שמפעיל חשבונות טלגרם מהסריקה. "
@@ -432,6 +410,7 @@ _ISRAELI_POKE_KEY = "nexus:swarm:israeli:poke"
 _ISRAELI_HEARTBEAT_KEY = "nexus:swarm:israeli:heartbeat"
 _ISRAELI_ENGINE_PID_KEY = "nexus:swarm:israeli:engine_pid"
 _ISRAELI_SPAWN_GUARD_KEY = "nexus:swarm:israeli:spawn_guard"
+_ISRAELI_SCHEDULE_KEY = "nexus:swarm:israeli:schedule"
 
 
 def _pid_running(pid: int) -> bool:
@@ -642,22 +621,24 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
     status_raw = await redis.get(_ISRAELI_STATUS_KEY)
     last_engine_err_raw = await redis.get(_ISRAELI_LAST_ENGINE_ERROR_KEY)
     heartbeat_raw = await redis.get(_ISRAELI_HEARTBEAT_KEY)
-    events_raw: list[str] = await redis.lrange(_ISRAELI_EVENTS_KEY, -20, -1)
+    schedule_raw = await redis.get(_ISRAELI_SCHEDULE_KEY)
+    events_raw: list[str] = await redis.lrange(_ISRAELI_EVENTS_KEY, -150, -1)
 
     last_message = ""
     last_message_ts: float = 0.0
     last_sender_phone = ""
+    last_sender_display_name = ""
     if last_msg_raw:
         try:
             lm = json.loads(last_msg_raw)
             last_message = lm.get("message", "")
             last_sender_phone = lm.get("phone", "")
+            last_sender_display_name = str(lm.get("display_name", "") or "").strip()
             ts_raw = lm.get("ts", "")
             if ts_raw:
-                from datetime import datetime, timezone as _tz
                 try:
                     last_message_ts = datetime.fromisoformat(ts_raw).replace(
-                        tzinfo=_tz.utc
+                        tzinfo=timezone.utc
                     ).timestamp()
                 except Exception:
                     pass
@@ -686,10 +667,15 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
                     "is_active": True,
                     "messages_sent": 0,
                     "last_message": "",
+                    "display_name": "",
                     "is_king": False,
                 }
-            bots_by_phone[phone]["messages_sent"] += 1
-            bots_by_phone[phone]["last_message"] = ev.get("message", "")
+            if ev.get("verified") == 1:
+                bots_by_phone[phone]["messages_sent"] += 1
+                bots_by_phone[phone]["last_message"] = ev.get("message", "")
+            dn = ev.get("display_name") or ""
+            if isinstance(dn, str) and dn.strip():
+                bots_by_phone[phone]["display_name"] = dn.strip()
         except Exception:
             pass
 
@@ -703,9 +689,9 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
         tg_session_files_on_disk = 0
     total_sessions = tg_session_files_on_disk
 
-    # recent_messages: last 10 events as a message feed
+    # recent_messages: tail of events as a message feed (includes engine + attempts)
     recent_messages: list[dict[str, Any]] = []
-    for ev_raw in events_raw[-10:]:
+    for ev_raw in events_raw[-80:]:
         try:
             ev = json.loads(ev_raw)
             if ev.get("message"):
@@ -714,9 +700,23 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
                     "message": ev.get("message", ""),
                     "topic": ev.get("topic", ""),
                     "ts": ev.get("ts", ""),
+                    "display_name": ev.get("display_name", "") or "",
+                    "event": ev.get("event", "") or "",
                 })
         except Exception:
             pass
+
+    schedule: dict[str, Any] | None = None
+    if schedule_raw:
+        try:
+            txt = (
+                schedule_raw.decode("utf-8", errors="replace")
+                if isinstance(schedule_raw, bytes)
+                else str(schedule_raw)
+            )
+            schedule = json.loads(txt) if txt.strip() else None
+        except Exception:
+            schedule = None
 
     last_engine_error = ""
     if last_engine_err_raw:
@@ -757,11 +757,13 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
         bots = []
         active_talkers = 0
         recent_messages = []
+        schedule = None
         verified_count = 0
         written_count = 0
         last_message = ""
         last_message_ts = 0.0
         last_sender_phone = ""
+        last_sender_display_name = ""
         engine_last_seen_ts = 0.0
         _banner = _SWARM_DEGRADED_MSG
         last_engine_error = f"{_banner} | {last_engine_error}" if last_engine_error else _banner
@@ -802,6 +804,7 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
         "last_message": last_message,
         "last_message_ts": last_message_ts,
         "last_sender_phone": last_sender_phone,
+        "last_sender_display_name": last_sender_display_name,
         "is_running": is_running,
         "bots": bots,
         "verified_count": verified_count,
@@ -809,6 +812,7 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
         "total_sessions": total_sessions,
         "tg_session_files_on_disk": tg_session_files_on_disk,
         "recent_messages": recent_messages,
+        "schedule": schedule,
         "last_engine_error": last_engine_error,
         "redis_degraded": redis_degraded,
         "engine_last_seen_ts": engine_last_seen_ts,

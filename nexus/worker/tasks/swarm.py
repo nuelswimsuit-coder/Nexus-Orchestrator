@@ -39,9 +39,11 @@ KEY_PROFILE_GATE = "nexus:swarm:factory:profile_gate"
 THREAD_KEY_PREFIX = "nexus:swarm:factory:thread:"
 THREAD_ID_CAP = 5
 
+# When Redis is unavailable, avoid re-running profile checks every tick (Latin names stay "non_israeli" per heuristic).
+_factory_profile_verified_local: set[str] = set()
+
 GROUPS_TARGET_PER_OWNER = 20
 REACTION_EMOJIS = ["🔥", "😂", "💀", "🤯", "👀", "😱", "💪", "🤦", "😅", "❤️", "🙏"]
-REACTION_TL_EMOJIS = ["👍", "❤️", "🔥", "🙏", "😂", "👀"]
 THREAD_REACTION_EMOJIS = ["👍", "🤦‍♂️", "🤬"]
 
 ISRAELI_DISPLAY_NAMES = [
@@ -189,33 +191,156 @@ def _invite_hash(link_or_hash: str) -> str:
     return s.lstrip("+")
 
 
-async def _try_peer_reaction(client: Any, entity: Any) -> bool:
+def _strip_hashtags_and_cleanup(text: str) -> str:
+    s = re.sub(r"#\S+", "", text or "")
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+
+def _cap_hebrew_words(text: str, max_words: int = 10) -> str:
+    parts = (text or "").split()
+    if len(parts) <= max_words:
+        return (text or "").strip()
+    return " ".join(parts[:max_words])
+
+
+def _thread_redis_key(group_id: int | str) -> str:
+    return f"{THREAD_KEY_PREFIX}{int(group_id)}"
+
+
+async def _thread_ids_read(redis: Any, group_id: int | str) -> list[int]:
+    if redis is None:
+        return []
+    raw = await redis.get(_thread_redis_key(group_id))
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[int] = []
+    for x in data:
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+async def _thread_ids_push(redis: Any, group_id: int | str, msg_id: int) -> None:
+    if redis is None:
+        return
+    cur = await _thread_ids_read(redis, group_id)
+    cur.append(int(msg_id))
+    cur = cur[-THREAD_ID_CAP:]
+    await redis.set(_thread_redis_key(group_id), json.dumps(cur, ensure_ascii=False))
+
+
+async def _redis_delete_keys_with_prefix(redis: Any, prefix: str) -> None:
+    if redis is None:
+        return
+    keys: list[Any] = []
+    try:
+        async for key in redis.scan_iter(match=f"{prefix}*"):
+            keys.append(key)
+    except Exception as exc:
+        log.warning("factory_redis_scan_failed", prefix=prefix, error=str(exc))
+        return
+    if not keys:
+        return
+    try:
+        await redis.delete(*keys)
+    except Exception as exc:
+        log.warning("factory_redis_delete_failed", prefix=prefix, error=str(exc))
+
+
+def _display_name_is_non_israeli(first: str, last: str) -> bool:
+    combined = f"{first or ''} {last or ''}".strip()
+    if not combined:
+        return True
+    if re.search(r"[\u0590-\u05FF]", combined):
+        return False
+    latin = re.sub(r"[^A-Za-z]", "", combined)
+    if len(latin) < 2:
+        return False
+    return True
+
+
+async def _ensure_factory_profile(client: Any, redis: Any, session_base: str) -> None:
+    if redis is not None:
+        try:
+            if await redis.sismember(KEY_PROFILE_GATE, session_base):
+                return
+        except Exception:
+            pass
+    elif session_base in _factory_profile_verified_local:
+        return
+
+    profile_ok = False
+    try:
+        me = await client.get_me()
+        fn = str(getattr(me, "first_name", None) or "")
+        ln = str(getattr(me, "last_name", None) or "")
+        if not _display_name_is_non_israeli(fn, ln):
+            profile_ok = True
+        else:
+            from telethon.tl.functions.account import UpdateProfileRequest  # type: ignore[import-untyped]
+
+            label = random.choice(ISRAELI_DISPLAY_NAMES)
+            await client(UpdateProfileRequest(first_name=label[:64], last_name=""))
+            profile_ok = True
+    except Exception as exc:
+        log.debug("factory_profile_fix_skipped", error=str(exc))
+        return
+
+    if profile_ok:
+        if redis is not None:
+            try:
+                await redis.sadd(KEY_PROFILE_GATE, session_base)
+            except Exception:
+                pass
+        else:
+            _factory_profile_verified_local.add(session_base)
+
+
+def _roll_thread_role(has_thread: bool) -> Literal["lurk", "opener", "replier", "reactor"]:
+    if random.random() < 0.10:
+        return "lurk"
+    if not has_thread:
+        return "opener"
+    u = random.random()
+    if u < 0.35:
+        return "opener"
+    if u < 0.75:
+        return "replier"
+    return "reactor"
+
+
+def _finalize_llm_line(line: str) -> str:
+    return _cap_hebrew_words(_strip_hashtags_and_cleanup(line), 10)
+
+
+async def _send_thread_reaction(client: Any, entity: Any, msg_id: int) -> bool:
     from telethon.tl.functions.messages import SendReactionRequest  # type: ignore[import-untyped]
     from telethon.tl.types import ReactionEmoji  # type: ignore[import-untyped]
 
-    me = await client.get_me()
-    my_id = getattr(me, "id", None)
-    messages = await client.get_messages(entity, limit=40)
-    candidates: list[Any] = []
-    for m in messages:
-        if not m or not getattr(m, "id", None):
+    emojis = list(THREAD_REACTION_EMOJIS)
+    random.shuffle(emojis)
+    for emo in emojis:
+        try:
+            await client(
+                SendReactionRequest(
+                    peer=entity,
+                    msg_id=int(msg_id),
+                    reaction=[ReactionEmoji(emoticon=emo)],
+                )
+            )
+            return True
+        except Exception:
             continue
-        sid = getattr(m, "sender_id", None)
-        if sid is None or sid == my_id:
-            continue
-        candidates.append(m)
-    if not candidates:
-        return False
-    msg = random.choice(candidates)
-    emo = random.choice(REACTION_TL_EMOJIS)
-    await client(
-        SendReactionRequest(
-            peer=entity,
-            msg_id=int(msg.id),
-            reaction=[ReactionEmoji(emoticon=emo)],
-        )
-    )
-    return True
+    return False
 
 
 async def _try_send_pack_sticker(client: Any, entity: Any) -> bool:
@@ -340,16 +465,59 @@ async def _enqueue_task(task_type: str, parameters: dict[str, Any]) -> bool:
         return False
 
 
-async def _generate_hebrew_line(api_key: str, topic: str, openai_key: str) -> str:
+def _parse_openai_json_text(content: str) -> str:
+    t = (content or "").strip()
+    if "{" in t:
+        try:
+            start = t.index("{")
+            depth = 0
+            for i, ch in enumerate(t[start:], start=start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        obj = json.loads(t[start : i + 1])
+                        if isinstance(obj, dict) and obj.get("text"):
+                            return str(obj["text"]).strip()
+                        break
+        except Exception:
+            pass
+    return t
+
+
+async def _generate_hebrew_line(
+    api_key: str,
+    topic: str,
+    openai_key: str,
+    *,
+    role: Literal["opener", "replier"],
+    anchor_preview: str | None = None,
+) -> str:
+    json_tail = ' Return only valid JSON: {"text":"your line here"}'
+    if role == "opener":
+        user_he = (
+            f'הנחיה: כתוב פתיח קצר בסגנון פלאש חדשות / "ראיתם מה...?" / וייב מקומי. '
+            f'נושא רלוונטי: "{topic}". '
+            f"עברית מדוברת בלבד.{json_tail}"
+        )
+    else:
+        ap = (anchor_preview or "").strip()[:800] or "(אין טקסט — תגיב בקצרה לווייב חדשות)"
+        user_he = (
+            "הנחיה: תגובה קצרצרה בשרשור למה שנכתב בקבוצת חדשות. "
+            f'תוכן ההודעה שאליה משיבים: "{ap}" {json_tail}'
+        )
+
     if api_key:
         try:
             from nexus.modules.community_vibe import _gemini_json  # type: ignore[attr-defined]
 
-            user = f'נושא לשיחה: "{topic}". כתוב משפט אחד או שניים בלבד.'
-            out = await _gemini_json(api_key, _GEMINI_SYSTEM, user, temperature=0.9, max_tokens=256)
+            out = await _gemini_json(
+                api_key, ISRAELI_NEWS_SYSTEM_PROMPT, user_he, temperature=0.9, max_tokens=128
+            )
             text = str(out.get("text", "")).strip()
             if text:
-                return text
+                return _finalize_llm_line(text)
         except Exception as exc:
             log.warning("factory_gemini_failed", error=str(exc))
     if openai_key:
@@ -361,34 +529,25 @@ async def _generate_hebrew_line(api_key: str, topic: str, openai_key: str) -> st
             payload = {
                 "model": "gpt-4o-mini",
                 "messages": [
-                    {"role": "system", "content": _GEMINI_SYSTEM},
-                    {"role": "user", "content": f'נושא: "{topic}"'},
+                    {"role": "system", "content": ISRAELI_NEWS_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_he},
                 ],
                 "temperature": 0.9,
-                "max_tokens": 200,
+                "max_tokens": 120,
             }
             async with httpx.AsyncClient(timeout=60.0) as client:
                 r = await client.post(url, json=payload, headers=headers)
                 r.raise_for_status()
                 data = r.json()
                 choice = (data.get("choices") or [{}])[0]
-                msg = (choice.get("message") or {}).get("content") or ""
-                if msg.strip():
-                    return msg.strip()
+                raw_msg = (choice.get("message") or {}).get("content") or ""
+                text = _parse_openai_json_text(raw_msg) if raw_msg.strip() else ""
+                if text.strip():
+                    return _finalize_llm_line(text.strip())
         except Exception as exc:
             log.warning("factory_openai_failed", error=str(exc))
-    return f"וואלה {topic} זה מטורף אחי 😅"
-
-
-def _roll_converse_mode() -> str:
-    r = random.random()
-    if r < 0.60:
-        return "text"
-    if r < 0.85:
-        return "lurk"
-    if r < 0.95:
-        return "reaction"
-    return "sticker"
+    fb = "וואלה הזייה אחי" if role == "opener" else "אין מצב"
+    return _finalize_llm_line(fb)
 
 
 @registry.register("swarm.community_factory.bootstrap")
@@ -407,7 +566,10 @@ async def community_factory_bootstrap(parameters: dict[str, Any]) -> dict[str, A
     owners, members = _split_roles(bases)
 
     if reset and redis and not dry_run:
-        await redis.delete(KEY_ROLES, KEY_GROUPS, KEY_STATE, KEY_BANNED, KEY_COOLDOWNS, KEY_METRICS)
+        await redis.delete(
+            KEY_ROLES, KEY_GROUPS, KEY_STATE, KEY_BANNED, KEY_COOLDOWNS, KEY_METRICS, KEY_PROFILE_GATE
+        )
+        await _redis_delete_keys_with_prefix(redis, THREAD_KEY_PREFIX)
 
     roles_payload = {"owners": owners, "members": members}
 
@@ -789,44 +951,51 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
     session_base = all_sessions[si]
     grp = groups[gi]
     group_id = grp.get("group_id")
+    carry = dict(parameters)
+    carry.pop("__redis__", None)
+    if group_id is None:
+        await _enqueue_task("swarm.community_factory.converse_tick", carry)
+        return {"status": "failed", "error": "group_id missing"}
 
     state["converse_idx"] = cidx + 1
     await _redis_json_set(redis, KEY_STATE, state)
 
-    if await _is_session_banned(redis, session_base):
-        carry = dict(parameters)
-        carry.pop("__redis__", None)
+    async def _enqueue_next() -> None:
         await _enqueue_task("swarm.community_factory.converse_tick", carry)
+
+    await asyncio.sleep(random.uniform(60.0, 600.0))
+
+    if await _is_session_banned(redis, session_base):
+        await _enqueue_next()
         return {"status": "skipped", "reason": "banned"}
 
     until = await _cooldown_until(redis, session_base)
     if until and datetime.now(timezone.utc) < until:
-        carry = dict(parameters)
-        carry.pop("__redis__", None)
-        await _enqueue_task("swarm.community_factory.converse_tick", carry)
+        await _enqueue_next()
         return {"status": "deferred", "reason": "cooldown"}
-
-    mode = _roll_converse_mode()
-    if mode == "lurk":
-        carry = dict(parameters)
-        carry.pop("__redis__", None)
-        await _enqueue_task("swarm.community_factory.converse_tick", carry)
-        return {"status": "completed", "action": "lurk"}
 
     try:
         import telethon  # noqa: F401
     except ImportError:
         return {"status": "failed", "error": "telethon not installed"}
 
+    gid_int = int(group_id)
+    thread_ids = await _thread_ids_read(redis, gid_int)
+    has_thread = len(thread_ids) > 0
+    role = _roll_thread_role(has_thread)
+    if role == "replier" and not has_thread:
+        role = "opener"
+    if role == "reactor" and not has_thread:
+        role = "opener"
+
     topic = random.choice(FACTORY_TOPICS)
-    carry = dict(parameters)
-    carry.pop("__redis__", None)
 
-    async def _enqueue_next() -> None:
-        await _enqueue_task("swarm.community_factory.converse_tick", carry)
+    if role == "lurk":
+        await _enqueue_next()
+        return {"status": "completed", "action": "lurk"}
 
-    if mode == "reaction":
-        await asyncio.sleep(random.uniform(5.0, 300.0))
+    if role == "reactor":
+        anchor_id = thread_ids[-1]
         try:
             async with async_telegram_client(session_base, parameters) as client:
                 if not await client.is_user_authorized():
@@ -834,11 +1003,11 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
                     await _bump_metric(redis, "bans", 1)
                     await _enqueue_next()
                     return {"status": "skipped", "reason": "unauthorized"}
-                ent = await client.get_entity(int(group_id))
-                reacted = await _try_peer_reaction(client, ent)
-                if not reacted:
-                    await client.send_message(ent, random.choice(REACTION_EMOJIS))
-            await _bump_metric(redis, "messages_sent", 1)
+                ent = await client.get_entity(gid_int)
+                await _ensure_factory_profile(client, redis, session_base)
+                ok = await _send_thread_reaction(client, ent, anchor_id)
+                if ok:
+                    await _bump_metric(redis, "messages_sent", 1)
         except ValueError as exc:
             log.warning("factory_converse_creds_missing", error=str(exc))
         except Exception as exc:
@@ -851,45 +1020,14 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
                 await _set_cooldown(redis, session_base, sec)
                 await _bump_metric(redis, "flood_waits", 1)
             else:
-                log.debug("factory_converse_reaction_failed", error=str(exc))
+                log.debug("factory_converse_reactor_failed", error=str(exc))
         await _enqueue_next()
-        return {"status": "completed", "action": "reaction"}
+        return {"status": "completed", "action": "reactor"}
 
-    if mode == "sticker":
-        await asyncio.sleep(random.uniform(5.0, 300.0))
-        try:
-            async with async_telegram_client(session_base, parameters) as client:
-                if not await client.is_user_authorized():
-                    await _mark_banned(redis, session_base)
-                    await _bump_metric(redis, "bans", 1)
-                    await _enqueue_next()
-                    return {"status": "skipped", "reason": "unauthorized"}
-                ent = await client.get_entity(int(group_id))
-                sent = await _try_send_pack_sticker(client, ent)
-                if not sent:
-                    await client.send_message(ent, random.choice(REACTION_EMOJIS))
-            await _bump_metric(redis, "messages_sent", 1)
-        except ValueError as exc:
-            log.warning("factory_converse_creds_missing", error=str(exc))
-        except Exception as exc:
-            kind = classify_telethon_account_error(exc)
-            if kind == "ban":
-                await _mark_banned(redis, session_base)
-                await _bump_metric(redis, "bans", 1)
-            elif kind == "flood":
-                sec = int(flood_wait_seconds(exc) * 1.1) + 1
-                await _set_cooldown(redis, session_base, sec)
-                await _bump_metric(redis, "flood_waits", 1)
-            else:
-                log.debug("factory_converse_sticker_failed", error=str(exc))
-        await _enqueue_next()
-        return {"status": "completed", "action": "sticker"}
+    reply_to_id: int | None = None
+    if role == "replier" and thread_ids:
+        reply_to_id = thread_ids[-1]
 
-    await asyncio.sleep(random.uniform(5.0, 300.0))
-    line = await _generate_hebrew_line(api_key, topic, openai_key)
-    if random.random() < 0.12 and len(line) > 5:
-        cut = random.randint(1, len(line) - 1)
-        line = line[:cut] + line[cut + 1 :]
     try:
         async with async_telegram_client(session_base, parameters) as client:
             if not await client.is_user_authorized():
@@ -897,8 +1035,35 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
                 await _bump_metric(redis, "bans", 1)
                 await _enqueue_next()
                 return {"status": "skipped", "reason": "unauthorized"}
-            ent = await client.get_entity(int(group_id))
-            await client.send_message(ent, line[:4096])
+            await _ensure_factory_profile(client, redis, session_base)
+            ent = await client.get_entity(gid_int)
+            anchor_preview: str | None = None
+            if reply_to_id is not None:
+                try:
+                    msgs = await client.get_messages(ent, ids=reply_to_id)
+                    m0 = msgs[0] if msgs else None
+                    if m0 is not None:
+                        anchor_preview = (getattr(m0, "message", None) or "")[:500]
+                except Exception:
+                    anchor_preview = None
+            line = await _generate_hebrew_line(
+                api_key,
+                topic,
+                openai_key,
+                role="opener" if role == "opener" else "replier",
+                anchor_preview=anchor_preview,
+            )
+            if random.random() < 0.12 and len(line) > 3:
+                cut = random.randint(0, max(0, len(line) - 1))
+                line = line[:cut] + line[cut + 1 :]
+            async with client.action(ent, "typing"):
+                await asyncio.sleep(random.uniform(2.0, 8.0))
+            sent = await client.send_message(
+                ent, line[:4096], reply_to=reply_to_id if reply_to_id is not None else None
+            )
+            mid = getattr(sent, "id", None)
+            if mid is not None and role == "opener":
+                await _thread_ids_push(redis, gid_int, int(mid))
         await _bump_metric(redis, "messages_sent", 1)
     except ValueError as exc:
         log.warning("factory_converse_creds_missing", error=str(exc))
@@ -915,4 +1080,4 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
             log.warning("factory_converse_send_failed", error=str(exc))
 
     await _enqueue_next()
-    return {"status": "completed", "action": "text"}
+    return {"status": "completed", "action": role}
