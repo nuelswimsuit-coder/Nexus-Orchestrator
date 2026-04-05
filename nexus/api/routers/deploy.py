@@ -32,7 +32,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from nexus.api.dependencies import RedisDep
-from nexus.master.services.deployer import DeployerService
+from nexus.master.services.deployer import DeployerService, _debug_58e788
 from nexus.master.services.vault import Vault
 from nexus.shared.config import settings
 
@@ -251,13 +251,57 @@ async def clear_progress(node_id: str, redis: RedisDep) -> dict[str, str]:
 # ── Phase 18: Nexus-Push direct sync ──────────────────────────────────────────
 
 async def _run_sync(redis) -> None:  # type: ignore[type-arg]
+    # #region agent log
+    _debug_58e788(
+        {
+            "location": "deploy.py:_run_sync:entry",
+            "message": "background sync task started",
+            "hypothesisId": "H3",
+            "runId": "pre-fix",
+            "data": {},
+        }
+    )
+    # #endregion
     deployer = _make_deployer(redis)
     try:
         result = await deployer.sync_to_worker()
         log.info("sync_job_complete", result=result)
+        # #region agent log
+        _debug_58e788(
+            {
+                "location": "deploy.py:_run_sync:after_sync",
+                "message": "sync_to_worker returned",
+                "hypothesisId": "H3",
+                "runId": "pre-fix",
+                "data": {"result_prefix": (result or "")[:220]},
+            }
+        )
+        # #endregion
     except Exception as exc:
         log.exception("sync_job_error", error=str(exc))
+        # #region agent log
+        _debug_58e788(
+            {
+                "location": "deploy.py:_run_sync:exception",
+                "message": "sync_to_worker raised",
+                "hypothesisId": "H3",
+                "runId": "pre-fix",
+                "data": {"err": str(exc)[:300]},
+            }
+        )
+        # #endregion
     finally:
+        # #region agent log
+        _debug_58e788(
+            {
+                "location": "deploy.py:_run_sync:finally",
+                "message": "clearing _active_deploys sync slot",
+                "hypothesisId": "H3",
+                "runId": "pre-fix",
+                "data": {},
+            }
+        )
+        # #endregion
         _active_deploys.pop("sync", None)
 
 
