@@ -1391,62 +1391,8 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def add_request_id(request: Request, call_next):  # type: ignore[no-untyped-def]
         request_id = str(uuid.uuid4())[:8]
-        _sync_post = (
-            request.method == "POST"
-            and request.url.path.rstrip("/") == "/api/deploy/sync"
-        )
-        # region agent log
-        if _sync_post:
-            try:
-                import json as _j
-                import time as _t
-                from pathlib import Path as _Path
-
-                _Path(__file__).resolve().parents[2].joinpath(
-                    "debug-43baa8.log"
-                ).open("a", encoding="utf-8").write(
-                    _j.dumps(
-                        {
-                            "sessionId": "43baa8",
-                            "hypothesisId": "H3",
-                            "location": "main.py:middleware:pre_call_next",
-                            "message": "deploy_sync_mw_enter",
-                            "data": {"path": request.url.path},
-                            "timestamp": int(_t.time() * 1000),
-                        }
-                    )
-                    + "\n"
-                )
-            except Exception:
-                pass
-        # endregion
         structlog.contextvars.bind_contextvars(request_id=request_id)
         response = await call_next(request)
-        # region agent log
-        if _sync_post:
-            try:
-                import json as _j
-                import time as _t
-                from pathlib import Path as _Path
-
-                _Path(__file__).resolve().parents[2].joinpath(
-                    "debug-43baa8.log"
-                ).open("a", encoding="utf-8").write(
-                    _j.dumps(
-                        {
-                            "sessionId": "43baa8",
-                            "hypothesisId": "H3",
-                            "location": "main.py:middleware:post_call_next",
-                            "message": "deploy_sync_mw_response",
-                            "data": {"status": response.status_code},
-                            "timestamp": int(_t.time() * 1000),
-                        }
-                    )
-                    + "\n"
-                )
-            except Exception:
-                pass
-        # endregion
         response.headers["X-Request-ID"] = request_id
         structlog.contextvars.unbind_contextvars("request_id")
         return response
@@ -1454,35 +1400,6 @@ def create_app() -> FastAPI:
     # ── Global exception handler ───────────────────────────────────────────────
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-        # region agent log
-        try:
-            import json as _j
-            import time as _t
-            from pathlib import Path as _Path
-
-            _Path(__file__).resolve().parents[2].joinpath(
-                "debug-43baa8.log"
-            ).open("a", encoding="utf-8").write(
-                _j.dumps(
-                    {
-                        "sessionId": "43baa8",
-                        "hypothesisId": "H5",
-                        "location": "main.py:global_exception_handler",
-                        "message": "unhandled_exc",
-                        "data": {
-                            "path": str(request.url.path),
-                            "method": request.method,
-                            "exc_type": type(exc).__name__,
-                            "exc_msg": str(exc)[:500],
-                        },
-                        "timestamp": int(_t.time() * 1000),
-                    }
-                )
-                + "\n"
-            )
-        except Exception:
-            pass
-        # endregion
         log.exception(
             "unhandled_api_exception",
             path=str(request.url.path),

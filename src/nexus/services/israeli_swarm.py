@@ -26,6 +26,7 @@ REDIS_URL               — Redis connection string (default: redis://127.0.0.1:
 VAULT_INCOMING_DIR      — Override path to vault/incoming (default: auto-detect)
 VAULT_SESSIONS_DIR      — Override path to vault/sessions (default: auto-detect)
 SWARM_SESSIONS_PER_CYCLE — Telethon send attempts per engine cycle (default 3, max 12)
+SWARM_TELETHON_TIMEOUT_S — Max seconds per Telethon connect/send attempt (default 90, max 300)
 """
 
 from __future__ import annotations
@@ -43,7 +44,6 @@ import threading
 import zipfile
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlparse
 
 log = logging.getLogger("hatan.israeli_swarm")
 
@@ -100,39 +100,13 @@ _REDIS_SWARM_TARGET_KEY = "nexus:swarm:israeli:target_group"
 _REDIS_LAST_ENGINE_ERROR_KEY = "nexus:swarm:israeli:last_engine_error"
 _ISRAELI_EVENTS_KEY = "nexus:swarm:israeli:events"
 _REDIS_POKE_KEY = "nexus:swarm:israeli:poke"
+_ISRAELI_HEARTBEAT_KEY = "nexus:swarm:israeli:heartbeat"
 
 
-# #region agent log
-def _dbg_is43(location: str, message: str, data: dict[str, Any], hypothesis_id: str) -> None:
-    try:
-        with open(_ROOT / "debug-43baa8.log", "a", encoding="utf-8") as _f:
-            _f.write(
-                json.dumps(
-                    {
-                        "sessionId": "43baa8",
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "timestamp": int(time.time() * 1000),
-                        "hypothesisId": hypothesis_id,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-
-
-# #endregion
-
-# #region agent log
-try:
-    _rh = urlparse(_REDIS_URL).hostname or ""
-except Exception:
-    _rh = ""
-_dbg_is43("israeli_swarm.py:init", "redis_url_resolved", {"redis_hostname": _rh}, "H6")
-# #endregion
+def _touch_engine_heartbeat_sync() -> None:
+    """So GET /live-feed can tell the community thread is alive (ISO UTC)."""
+    ts = datetime.now(timezone.utc).isoformat()
+    _redis_sync_set(_ISRAELI_HEARTBEAT_KEY, ts, ex=600)
 
 
 def _rpush_feed_line(message: str, topic: str = "engine") -> None:
@@ -460,105 +434,75 @@ class CommunityEngine:
                     break
 
     async def _cycle(self) -> None:
-        if not _redis_swarm_status_allows_send():
-            log.debug("[COMMUNITY] Swarm paused — Redis status is not 'running'")
-            # #region agent log
-            _dbg_is43(
-                "israeli_swarm.py:_cycle",
-                "early_return",
-                {"reason": "status_not_running_or_stopped"},
-                "H3",
-            )
-            # #endregion
-            return
-
-        group_link = effective_swarm_group_link()
-        if not group_link:
-            msg = "חסר קישור קבוצה — לחץ Start Swarm בדשבורד או הגדר SWARM_GROUP_LINK"
-            log.warning("[COMMUNITY] %s", msg)
-            _publish_engine_error(msg)
-            # #region agent log
-            _dbg_is43("israeli_swarm.py:_cycle", "early_return", {"reason": "no_group_link"}, "H5")
-            # #endregion
-            return
-
-        sessions = list(_VAULT_SESSIONS.glob("*.session"))
-        if not sessions:
-            log.info("[COMMUNITY] No sessions in vault/sessions — triggering immediate harvester scan")
-            if _harvester:
-                try:
-                    _harvester._scan_once()
-                    sessions = list(_VAULT_SESSIONS.glob("*.session"))
-                except Exception as exc:
-                    log.warning("[COMMUNITY] Harvester scan error: %s", exc)
-        if not sessions:
-            hint = _vault_session_inventory_hint()
-            log.warning("[COMMUNITY] %s", hint or "אין סשנים זמינים")
-            _publish_engine_error(hint or "אין קבצי .session ב-vault/sessions")
-            # #region agent log
-            _n_json = len(list(_VAULT_SESSIONS.glob("*.json"))) if _VAULT_SESSIONS.is_dir() else -1
-            _dbg_is43(
-                "israeli_swarm.py:_cycle",
-                "early_return",
-                {"reason": "no_session_files", "json_files": _n_json},
-                "H4",
-            )
-            # #endregion
-            return
-
-        gl_short = (group_link[:56] + "…") if len(group_link) > 56 else group_link
-        _rpush_feed_line(
-            f"[מנוע] מחזור התחיל — יעד: {gl_short} · סשנים זמינים: {len(sessions)}",
-            "engine",
-        )
-
         try:
-            per = int(os.getenv("SWARM_SESSIONS_PER_CYCLE", "3") or "3")
-        except ValueError:
-            per = 3
-        per = max(1, min(per, 12, len(sessions)))
+            if not _redis_swarm_status_allows_send():
+                log.debug("[COMMUNITY] Swarm paused — Redis status is not 'running'")
+                return
 
-        used_stems: set[str] = set()
-        any_sent = False
-        has_api = bool(
-            int(os.getenv("TELEGRAM_API_ID", "0") or os.getenv("TELEFIX_API_ID", "0") or "0")
-        )
-        for _attempt in range(per):
-            pool = [s for s in sessions if s.stem not in used_stems] or sessions
-            session_file = random.choice(pool)
-            used_stems.add(session_file.stem)
-            phone = session_file.stem
-            topic = random.choice(_TOPICS)
-            message = await _generate_hebrew_message(topic)
-            log.info(
-                "[COMMUNITY] Bot %s → topic=%s  msg=%s",
-                phone, topic, message[:60],
-            )
-            sent = await self._try_send_telethon(session_file, message, group_link)
-            if sent:
-                any_sent = True
-                self.messages_sent += 1
-                await self._push_redis_event(phone, topic, message)
-                await self._mark_verified_written(phone)
+            group_link = effective_swarm_group_link()
+            if not group_link:
+                msg = "חסר קישור קבוצה — לחץ Start Swarm בדשבורד או הגדר SWARM_GROUP_LINK"
+                log.warning("[COMMUNITY] %s", msg)
+                _publish_engine_error(msg)
+                return
 
-        # #region agent log
-        _dbg_is43(
-            "israeli_swarm.py:_cycle",
-            "cycle_telethon",
-            {
-                "sent_any": any_sent,
-                "attempts": per,
-                "n_sessions": len(sessions),
-                "has_api_id": has_api,
-            },
-            "H1",
-        )
-        # #endregion
-        if not any_sent and has_api:
+            sessions = list(_VAULT_SESSIONS.glob("*.session"))
+            if not sessions:
+                log.info("[COMMUNITY] No sessions in vault/sessions — triggering immediate harvester scan")
+                if _harvester:
+                    try:
+                        _harvester._scan_once()
+                        sessions = list(_VAULT_SESSIONS.glob("*.session"))
+                    except Exception as exc:
+                        log.warning("[COMMUNITY] Harvester scan error: %s", exc)
+            if not sessions:
+                hint = _vault_session_inventory_hint()
+                log.warning("[COMMUNITY] %s", hint or "אין סשנים זמינים")
+                _publish_engine_error(hint or "אין קבצי .session ב-vault/sessions")
+                return
+
+            gl_short = (group_link[:56] + "…") if len(group_link) > 56 else group_link
             _rpush_feed_line(
-                "[מנוע] מחזור הסתיים ללא שליחה מוצלחת — בדוק last_engine_error / לוגי Telethon",
+                f"[מנוע] מחזור התחיל — יעד: {gl_short} · סשנים זמינים: {len(sessions)}",
                 "engine",
             )
+
+            try:
+                per = int(os.getenv("SWARM_SESSIONS_PER_CYCLE", "3") or "3")
+            except ValueError:
+                per = 3
+            per = max(1, min(per, 12, len(sessions)))
+
+            used_stems: set[str] = set()
+            any_sent = False
+            has_api = bool(
+                int(os.getenv("TELEGRAM_API_ID", "0") or os.getenv("TELEFIX_API_ID", "0") or "0")
+            )
+            for _attempt in range(per):
+                pool = [s for s in sessions if s.stem not in used_stems] or sessions
+                session_file = random.choice(pool)
+                used_stems.add(session_file.stem)
+                phone = session_file.stem
+                topic = random.choice(_TOPICS)
+                message = await _generate_hebrew_message(topic)
+                log.info(
+                    "[COMMUNITY] Bot %s → topic=%s  msg=%s",
+                    phone, topic, message[:60],
+                )
+                sent = await self._try_send_telethon(session_file, message, group_link)
+                if sent:
+                    any_sent = True
+                    self.messages_sent += 1
+                    await self._push_redis_event(phone, topic, message)
+                    await self._mark_verified_written(phone)
+
+            if not any_sent and has_api:
+                _rpush_feed_line(
+                    "[מנוע] מחזור הסתיים ללא שליחה מוצלחת — בדוק last_engine_error / לוגי Telethon",
+                    "engine",
+                )
+        finally:
+            _touch_engine_heartbeat_sync()
 
     async def _try_send_telethon(
         self, session_file: pathlib.Path, message: str, group_link: str
@@ -566,11 +510,13 @@ class CommunityEngine:
         if not group_link:
             return False
         try:
+            timeout_s = float(os.getenv("SWARM_TELETHON_TIMEOUT_S", "90") or "90")
+        except ValueError:
+            timeout_s = 90.0
+        timeout_s = max(15.0, min(timeout_s, 300.0))
+
+        try:
             from telethon import TelegramClient  # type: ignore[import]
-            from telethon.errors import (  # type: ignore[import]
-                FloodWaitError,
-                UserBannedInChannelError,
-            )
 
             api_id = int(os.getenv("TELEGRAM_API_ID", "0") or "0")
             if not api_id:
@@ -587,21 +533,32 @@ class CommunityEngine:
                 return False
 
             session_path = str(session_file.with_suffix(""))
-            async with TelegramClient(session_path, api_id, api_hash) as client:
-                try:
-                    await client.get_entity(group_link)
-                except Exception:
-                    await client(
-                        __import__(
-                            "telethon.tl.functions.channels",
-                            fromlist=["JoinChannelRequest"],
-                        ).JoinChannelRequest(group_link)
-                    )
-                    self.bots_joined += 1
-                    await self._push_join_event(session_file.stem, group_link)
 
-                await client.send_message(group_link, message)
-                return True
+            async def _run_client() -> bool:
+                async with TelegramClient(session_path, api_id, api_hash) as client:
+                    try:
+                        await client.get_entity(group_link)
+                    except Exception:
+                        await client(
+                            __import__(
+                                "telethon.tl.functions.channels",
+                                fromlist=["JoinChannelRequest"],
+                            ).JoinChannelRequest(group_link)
+                        )
+                        self.bots_joined += 1
+                        await self._push_join_event(session_file.stem, group_link)
+
+                    await client.send_message(group_link, message)
+                    return True
+
+            try:
+                return await asyncio.wait_for(_run_client(), timeout=timeout_s)
+            except asyncio.TimeoutError:
+                detail = f"{session_file.stem}: Telethon timeout {timeout_s:.0f}s"
+                log.warning("[COMMUNITY] %s", detail)
+                _publish_engine_error(detail)
+                _rpush_feed_line(f"[מנוע] {detail}", "engine")
+                return False
 
         except ImportError:
             msg = "חבילת telethon לא מותקנת בסביבת israeli-swarm"

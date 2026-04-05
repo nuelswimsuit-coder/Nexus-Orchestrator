@@ -286,30 +286,6 @@ async def trigger_sync(
 
     Stream live progress via GET /api/deploy/progress/worker_linux (SSE).
     """
-    # region agent log
-    try:
-        import json as _j
-        import time as _t
-        from pathlib import Path as _Path
-
-        _Path(__file__).resolve().parents[3].joinpath("debug-43baa8.log").open(
-            "a", encoding="utf-8"
-        ).write(
-            _j.dumps(
-                {
-                    "sessionId": "43baa8",
-                    "hypothesisId": "H2",
-                    "location": "deploy.py:trigger_sync:entry",
-                    "message": "sync_handler_enter",
-                    "data": {"active_keys": list(_active_deploys.keys())},
-                    "timestamp": int(_t.time() * 1000),
-                }
-            )
-            + "\n"
-        )
-    except Exception:
-        pass
-    # endregion
     # Cancel stale tasks
     stale = [jid for jid, t in _active_deploys.items() if t.done()]
     for jid in stale:
@@ -326,31 +302,6 @@ async def trigger_sync(
 
     started = datetime.now(timezone.utc).isoformat()
     log.info("sync_triggered", worker_ip=settings.worker_ip)
-
-    # region agent log
-    try:
-        import json as _j
-        import time as _t
-        from pathlib import Path as _Path
-
-        _Path(__file__).resolve().parents[3].joinpath("debug-43baa8.log").open(
-            "a", encoding="utf-8"
-        ).write(
-            _j.dumps(
-                {
-                    "sessionId": "43baa8",
-                    "hypothesisId": "H2",
-                    "location": "deploy.py:trigger_sync:before_return",
-                    "message": "sync_handler_ok",
-                    "data": {"task_done": task.done()},
-                    "timestamp": int(_t.time() * 1000),
-                }
-            )
-            + "\n"
-        )
-    except Exception:
-        pass
-    # endregion
 
     return DeployResponse(
         job_id="sync",

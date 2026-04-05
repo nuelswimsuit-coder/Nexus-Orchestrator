@@ -24,33 +24,6 @@ from nexus.api.hitl_store import HitlStore
 
 async def get_redis(request: Request) -> AsyncGenerator[Redis, None]:
     """Yield the shared Redis client stored in app state."""
-    # region agent log
-    try:
-        import json as _j
-        import time as _t
-        from pathlib import Path as _Path
-
-        _rp = _Path(__file__).resolve().parents[2] / "debug-43baa8.log"
-        _r = getattr(request.app.state, "redis", None)
-        _rp.open("a", encoding="utf-8").write(
-            _j.dumps(
-                {
-                    "sessionId": "43baa8",
-                    "hypothesisId": "H1",
-                    "location": "dependencies.py:get_redis",
-                    "message": "redis_dep_enter",
-                    "data": {
-                        "has_redis_attr": hasattr(request.app.state, "redis"),
-                        "redis_type": type(_r).__name__,
-                    },
-                    "timestamp": int(_t.time() * 1000),
-                }
-            )
-            + "\n"
-        )
-    except Exception:
-        pass
-    # endregion
     yield request.app.state.redis
 
 

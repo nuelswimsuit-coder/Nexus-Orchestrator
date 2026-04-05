@@ -265,6 +265,26 @@ def _is_redis_running(host: str = "127.0.0.1", port: int = 6379) -> bool:
     return False
 
 
+def _wait_for_redis_ready(logf, timeout_s: float = 30.0, poll_s: float = 0.5) -> bool:
+    """Block until bundled/local Redis answers PING (avoids API starting on fakeredis due to race)."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if _is_redis_running():
+            return True
+        time.sleep(poll_s)
+    msg = f"[launcher] WARN: Redis PING not ready after {timeout_s:.0f}s — API may use degraded mode."
+    _dbg(msg)
+    if logf:
+        with _log_lock:
+            logf.write(msg + "\n")
+            logf.flush()
+    with _ring_lock:
+        _log_rings.setdefault("redis", collections.deque(maxlen=_RING_SIZE)).append(
+            "WARN: Redis PING timeout — API may be degraded"
+        )
+    return False
+
+
 def _warn_if_bundled_redis_missing_lan_conf(logf) -> None:
     """If LAN workers are expected but our bundled redis-server was started without redis.windows-lan.conf, log loudly."""
     if sys.platform != "win32" or not _redis_listen_lan():
@@ -801,6 +821,11 @@ def main() -> int:
                 time.sleep(2)
             else:
                 time.sleep(2)
+
+        with _log_lock:
+            logf.write("[launcher] waiting for Redis PING (up to 30 s) before child services...\n")
+            logf.flush()
+        _wait_for_redis_ready(logf, timeout_s=30.0, poll_s=0.5)
 
         # ── Free port 8002 ────────────────────────────────────────────────────
         _kill_port(8002)

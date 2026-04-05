@@ -286,25 +286,6 @@ export default function NexusOsGodMode() {
         setDbSyncStatus("ok");
         setDbSyncMessage(null);
         setMarketData(data);
-        // #region agent log
-        fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "7ec1ca" },
-          body: JSON.stringify({
-            sessionId: "7ec1ca",
-            location: "NexusOsGodMode.tsx:fetchDashboardData",
-            message: "dashboard json received",
-            data: {
-              portfolio_value: data.portfolio_value ?? null,
-              positions_list_len: (data.portfolio_positions_list ?? []).length,
-              collateral_usdc: data.collateral_usdc ?? null,
-            },
-            timestamp: Date.now(),
-            hypothesisId: "H5",
-            runId: "pre-fix",
-          }),
-        }).catch(() => {});
-        // #endregion
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1125,20 +1106,6 @@ function GroupFactoryView() {
   const [factoryGroupsHint, setFactoryGroupsHint] = useState<string | null>(null);
 
   const showToast = (msg: string, ok = true) => {
-    // #region agent log
-    fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c7f075" },
-      body: JSON.stringify({
-        sessionId: "c7f075",
-        location: "NexusOsGodMode.tsx:GroupFactoryView.showToast",
-        message: "group_factory_toast",
-        data: { msg, ok },
-        timestamp: Date.now(),
-        hypothesisId: "H0",
-      }),
-    }).catch(() => {});
-    // #endregion
     setToast({ msg, ok });
     setTimeout(() => setToast(null), 5000);
   };
@@ -1170,23 +1137,7 @@ function GroupFactoryView() {
   const loadSchedule = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/telefix/group-factory/schedule`);
-      // #region agent log
-      if (!res.ok) {
-        fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c7f075" },
-          body: JSON.stringify({
-            sessionId: "c7f075",
-            location: "NexusOsGodMode.tsx:loadSchedule",
-            message: "group_factory_schedule_fetch",
-            data: { status: res.status, apiBase: API_BASE },
-            timestamp: Date.now(),
-            hypothesisId: "H3",
-          }),
-        }).catch(() => {});
-        return;
-      }
-      // #endregion
+      if (!res.ok) return;
       const j = (await res.json()) as { settings: GroupFactorySettingsForm };
       if (j.settings) {
         setScheduleSettings(j.settings);
@@ -1198,23 +1149,6 @@ function GroupFactoryView() {
   const loadActivity = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/telefix/group-factory/activity`);
-      // #region agent log
-      if (!res.ok) {
-        fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c7f075" },
-          body: JSON.stringify({
-            sessionId: "c7f075",
-            location: "NexusOsGodMode.tsx:loadActivity",
-            message: "group_factory_activity_fetch",
-            data: { status: res.status, apiBase: API_BASE },
-            timestamp: Date.now(),
-            hypothesisId: "H3",
-          }),
-        }).catch(() => {});
-        return;
-      }
-      // #endregion
       if (!res.ok) return;
       const j = (await res.json()) as { entries?: ActivityEntry[] };
       setActivityEntries(Array.isArray(j.entries) ? j.entries : []);
