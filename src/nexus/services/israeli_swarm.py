@@ -25,6 +25,7 @@ TELEFIX_DB_PATH         — Override path to telefix.db
 REDIS_URL               — Redis connection string (default: redis://127.0.0.1:6379/0)
 VAULT_INCOMING_DIR      — Override path to vault/incoming (default: auto-detect)
 VAULT_SESSIONS_DIR      — Override path to vault/sessions (default: auto-detect)
+SWARM_SESSIONS_PER_CYCLE — Telethon send attempts per engine cycle (default 3, max 12)
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ import threading
 import zipfile
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 log = logging.getLogger("hatan.israeli_swarm")
 
@@ -52,6 +54,34 @@ def _project_root() -> pathlib.Path:
 
 
 _ROOT = _project_root()
+
+
+def _resolve_redis_dsn() -> str:
+    """
+    Use the same Redis URL coercion as the API (start_api.py): load .env,
+    then apply_redis_url_to_environment() so Windows [::1] matches the broker
+    the API writes to (avoids 127.0.0.1 vs IPv6 loopback split-brain).
+    """
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(_ROOT / ".env", override=False)
+    except Exception:
+        pass
+    try:
+        from nexus.shared.redis_util import apply_redis_url_to_environment, default_redis_url_string
+
+        apply_redis_url_to_environment()
+        return (os.environ.get("REDIS_URL") or "").strip() or default_redis_url_string()
+    except Exception:
+        try:
+            from nexus.shared.redis_util import default_redis_url_string
+
+            return (os.getenv("REDIS_URL") or "").strip() or default_redis_url_string()
+        except Exception:
+            return (os.getenv("REDIS_URL") or "").strip() or "redis://127.0.0.1:6379/0"
+
+
 _VAULT_INCOMING = pathlib.Path(
     os.getenv("VAULT_INCOMING_DIR", str(_ROOT / "vault" / "incoming"))
 )
@@ -61,13 +91,14 @@ _VAULT_SESSIONS = pathlib.Path(
 _TELEFIX_DB = pathlib.Path(
     os.getenv("TELEFIX_DB_PATH", str(_ROOT / "telefix.db"))
 )
-_REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+_REDIS_URL = _resolve_redis_dsn()
 _GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 _GROUP_LINK = os.getenv("SWARM_GROUP_LINK", "")
 # Written by POST /api/swarm/start — must be readable here so UI link works without env restart.
 _REDIS_SWARM_STATUS_KEY = "nexus:swarm:israeli:status"
 _REDIS_SWARM_TARGET_KEY = "nexus:swarm:israeli:target_group"
 _REDIS_LAST_ENGINE_ERROR_KEY = "nexus:swarm:israeli:last_engine_error"
+_ISRAELI_EVENTS_KEY = "nexus:swarm:israeli:events"
 
 
 # #region agent log
@@ -93,6 +124,39 @@ def _dbg_is43(location: str, message: str, data: dict[str, Any], hypothesis_id: 
 
 
 # #endregion
+
+# #region agent log
+try:
+    _rh = urlparse(_REDIS_URL).hostname or ""
+except Exception:
+    _rh = ""
+_dbg_is43("israeli_swarm.py:init", "redis_url_resolved", {"redis_hostname": _rh}, "H6")
+# #endregion
+
+
+def _rpush_feed_line(message: str, topic: str = "engine") -> None:
+    """Append a dashboard-visible line to the same list as Telethon posts (phone empty → no fake bot row)."""
+    try:
+        import redis as redis_sync
+
+        r = redis_sync.Redis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            payload = json.dumps(
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "phone": "",
+                    "message": message,
+                    "topic": topic,
+                    "engine": "israeli_swarm",
+                },
+                ensure_ascii=False,
+            )
+            r.rpush(_ISRAELI_EVENTS_KEY, payload)
+            r.ltrim(_ISRAELI_EVENTS_KEY, -500, -1)
+        finally:
+            r.close()
+    except Exception:
+        pass
 
 
 def _redis_sync_get(key: str) -> str | None:
@@ -417,36 +481,59 @@ class CommunityEngine:
             # #endregion
             return
 
-        topic = random.choice(_TOPICS)
-        message = await _generate_hebrew_message(topic)
-
-        # Pick a random session for this cycle
-        session_file = random.choice(sessions)
-        phone = session_file.stem
-
-        log.info(
-            "[COMMUNITY] Bot %s → topic=%s  msg=%s",
-            phone, topic, message[:60],
+        gl_short = (group_link[:56] + "…") if len(group_link) > 56 else group_link
+        _rpush_feed_line(
+            f"[מנוע] מחזור התחיל — יעד: {gl_short} · סשנים זמינים: {len(sessions)}",
+            "engine",
         )
 
-        # Attempt Telethon send if available
-        sent = await self._try_send_telethon(session_file, message, group_link)
+        try:
+            per = int(os.getenv("SWARM_SESSIONS_PER_CYCLE", "3") or "3")
+        except ValueError:
+            per = 3
+        per = max(1, min(per, 12, len(sessions)))
+
+        used_stems: set[str] = set()
+        any_sent = False
+        has_api = bool(
+            int(os.getenv("TELEGRAM_API_ID", "0") or os.getenv("TELEFIX_API_ID", "0") or "0")
+        )
+        for _attempt in range(per):
+            pool = [s for s in sessions if s.stem not in used_stems] or sessions
+            session_file = random.choice(pool)
+            used_stems.add(session_file.stem)
+            phone = session_file.stem
+            topic = random.choice(_TOPICS)
+            message = await _generate_hebrew_message(topic)
+            log.info(
+                "[COMMUNITY] Bot %s → topic=%s  msg=%s",
+                phone, topic, message[:60],
+            )
+            sent = await self._try_send_telethon(session_file, message, group_link)
+            if sent:
+                any_sent = True
+                self.messages_sent += 1
+                await self._push_redis_event(phone, topic, message)
+                await self._mark_verified_written(phone)
+
         # #region agent log
         _dbg_is43(
             "israeli_swarm.py:_cycle",
             "cycle_telethon",
             {
-                "sent": sent,
+                "sent_any": any_sent,
+                "attempts": per,
                 "n_sessions": len(sessions),
-                "has_api_id": bool(int(os.getenv("TELEGRAM_API_ID", "0") or os.getenv("TELEFIX_API_ID", "0") or "0")),
+                "has_api_id": has_api,
             },
             "H1",
         )
         # #endregion
-        if sent:
-            self.messages_sent += 1
-            await self._push_redis_event(phone, topic, message)
-            await self._mark_verified_written(phone)
+        if not any_sent and has_api:
+            _rpush_feed_line(
+                "[מנוע] מחזור הסתיים ללא שליחה מוצלחת — בדוק last_engine_error / לוגי Telethon",
+                "engine",
+            )
 
     async def _try_send_telethon(
         self, session_file: pathlib.Path, message: str, group_link: str

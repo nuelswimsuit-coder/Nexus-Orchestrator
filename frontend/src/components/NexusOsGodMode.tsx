@@ -211,6 +211,20 @@ const DECISION_DOT: Record<string, string> = {
   logic: "bg-amber-500 shadow-[0_0_8px_rgba(251,191,36,0.5)]",
 };
 
+const NEXUS_OS_VALID_TABS = new Set([
+  "master-hub",
+  "swarm-monitor",
+  "group-factory",
+  "ahu-management",
+  "bot-generator",
+  "session-swarm",
+  "scrape-data",
+  "live-swarm",
+  "poly-trading",
+  "ai-architect",
+  "master-terminal",
+]);
+
 // ── Root ────────────────────────────────────────────────────────────────────
 
 export default function NexusOsGodMode() {
@@ -218,9 +232,31 @@ export default function NexusOsGodMode() {
   const [currentTime, setCurrentTime] = useState("");
   const [marketData, setMarketData] = useState<GodModeDashboard | null>(null);
 
+  const setActiveTabWithUrl = useCallback((id: string) => {
+    setActiveTab(id);
+    if (typeof window === "undefined") return;
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.set("tab", id);
+      const q = u.searchParams.toString();
+      window.history.replaceState({}, "", q ? `${u.pathname}?${q}` : u.pathname);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
-    if (tab) setActiveTab(tab);
+    if (tab && NEXUS_OS_VALID_TABS.has(tab)) setActiveTab(tab);
+  }, []);
+
+  useEffect(() => {
+    const onPop = () => {
+      const tab = new URLSearchParams(window.location.search).get("tab");
+      if (tab && NEXUS_OS_VALID_TABS.has(tab)) setActiveTab(tab);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
   }, []);
   const [loading, setLoading] = useState(true);
   const [warmGroups, setWarmGroups] = useState<number>(0);
@@ -362,14 +398,14 @@ export default function NexusOsGodMode() {
             icon={<LayoutDashboard size={18} />}
             label="לוח בקרה ראשי"
             active={activeTab}
-            setActive={setActiveTab}
+            setActive={setActiveTabWithUrl}
           />
           <MenuItem
             id="swarm-monitor"
             icon={<Network size={18} />}
             label="נחיל מחשבים (Swarm)"
             active={activeTab}
-            setActive={setActiveTab}
+            setActive={setActiveTabWithUrl}
           />
 
           <MenuSection label="מפעל טלגרם" />
@@ -378,35 +414,35 @@ export default function NexusOsGodMode() {
             icon={<Rocket size={18} />}
             label="מפעל קבוצות"
             active={activeTab}
-            setActive={setActiveTab}
+            setActive={setActiveTabWithUrl}
           />
           <MenuItem
             id="ahu-management"
             icon={<Users size={18} />}
             label="ניהול אהו (Ops Sync)"
             active={activeTab}
-            setActive={setActiveTab}
+            setActive={setActiveTabWithUrl}
           />
           <MenuItem
             id="bot-generator"
             icon={<Users size={18} />}
             label="מלאי נחיל גלובלי (Inventory)"
             active={activeTab}
-            setActive={setActiveTab}
+            setActive={setActiveTabWithUrl}
           />
           <MenuItem
             id="session-swarm"
             icon={<Network size={18} />}
             label="נחיל סשנים גלובלי"
             active={activeTab}
-            setActive={setActiveTab}
+            setActive={setActiveTabWithUrl}
           />
           <MenuItem
             id="scrape-data"
             icon={<Database size={18} />}
             label="ארכיון סריקות"
             active={activeTab}
-            setActive={setActiveTab}
+            setActive={setActiveTabWithUrl}
           />
 
           <MenuSection label="קהילה ונחיל" />
@@ -415,7 +451,7 @@ export default function NexusOsGodMode() {
             icon={<MessageSquareCode size={18} />}
             label="קהילה חיה (Live AI Swarm)"
             active={activeTab}
-            setActive={setActiveTab}
+            setActive={setActiveTabWithUrl}
           />
 
           <MenuSection label="פיננסי ואבולוציה" />
@@ -424,14 +460,14 @@ export default function NexusOsGodMode() {
             icon={<TrendingUp size={18} />}
             label="Polymarket & BTC"
             active={activeTab}
-            setActive={setActiveTab}
+            setActive={setActiveTabWithUrl}
           />
           <MenuItem
             id="ai-architect"
             icon={<Dna size={18} />}
             label="תהליך פיתוח AI"
             active={activeTab}
-            setActive={setActiveTab}
+            setActive={setActiveTabWithUrl}
           />
 
           <MenuSection label="מסוף ואבחון" />
@@ -440,7 +476,7 @@ export default function NexusOsGodMode() {
             icon={<Terminal size={18} />}
             label="Live Master Terminal"
             active={activeTab}
-            setActive={setActiveTab}
+            setActive={setActiveTabWithUrl}
           />
         </nav>
 
