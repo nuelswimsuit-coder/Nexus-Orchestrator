@@ -528,13 +528,13 @@ async def _apply_swarm_identity(client: Any, stem: str) -> None:
         os.close(fd)
         tmp_path = pathlib.Path(tmp)
         loop = asyncio.get_event_loop()
-        ok = await loop.run_in_executor(
-            None,
-            lambda: _download_file_sync(avatar_url, tmp_path),  # type: ignore[misc]
-        )
-        if ok and tmp_path is not None:
-            from telethon.tl.functions.photos import UploadProfilePhotoRequest  # type: ignore[import]
+        dest = tmp_path
 
+        def _dl() -> bool:
+            return _download_file_sync(avatar_url, dest)
+
+        ok = await loop.run_in_executor(None, _dl)
+        if ok and tmp_path is not None:
             file = await client.upload_file(str(tmp_path))
             await client(UploadProfilePhotoRequest(file=file))
         else:
