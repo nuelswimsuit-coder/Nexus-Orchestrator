@@ -108,6 +108,7 @@ interface TelefixGroup {
   name_he: string;
   warmup_days: number;
   in_search: boolean;
+  telegram_link?: string | null;
 }
 
 interface SwarmSession {
@@ -1055,6 +1056,48 @@ function CreateGroupModal({ onClose, onCreated }: CreateGroupModalProps) {
 
 // ── Group Factory View ───────────────────────────────────────────────────────
 
+function normalizeTelegramInviteHref(raw: string): string {
+  const s = raw.trim();
+  if (!s) return s;
+  if (/^https?:\/\//i.test(s)) return s;
+  if (/^(t\.me|telegram\.me)\//i.test(s)) return `https://${s}`;
+  if (s.startsWith("@")) return `https://t.me/${s.slice(1)}`;
+  return s;
+}
+
+/** Returns a safe href for <a>, or null if nothing usable. */
+function displayTelegramInviteHref(raw: string | null | undefined): string | null {
+  const s = (raw ?? "").trim();
+  if (!s) return null;
+  const lower = s.toLowerCase();
+  if (lower.includes("t.me/") || lower.includes("telegram.me/") || lower.startsWith("@")) {
+    return normalizeTelegramInviteHref(s);
+  }
+  if (/^https?:\/\//i.test(s)) return s;
+  return null;
+}
+
+function pickGroupInviteLink(
+  db: TelefixDbGroup | undefined,
+  vault: TelefixGroup | undefined,
+  inviteByTitle: Map<string, string>,
+): string | null {
+  if (db) {
+    const inv = db.invite_link?.trim();
+    if (inv) return inv;
+    const un = db.username?.trim();
+    if (un) return `https://t.me/${un.replace(/^@/, "")}`;
+  }
+  const vaultLink = vault?.telegram_link?.trim();
+  if (vaultLink) return vaultLink;
+  const nameKey = db?.title ?? vault?.name_he;
+  if (nameKey) {
+    const byName = inviteByTitle.get(nameKey)?.trim();
+    if (byName) return byName;
+  }
+  return null;
+}
+
 type GroupFactorySettingsForm = {
   warmup_days: number;
   cooldown_hours: number;
@@ -1253,7 +1296,14 @@ function GroupFactoryView() {
         try {
           const errBody = (await res.json()) as { detail?: string | string[] };
           if (typeof errBody.detail === "string") detail = errBody.detail;
-          else if (Array.isArray(errBody.detail)) detail = errBody.detail.map((x) => x.msg ?? x).join("; ");
+          else if (Array.isArray(errBody.detail))
+            detail = errBody.detail
+              .map((x) =>
+                typeof x === "object" && x !== null && "msg" in x
+                  ? String((x as { msg: string }).msg)
+                  : String(x),
+              )
+              .join("; ");
         } catch { /* ignore */ }
         throw new Error(detail);
       }
@@ -1296,7 +1346,7 @@ function GroupFactoryView() {
           return {
             id: String(g.id),
             name: g.title,
-            invite: g.invite_link,
+            invite: pickGroupInviteLink(g, warmup, inviteByTitle),
             days: warmup?.warmup_days ?? (i % 2 === 0 ? 14 : 7),
             status: warmup?.in_search
               ? "READY"
@@ -1310,7 +1360,7 @@ function GroupFactoryView() {
       : warmupGroups.map((g) => ({
           id: g.id,
           name: g.name_he,
-          invite: inviteByTitle.get(g.name_he) ?? null,
+          invite: pickGroupInviteLink(undefined, g, inviteByTitle),
           days: g.warmup_days,
           status: g.in_search
             ? "READY"
@@ -1480,14 +1530,16 @@ function GroupFactoryView() {
               <div className="text-sm mt-1">לחץ &quot;צור קבוצה חדשה&quot; כדי להתחיל</div>
             </div>
           )}
-          {rows.map((group) => (
+          {rows.map((group) => {
+            const inviteHref = displayTelegramInviteHref(group.invite);
+            return (
             <div
               key={group.id}
               className="bg-slate-950/50 p-6 rounded-3xl border border-slate-800 flex items-center justify-between group hover:border-cyan-500/50 transition flex-wrap gap-4"
             >
-              <div className="flex items-center gap-6">
+              <div className="flex items-center gap-6 min-w-0 flex-1">
                 <div
-                  className={`w-14 h-14 rounded-2xl flex items-center justify-center ${
+                  className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 ${
                     group.status === "READY"
                       ? "bg-emerald-500/20 text-emerald-400"
                       : "bg-amber-500/20 text-amber-400"
@@ -1499,24 +1551,45 @@ function GroupFactoryView() {
                     <Clock size={28} />
                   )}
                 </div>
-                <div>
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <div className="text-lg font-bold text-white">{group.name}</div>
-                    {group.invite && group.invite.startsWith("https://t.me/") ? (
+                    {inviteHref ? (
                       <a
-                        href={group.invite}
+                        href={inviteHref}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-[10px] text-cyan-400 hover:text-cyan-300 font-bold border border-cyan-500/30 px-2 py-0.5 rounded-lg transition"
+                        className="text-[10px] text-cyan-400 hover:text-cyan-300 font-bold border border-cyan-500/30 px-2 py-0.5 rounded-lg transition shrink-0"
                       >
-                        הצטרף ↗
+                        פתח ↗
                       </a>
                     ) : (
-                      <span className="text-[10px] text-rose-400 font-bold border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 rounded-lg">
-                        🔴 אין קישור
+                      <span className="text-[10px] text-rose-400 font-bold border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 rounded-lg shrink-0">
+                        אין קישור
                       </span>
                     )}
                   </div>
+                  {inviteHref ? (
+                    <a
+                      href={inviteHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={inviteHref}
+                      className="mt-1.5 block text-xs font-mono text-cyan-300/90 hover:text-cyan-200 break-all text-left leading-snug dir-ltr max-w-xl"
+                    >
+                      {inviteHref}
+                    </a>
+                  ) : group.invite?.trim() ? (
+                    <div
+                      className="mt-1.5 text-xs font-mono text-amber-400/90 break-all text-left leading-snug dir-ltr max-w-xl"
+                      title={group.invite}
+                    >
+                      {group.invite}
+                      <span className="block text-[10px] text-slate-500 font-sans mt-0.5 dir-rtl text-right">
+                        (פורמט לא מזוהה — העתקה ידנית)
+                      </span>
+                    </div>
+                  ) : null}
                   <div className="flex items-center gap-3 mt-1">
                     <span className="text-xs text-slate-500 font-bold">
                       חימום: {group.days}/14 יום
@@ -1562,7 +1635,8 @@ function GroupFactoryView() {
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 

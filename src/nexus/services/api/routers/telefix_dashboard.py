@@ -503,11 +503,13 @@ async def get_telefix_groups() -> TelefixGroupsResponse:
         if not isinstance(g, dict):
             continue
         name = str(g.get("name_he") or g.get("name") or "")
+        raw_link = g.get("telegram_link")
+        vault_invite = str(raw_link).strip() if raw_link else None
         fallback.append(
             TelefixGroupRecord(
                 id=str(g.get("id") or uuid.uuid4().hex[:8]),
                 title=name,
-                invite_link=None,
+                invite_link=vault_invite or None,
             )
         )
     return TelefixGroupsResponse(

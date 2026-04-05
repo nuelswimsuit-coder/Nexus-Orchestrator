@@ -99,6 +99,7 @@ _REDIS_SWARM_STATUS_KEY = "nexus:swarm:israeli:status"
 _REDIS_SWARM_TARGET_KEY = "nexus:swarm:israeli:target_group"
 _REDIS_LAST_ENGINE_ERROR_KEY = "nexus:swarm:israeli:last_engine_error"
 _ISRAELI_EVENTS_KEY = "nexus:swarm:israeli:events"
+_REDIS_POKE_KEY = "nexus:swarm:israeli:poke"
 
 
 # #region agent log
@@ -184,6 +185,23 @@ def _redis_sync_set(key: str, value: str, ex: int = 7200) -> None:
             r.close()
     except Exception:
         pass
+
+
+def _consume_poke_sync() -> bool:
+    """True if dashboard/API requested an immediate engine cycle (SET by POST /swarm/start)."""
+    try:
+        import redis as redis_sync
+
+        r = redis_sync.Redis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            if r.exists(_REDIS_POKE_KEY):
+                r.delete(_REDIS_POKE_KEY)
+                return True
+            return False
+        finally:
+            r.close()
+    except Exception:
+        return False
 
 
 def _publish_engine_error(detail: str) -> None:
@@ -432,7 +450,14 @@ class CommunityEngine:
             except Exception as exc:
                 log.warning("[COMMUNITY] Cycle error: %s", exc)
             delay = random.randint(self.MIN_DELAY_S, self.MAX_DELAY_S)
-            self._stop.wait(timeout=delay)
+            remaining = delay
+            while remaining > 0 and not self._stop.is_set():
+                chunk = min(remaining, 5)
+                if self._stop.wait(timeout=chunk):
+                    break
+                remaining -= chunk
+                if _consume_poke_sync():
+                    break
 
     async def _cycle(self) -> None:
         if not _redis_swarm_status_allows_send():

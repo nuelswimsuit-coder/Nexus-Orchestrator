@@ -9,6 +9,7 @@ import pathlib
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, HTTPException
@@ -364,6 +365,16 @@ _ISRAELI_WRITTEN_KEY = "nexus:swarm:israeli:written_count"
 _ISRAELI_EVENTS_KEY = "nexus:swarm:israeli:events"
 _ISRAELI_STATUS_KEY = "nexus:swarm:israeli:status"
 _ISRAELI_LAST_ENGINE_ERROR_KEY = "nexus:swarm:israeli:last_engine_error"
+_ISRAELI_POKE_KEY = "nexus:swarm:israeli:poke"
+
+
+def _redis_db_index_for_log() -> str:
+    try:
+        p = urlparse(settings.redis_url)
+        seg = (p.path or "/0").strip("/").split("/")[0]
+        return seg if seg.isdigit() else (seg or "0")
+    except Exception:
+        return "?"
 
 
 async def _append_swarm_feed_line(
@@ -586,17 +597,24 @@ async def start_swarm(body: SwarmStartBody, redis: RedisDep) -> dict[str, Any]:
 
     tg = (body.target_group or "").strip()
     tg_preview = (tg[:48] + "…") if len(tg) > 48 else tg
+    _dbx = _redis_db_index_for_log()
     if tg_preview:
         start_line = (
-            f"[דשבורד] הנחיל הופעל — סטטוס Redis=running · PING={redis_ping} · "
+            f"[דשבורד] הנחיל הופעל — סטטוס Redis=running · PING={redis_ping} · DB={_dbx} · "
             f"יעד נשמר: {tg_preview}"
         )
     else:
         start_line = (
-            f"[דשבורד] הנחיל הופעל — סטטוס Redis=running · PING={redis_ping} · "
+            f"[דשבורד] הנחיל הופעל — סטטוס Redis=running · PING={redis_ping} · DB={_dbx} · "
             "יעד קבוצה: (לא נשלח בבקשה — המנוע יקרא מ-SWARM_GROUP_LINK אם קיים)"
         )
     await _append_swarm_feed_line(redis, start_line, topic="api_start")
+    await redis.set(_ISRAELI_POKE_KEY, "1", ex=120)
+    await _append_swarm_feed_line(
+        redis,
+        "[דשבורד] נשלחה התרעה למנוע (poke) — מחזור פעילות אמור להתחיל תוך עד ~5 שניות",
+        topic="api_start",
+    )
 
     # #region agent log
     _dbg_swarm43(
@@ -615,6 +633,7 @@ async def stop_swarm(redis: RedisDep) -> dict[str, Any]:
     Marks the swarm as stopped in Redis so the UI reflects the correct state.
     """
     await redis.set(_ISRAELI_STATUS_KEY, "stopped")
+    await redis.delete(_ISRAELI_POKE_KEY)
     log.info("swarm_stop_requested")
     redis_ping = "לא ידוע"
     try:
@@ -624,9 +643,10 @@ async def stop_swarm(redis: RedisDep) -> dict[str, Any]:
             redis_ping = "לא תקין"
     except Exception as exc:
         redis_ping = f"שגיאה: {type(exc).__name__}"
+    _dbx = _redis_db_index_for_log()
     await _append_swarm_feed_line(
         redis,
-        f"[דשבורד] הנחיל הופסק — סטטוס Redis=stopped · PING={redis_ping}",
+        f"[דשבורד] הנחיל הופסק — סטטוס Redis=stopped · PING={redis_ping} · DB={_dbx}",
         topic="api_stop",
     )
     return {"ok": True, "status": "stopped"}
