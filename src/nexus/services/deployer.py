@@ -683,6 +683,12 @@ class DeployerService:
         if json_ip:
             return json_ip
         if sys.platform == "win32":
+            # Single-box dev: WORKER_IP=127.0.0.1 but WORKER_IP_WINDOWS unset → avoid SSH to .20.
+            lip = (
+                self._get_setting("worker_ip") or os.environ.get("WORKER_IP") or ""
+            ).strip()
+            if lip and _is_loopback_deploy_host(lip):
+                return "127.0.0.1"
             return DEFAULT_WORKER_LAN_HOST
         if self._local_master_uses_loopback_api():
             return DEFAULT_WORKER_LAN_HOST

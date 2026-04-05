@@ -477,6 +477,36 @@ def _strip_hashtags_and_cleanup(text: str) -> str:
     return s
 
 
+def _image_filename_from_bytes(data: bytes) -> str:
+    """Telegram/Telethon use the filename hint for MIME when uploading from memory."""
+    if len(data) >= 3 and data[:3] == b"\xff\xd8\xff":
+        return "photo.jpg"
+    if len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "photo.png"
+    if len(data) >= 6 and data[:6] in (b"GIF87a", b"GIF89a"):
+        return "photo.gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "photo.webp"
+    return "photo.jpg"
+
+
+def _append_article_link(text: str, link: str, *, max_total: int = 1024) -> str:
+    """Append grounded article URL under the chat line (Telegram caption/message limit)."""
+    u = (link or "").strip()
+    if not u or not u.startswith(("http://", "https://")):
+        return (text or "").strip()[:max_total]
+    base = (text or "").strip()
+    if u in base:
+        return base[:max_total]
+    suffix = f"\n{u}"
+    if len(base) + len(suffix) <= max_total:
+        return (base + suffix)[:max_total]
+    room = max_total - len(suffix)
+    if room < 12:
+        return u[:max_total]
+    return (base[:room].rstrip() + suffix)[:max_total]
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     t = (text or "").strip()
     if not t:
@@ -1048,6 +1078,7 @@ class CommunityEngine:
 
             news_digest_str = ""
             news_anchor_str = ""
+            news_anchor_link = ""
             news_image_url: str | None = None
             try:
                 from nexus.services.recent_news_digest import build_tick_news_bundle
@@ -1055,18 +1086,24 @@ class CommunityEngine:
                 _nb = await build_tick_news_bundle()
                 news_digest_str = _nb.digest_text
                 news_anchor_str = _nb.anchor_title
+                news_anchor_link = (_nb.anchor_link or "").strip()
                 news_image_url = _nb.image_url
             except Exception as exc:
                 log.debug("[COMMUNITY] news bundle skipped: %s", exc)
 
             shared_photo: bytes | None = None
-            if news_image_url and random.random() < 0.5:
+            if news_image_url:
                 try:
                     from nexus.services.recent_news_digest import download_image_bytes
 
                     shared_photo = await download_image_bytes(news_image_url)
                 except Exception:
                     shared_photo = None
+                if shared_photo is None:
+                    log.debug(
+                        "[COMMUNITY] headline image download failed or empty (url=%s)",
+                        (news_image_url[:80] + "…") if len(news_image_url) > 80 else news_image_url,
+                    )
 
             used_stems: set[str] = set()
             any_sent = False
@@ -1119,6 +1156,7 @@ class CommunityEngine:
                     news_digest=news_digest_str,
                     anchor_headline=news_anchor_str,
                 )
+                message = _append_article_link(message, news_anchor_link)
                 log.info(
                     "[COMMUNITY] Bot %s role=%s → msg=%s reply_to=%s",
                     phone,
@@ -1129,7 +1167,7 @@ class CommunityEngine:
                 who_try = f"{sf} {sl}".strip() or phone
                 _rpush_israeli_attempt_sync(phone, who_try)
                 photo_bytes: bytes | None = None
-                if shared_photo and random.random() < 0.55:
+                if shared_photo and random.random() < 0.82:
                     photo_bytes = shared_photo
                 sent, new_mid = await self._try_send_telethon(
                     session_file,
@@ -1220,14 +1258,21 @@ class CommunityEngine:
                         async with client.action(target, "typing"):
                             await asyncio.sleep(random.uniform(2.0, 8.0))
                         if photo_bytes:
+                            fname = _image_filename_from_bytes(photo_bytes)
+                            bio = BytesIO(photo_bytes)
                             try:
                                 sent = await client.send_file(
                                     target,
-                                    file=BytesIO(photo_bytes),
+                                    file=(fname, bio),
                                     caption=message[:1024],
                                     reply_to=reply_to if reply_to else None,
+                                    force_document=False,
                                 )
-                            except Exception:
+                            except Exception as photo_exc:
+                                log.warning(
+                                    "[COMMUNITY] send_file failed (%s) — text only",
+                                    photo_exc,
+                                )
                                 sent = await client.send_message(
                                     target, message, reply_to=reply_to if reply_to else None
                                 )

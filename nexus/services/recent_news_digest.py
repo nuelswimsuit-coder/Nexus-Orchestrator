@@ -109,7 +109,8 @@ def _rss_items_from_xml(xml_text: str, source_label: str) -> list[NewsItem]:
                 if u:
                     img = u
                     break
-            if tag in ("media:content", "media:thumbnail"):
+            # Namespaced MRSS tags become local names ``content`` / ``thumbnail`` after NS strip.
+            if tag in ("content", "thumbnail", "media:content", "media:thumbnail"):
                 u = (child.get("url") or "").strip()
                 if u:
                     img = u
