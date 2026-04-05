@@ -6899,6 +6899,8 @@ interface SwarmFeedData {
   recent_messages?: SwarmRecentMessage[];
   /** Set by israeli_swarm when Telethon / config fails (Redis). */
   last_engine_error?: string;
+  /** True when API uses in-memory Redis (degraded) — not the same broker as israeli_swarm. */
+  redis_degraded?: boolean;
 }
 
 function SwarmBotCard({ bot }: { bot: SwarmBot }) {
@@ -6984,13 +6986,26 @@ function LiveSwarmView() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target_group: targetGroup }),
       });
-      const data = await res.json();
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        detail?: string | { msg?: string }[];
+      };
+      if (!res.ok) {
+        const det = Array.isArray(data.detail)
+          ? data.detail.map((x) => (typeof x === "object" && x && "msg" in x ? String(x.msg) : JSON.stringify(x))).join(" ")
+          : typeof data.detail === "string"
+            ? data.detail
+            : res.statusText;
+        setStatusMsg(`❌ ${det}`);
+        void fetchFeed();
+        return;
+      }
       if (data.ok) {
         setSwarmRunning(true);
         setStatusMsg("✅ הנחיל הופעל בהצלחה!");
         void fetchFeed();
       } else {
-        setStatusMsg(`❌ שגיאה: ${data.detail || "unknown"}`);
+        setStatusMsg(`❌ שגיאה: ${typeof data.detail === "string" ? data.detail : "unknown"}`);
       }
     } catch (e) {
       setStatusMsg(`❌ שגיאת רשת: ${e instanceof Error ? e.message : String(e)}`);
@@ -7001,7 +7016,13 @@ function LiveSwarmView() {
 
   async function handleStopSwarm() {
     try {
-      await fetch(`${API_BASE}/api/swarm/stop`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/swarm/stop`, { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as { detail?: string };
+      if (!res.ok) {
+        setStatusMsg(`❌ ${typeof data.detail === "string" ? data.detail : res.statusText}`);
+        void fetchFeed();
+        return;
+      }
       setSwarmRunning(false);
       setStatusMsg("⏹ הנחיל הופסק");
       void fetchFeed();
@@ -7018,6 +7039,16 @@ function LiveSwarmView() {
 
   return (
     <div className="space-y-6" dir="rtl">
+      {feed?.redis_degraded && (
+        <div className="rounded-2xl border border-rose-500/50 bg-rose-950/50 px-4 py-3 text-[12px] text-rose-100/95 leading-relaxed">
+          <span className="font-black text-rose-400 uppercase tracking-widest text-[10px] block mb-1">
+            Redis — מצב degraded (זיכרון מקומי)
+          </span>
+          ה-API לא מחובר לברוקר Redis האמיתי. תהליך israeli-swarm קורא Redis אחר — לכן Start/Poke והפיד כאן{" "}
+          <strong>לא</strong> מגיעים למנוע. הפעל redis-server, בדוק REDIS_URL, והפעל מחדש את ה-API (בלי
+          NEXUS_ALLOW_DEGRADED).
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center gap-3">
         <div className="w-10 h-10 bg-gradient-to-tr from-purple-600 to-pink-500 rounded-2xl flex items-center justify-center shadow-[0_0_20px_rgba(168,85,247,0.4)]">

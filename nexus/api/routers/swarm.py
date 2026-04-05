@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from nexus.api.dependencies import RedisDep
 from nexus.shared.config import settings
@@ -20,6 +20,16 @@ from nexus.shared.config import settings
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/swarm", tags=["swarm"])
+
+_SWARM_DEGRADED_MSG = (
+    "ה-API במצב Redis מקומי בזיכרון (degraded) — לא אותו ברוקר כמו תהליך israeli-swarm. "
+    "לכן Start/Poke/פיד לא מגיעים למנוע. הפעל redis-server אמיתי, ודא ש-REDIS_URL נכון, "
+    "והפעל מחדש את ה-API (ללא NEXUS_ALLOW_DEGRADED)."
+)
+
+
+def _api_redis_is_degraded(request: Request) -> bool:
+    return bool(getattr(request.app.state, "redis_degraded", False))
 
 SWARM_GROUPS_KEY = "nexus:swarm:warmer:groups"
 SWARM_STATE_PREFIX = "nexus:swarm:warmer:state:"
@@ -436,7 +446,7 @@ class SwarmStartBody(BaseModel):
 
 
 @router.get("/live-feed", summary="Live feed snapshot for the Live AI Swarm tab")
-async def get_live_feed(redis: RedisDep) -> dict[str, Any]:
+async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
     """
     Reads live state written by IsraeliSwarmEngine from Redis and returns
     the SwarmFeedData shape expected by the frontend LiveSwarmView component.
@@ -534,6 +544,11 @@ async def get_live_feed(redis: RedisDep) -> dict[str, Any]:
             else str(last_engine_err_raw)
         )
 
+    redis_degraded = _api_redis_is_degraded(request)
+    if redis_degraded:
+        _banner = _SWARM_DEGRADED_MSG
+        last_engine_error = f"{_banner} | {last_engine_error}" if last_engine_error else _banner
+
     # #region agent log
     _sr = status_raw
     if _sr is None:
@@ -575,12 +590,16 @@ async def get_live_feed(redis: RedisDep) -> dict[str, Any]:
 
 
 @router.post("/start", summary="Signal the Live AI Swarm to start")
-async def start_swarm(body: SwarmStartBody, redis: RedisDep) -> dict[str, Any]:
+async def start_swarm(request: Request, body: SwarmStartBody, redis: RedisDep) -> dict[str, Any]:
     """
     Marks the swarm as running in Redis. The actual IsraeliSwarmEngine process
     is managed by the launcher via SWARM_GROUP_LINK env var; this endpoint
     updates the status flag so the UI reflects the correct state.
     """
+    if _api_redis_is_degraded(request):
+        log.warning("swarm_start_rejected_redis_degraded")
+        raise HTTPException(status_code=503, detail=_SWARM_DEGRADED_MSG)
+
     await redis.set(_ISRAELI_STATUS_KEY, "running")
     if body.target_group:
         await redis.set("nexus:swarm:israeli:target_group", body.target_group)
@@ -628,10 +647,14 @@ async def start_swarm(body: SwarmStartBody, redis: RedisDep) -> dict[str, Any]:
 
 
 @router.post("/stop", summary="Signal the Live AI Swarm to stop")
-async def stop_swarm(redis: RedisDep) -> dict[str, Any]:
+async def stop_swarm(request: Request, redis: RedisDep) -> dict[str, Any]:
     """
     Marks the swarm as stopped in Redis so the UI reflects the correct state.
     """
+    if _api_redis_is_degraded(request):
+        log.warning("swarm_stop_rejected_redis_degraded")
+        raise HTTPException(status_code=503, detail=_SWARM_DEGRADED_MSG)
+
     await redis.set(_ISRAELI_STATUS_KEY, "stopped")
     await redis.delete(_ISRAELI_POKE_KEY)
     log.info("swarm_stop_requested")
