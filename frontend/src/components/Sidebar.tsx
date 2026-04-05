@@ -49,6 +49,7 @@ const NAV_GROUPS: NavGroup[] = [
     groupLabel: "AUTOMATION",
     items: [
       { href: "/incubator",         icon: "🧬", labelKey: "incubator",         descKey: "nav_desc_incubator" },
+      { href: "/niche-lab",         icon: "🧪", labelKey: "niche_lab",         descKey: "nav_desc_niche_lab" },
       { href: "/automation",        icon: "🤖", labelKey: "automation",        descKey: "nav_desc_automation" },
       { href: "/ai-evolution",      icon: "🧠", labelKey: "ai_evolution",      descKey: "nav_desc_ai_evolution" },
       { href: "/swarm-control",     icon: "🐝", labelKey: "swarm_control",     descKey: "nav_desc_swarm_control" },

@@ -1129,6 +1129,7 @@ export default function Header() {
     "/treasury":           "nav.treasury",
     "/automation":         "nav.automation",
     "/incubator":          "nav.incubator",
+    "/niche-lab":          "nav.niche-lab",
     "/settings":           "nav.settings",
     "/about":              "nav.about",
     "/sessions":           "nav.sessions",

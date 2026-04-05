@@ -1,0 +1,16 @@
+Deprecated / legacy TeleFix external-bot coupling (when LEGACY_TELEFIX_BOT_ENABLED=0)
+==================================================================================
+
+The management dashboard uses telefix.db tables group_metadata, member_stats, rank_tracker
+and ARQ task types:
+  - management.group_health_scan  (nexus/worker/tasks/health_check.py)
+  - management.sentinel_seo       (nexus/worker/tasks/sentinel_seo.py)
+
+Worker task types that still subprocess into TELEFIX_ROOT / Mangement Ahu are legacy
+for group operations; prefer the management tasks above for new automation:
+
+  - telegram.auto_add            (telegram_adder.py)
+  - scraper.openclaw             (openclaw.py + _openclaw_verify_helper.py)
+
+AHU HTTP routes (/api/ahu/*) and TeleFix write routes guarded by
+settings.legacy_telefix_bot_enabled return 503 when disabled.

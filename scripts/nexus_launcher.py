@@ -10,6 +10,11 @@ Ctrl+C tears down the full process tree.
 
 Self-healing: any service that exits with a non-zero code is restarted up to 3 times.
 After 3 failed restarts a Telegram critical alert is dispatched.
+
+After Redis is up, the launcher pins ``REDIS_URL`` for all children to the loopback host
+that actually answers PING (``127.0.0.1`` vs ``[::1]``) so API and israeli-swarm stay aligned.
+``israeli-swarm`` is spawned immediately after ``api``; startup waits up to 60s for
+``nexus:swarm:israeli:heartbeat`` and logs WARN if missing.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ import subprocess
 import threading
 import time
 import traceback
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -169,8 +175,8 @@ _SERVICES_ORDER = [
     "deployer",
     "telegram-bot",
     "api",
-    "frontend",
     "israeli-swarm",
+    "frontend",
     "git-sync",
     "polymarket",
 ]
@@ -283,6 +289,101 @@ def _wait_for_redis_ready(logf, timeout_s: float = 30.0, poll_s: float = 0.5) ->
             "WARN: Redis PING timeout — API may be degraded"
         )
     return False
+
+
+def _redis_port_from_environ() -> int:
+    u = (os.environ.get("REDIS_URL") or "").strip()
+    if not u:
+        return 6379
+    try:
+        p = urllib.parse.urlparse(u)
+        return int(p.port or 6379)
+    except Exception:
+        return 6379
+
+
+def _working_redis_dsn(logf, port: int | None = None) -> str:
+    """
+    Pick redis:// URL that answers RESP PING. On Windows, bundled Redis may bind only
+    to ::1 while .env still says 127.0.0.1 — API and israeli-swarm must use the same DSN.
+    """
+    env_u = (os.environ.get("REDIS_URL") or "").strip()
+    if env_u:
+        try:
+            pu = urllib.parse.urlparse(env_u)
+            if pu.username is not None or pu.password is not None:
+                with _log_lock:
+                    logf.write("[launcher] REDIS_URL has credentials — keeping .env URL (no loopback override).\n")
+                    logf.flush()
+                return env_u
+        except Exception:
+            pass
+    pr = int(port) if port is not None else _redis_port_from_environ()
+    for host_key, url in (
+        ("127.0.0.1", f"redis://127.0.0.1:{pr}/0"),
+        ("::1", f"redis://[::1]:{pr}/0"),
+    ):
+        try:
+            with socket.create_connection((host_key, pr), timeout=1.0) as sock:
+                sock.sendall(b"PING\r\n")
+                data = sock.recv(16)
+                if data and data.startswith(b"+PONG"):
+                    with _log_lock:
+                        logf.write(f"[launcher] child REDIS_URL pinned to {url!r} (probe {host_key}:{pr})\n")
+                        logf.flush()
+                    return url
+        except OSError:
+            continue
+    fallback = (os.environ.get("REDIS_URL") or "").strip() or f"redis://127.0.0.1:{pr}/0"
+    with _log_lock:
+        logf.write(
+            f"[launcher] WARN: Redis PING probe failed on 127.0.0.1 and ::1:{pr}; "
+            f"child REDIS_URL fallback {fallback!r}\n"
+        )
+        logf.flush()
+    return fallback
+
+
+def _wait_for_israeli_swarm_heartbeat(child_env: dict[str, str], logf, timeout_s: float = 60.0) -> bool:
+    """Block until israeli_swarm writes nexus:swarm:israeli:heartbeat (or timeout)."""
+    py = _python_for_children()
+    if not py:
+        return False
+    probe = r"""import os,sys,time
+try:
+    import redis
+except ImportError:
+    sys.exit(2)
+url = os.environ.get("REDIS_URL") or "redis://127.0.0.1:6379/0"
+dead = time.time() + float(sys.argv[1])
+r = redis.Redis.from_url(url, decode_responses=True, socket_connect_timeout=5)
+while time.time() < dead:
+    try:
+        if r.get("nexus:swarm:israeli:heartbeat"):
+            sys.exit(0)
+    except Exception:
+        pass
+    time.sleep(0.5)
+sys.exit(1)
+"""
+    try:
+        run_kw: dict[str, object] = {
+            "capture_output": True,
+            "text": True,
+            "env": child_env,
+            "timeout": timeout_s + 20.0,
+        }
+        if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            run_kw["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[assignment]
+        cp = subprocess.run([py, "-c", probe, str(timeout_s)], **run_kw)
+        if cp.returncode == 2:
+            with _log_lock:
+                logf.write("[launcher] WARN: redis Python package missing — cannot probe swarm heartbeat.\n")
+                logf.flush()
+        return cp.returncode == 0
+    except Exception as exc:
+        _dbg(f"[launcher] swarm heartbeat probe error: {exc}")
+        return False
 
 
 def _warn_if_bundled_redis_missing_lan_conf(logf) -> None:
@@ -610,10 +711,10 @@ def _build_rich_layout():
         )
         layout["right"].split_column(
             Layout(name="api"),
+            Layout(name="israeli-swarm"),
             Layout(name="frontend"),
             Layout(name="git-sync"),
             Layout(name="polymarket"),
-            Layout(name="israeli-swarm"),
         )
         return layout
     except ImportError:
@@ -827,6 +928,10 @@ def main() -> int:
             logf.flush()
         _wait_for_redis_ready(logf, timeout_s=30.0, poll_s=0.5)
 
+        _redis_pr = _redis_port_from_environ()
+        _redis_dsn = _working_redis_dsn(logf, _redis_pr)
+        child_env["REDIS_URL"] = _redis_dsn
+
         # ── Free port 8002 ────────────────────────────────────────────────────
         _kill_port(8002)
 
@@ -866,6 +971,12 @@ def main() -> int:
                 child_env,
             ),
             (
+                "israeli-swarm",
+                [py, _subprocess_resource_path("src", "nexus", "services", "israeli_swarm.py")],
+                str(ROOT),
+                child_env,
+            ),
+            (
                 "polymarket",
                 [py, _subprocess_resource_path("scripts", "start_polymarket_bot.py")],
                 str(ROOT),
@@ -886,14 +997,6 @@ def main() -> int:
             [npm_exe, "run", "dev"],
             _frontend_dir,
             _frontend_env,
-        ))
-
-        # Israeli Swarm Engine — session harvester + community engine
-        services.append((
-            "israeli-swarm",
-            [py, _subprocess_resource_path("src", "nexus", "services", "israeli_swarm.py")],
-            str(ROOT),
-            child_env,
         ))
 
         # Git-sync daemon (NexusGitDaemon — master pushes every 10 min, workers pull every 30 min)
@@ -932,6 +1035,35 @@ def main() -> int:
                 "[launcher] NEXUS OS: http://localhost:8002/nexus-os\n"
             )
             logf.flush()
+
+        with _log_lock:
+            logf.write(
+                "[launcher] Waiting for community swarm heartbeat "
+                "(nexus:swarm:israeli:heartbeat, up to 60 s) so Live AI Swarm matches launcher…\n"
+            )
+            logf.flush()
+        _hb_ok = _wait_for_israeli_swarm_heartbeat(child_env, logf, 60.0)
+        with _log_lock:
+            if _hb_ok:
+                logf.write(
+                    "[launcher] Community swarm heartbeat OK — Telegram session pipeline synced with this stack.\n"
+                )
+            else:
+                logf.write(
+                    "[launcher] WARN: swarm heartbeat missing after 60 s — open the israeli-swarm pane above; "
+                    "often: wrong REDIS_URL, import error, or process exit. Same REDIS_URL is now forced for all children.\n"
+                )
+            logf.flush()
+        with _ring_lock:
+            _isr = "israeli-swarm"
+            if _hb_ok:
+                _log_rings.setdefault(_isr, collections.deque(maxlen=_RING_SIZE)).append(
+                    "OK: heartbeat — Live Swarm can sync"
+                )
+            else:
+                _log_rings.setdefault(_isr, collections.deque(maxlen=_RING_SIZE)).append(
+                    "WARN: no heartbeat in 60s — check logs / Redis"
+                )
 
         # ── Start Rich dashboard in a background thread ───────────────────────
         dashboard_thread = threading.Thread(
