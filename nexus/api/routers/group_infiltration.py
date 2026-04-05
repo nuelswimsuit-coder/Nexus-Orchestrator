@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -83,7 +84,12 @@ def _compute_warmup_days(joined_at: str | None) -> int:
 def _enrich(g: dict[str, Any]) -> dict[str, Any]:
     """Add computed fields to a group record before returning to client."""
     g = dict(g)
-    g["warmup_days"] = _compute_warmup_days(g.get("joined_at"))
+    computed = _compute_warmup_days(g.get("joined_at"))
+    initial = g.get("initial_warmup_days")
+    if isinstance(initial, int) and 1 <= initial <= _WARMUP_TARGET:
+        g["warmup_days"] = min(max(computed, initial), _WARMUP_TARGET)
+    else:
+        g["warmup_days"] = computed
     # in_search is True if explicitly set OR warmup is complete
     if not g.get("in_search", False):
         g["in_search"] = g["warmup_days"] >= _WARMUP_TARGET
@@ -113,10 +119,24 @@ class GroupListResponse(BaseModel):
 
 class CreateGroupRequest(BaseModel):
     name_he: str = Field(..., min_length=1, max_length=120, description="שם הקבוצה בעברית")
-    group_id: str = Field(..., min_length=1, description="מזהה ייחודי (Telegram ID או שם)")
+    group_id: str | None = Field(
+        None,
+        min_length=1,
+        description="מזהה ייחודי (Telegram ID או שם); אם חסר — נוצר אוטומטית (Nexus OS)",
+    )
     is_private: bool = False
     telegram_link: str | None = Field(None, description="קישור הזמנה (t.me/...)")
+    invite_link: str | None = Field(
+        None,
+        description="כינוי ל-telegram_link (טופס Nexus OS)",
+    )
     notes: str | None = None
+    warmup_days: int | None = Field(
+        None,
+        ge=1,
+        le=14,
+        description="ימי חימום רצויים מהטופס; נשמר ב-JSON לשימוש עתידי",
+    )
     create_on_telegram: bool = Field(
         False,
         description="אם True — ינסה ליצור קבוצה חדשה ב-Telegram דרך הסשן הראשון הזמין",
@@ -179,14 +199,17 @@ async def create_group(req: CreateGroupRequest) -> GroupRecord:
     data = _load()
     groups: list[dict[str, Any]] = data.get("groups", [])
 
+    gid = (req.group_id or "").strip() or f"g{uuid.uuid4().hex[:8]}"
+
     # Prevent duplicates
-    if any(g["id"] == req.group_id for g in groups):
+    if any(g["id"] == gid for g in groups):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"קבוצה עם ID '{req.group_id}' כבר קיימת ברשימה",
+            detail=f"קבוצה עם ID '{gid}' כבר קיימת ברשימה",
         )
 
-    telegram_link = req.telegram_link
+    raw_link = (req.telegram_link or req.invite_link or "") or None
+    telegram_link = raw_link.strip() if isinstance(raw_link, str) and raw_link.strip() else None
     created_on_telegram = False
 
     if req.create_on_telegram:
@@ -200,7 +223,7 @@ async def create_group(req: CreateGroupRequest) -> GroupRecord:
             # Continue without Telegram — add manually
 
     new_group: dict[str, Any] = {
-        "id": req.group_id,
+        "id": gid,
         "name_he": req.name_he,
         "is_private": req.is_private,
         "in_search": False,
@@ -209,11 +232,13 @@ async def create_group(req: CreateGroupRequest) -> GroupRecord:
         "notes": req.notes,
         "created_on_telegram": created_on_telegram,
     }
+    if req.warmup_days is not None:
+        new_group["initial_warmup_days"] = int(req.warmup_days)
     groups.append(new_group)
     data["groups"] = groups
     _save(data)
 
-    log.info("group_infiltration_added", id=req.group_id, name=req.name_he)
+    log.info("group_infiltration_added", id=gid, name=req.name_he)
     return GroupRecord(**_enrich(new_group))
 
 

@@ -330,19 +330,30 @@ async def run() -> None:
             hint="Set TELEGRAM_BOT_TOKEN (and TELEGRAM_ADMIN_CHAT_ID for alerts) in .env",
         )
 
-    # ── Telegram Command Center (polling) — needs token only ───────────────────
-    if tg_token:
+    # ── Telegram Command Center (polling) ────────────────────────────────────────
+    # Outbound git/Polymarket messages may use TELEGRAM_NEXUS_BOT_TOKEN while the
+    # main menu runs on TELEGRAM_BOT_TOKEN; embedded polling must cover both when
+    # they differ, otherwise /start on the Nexus bot is never received.
+    nexus_tg_token = (os.environ.get("TELEGRAM_NEXUS_BOT_TOKEN") or "").strip()
+    if tg_token or nexus_tg_token:
         try:
             _bot_mod = _importlib.import_module("start_telegram_bot")
-            asyncio.create_task(
-                _bot_mod.start_bot_polling(tg_token),
-                name="telegram-command-center",
-            )
+            if tg_token:
+                asyncio.create_task(
+                    _bot_mod.start_bot_polling(tg_token),
+                    name="telegram-command-center",
+                )
+            if nexus_tg_token and nexus_tg_token != tg_token:
+                asyncio.create_task(
+                    _bot_mod.start_nexus_project_bot_polling(nexus_tg_token),
+                    name="telegram-nexus-project-bot",
+                )
             log.info(
                 "telegram_command_center_live",
                 hint="INFO: Telegram Command Center is now LIVE and listening.",
                 chat_id=tg_chat_id or "(no admin chat — set TELEGRAM_ADMIN_CHAT_ID for alerts)",
-                supervisor_term_timeout_s=supervisor.term_timeout_s,
+                nexus_polling=bool(nexus_tg_token and nexus_tg_token != tg_token),
+                supervisor_term_timeout_s=proc_supervisor.term_timeout_s,
             )
         except Exception as _bot_exc:
             log.warning(

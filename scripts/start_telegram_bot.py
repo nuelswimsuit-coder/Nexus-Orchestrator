@@ -3489,6 +3489,31 @@ async def start_bot_polling(token: str) -> None:
         log.info("telegram_bot_stopped")
 
 
+async def start_nexus_project_bot_polling(token: str) -> None:
+    """
+    Poll ``TELEGRAM_NEXUS_BOT_TOKEN`` when it is a separate bot from the main
+    command-center token. Git sync, Polymarket alerts, and /start on that bot
+    all require this loop; outbound-only HTTP sendMessage is not enough.
+    """
+    print("[START] מאזין לבוט Nexus (פרויקט / התראות)...")
+    log.info("telegram_nexus_bot_embedded_starting")
+    await _preflight_cleanup(token)
+    bot = Bot(
+        token=token,
+        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2),
+    )
+    dp = TgDispatcher()
+    register_polymarket_handlers(dp)
+    register_nexus_project_bot_messages(dp)
+    try:
+        await dp.start_polling(bot)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await bot.session.close()
+        log.info("telegram_nexus_bot_stopped")
+
+
 async def run() -> None:
     # Production bot logs are intentionally concise.
     configure_logging(level="ERROR", node_id=f"{settings.node_id}-telegram-bot")

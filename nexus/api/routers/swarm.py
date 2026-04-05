@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from nexus.api.dependencies import RedisDep
 from nexus.shared.config import settings
+from nexus.shared import redis_util
 
 log = structlog.get_logger(__name__)
 
@@ -378,6 +379,50 @@ _ISRAELI_POKE_KEY = "nexus:swarm:israeli:poke"
 _ISRAELI_HEARTBEAT_KEY = "nexus:swarm:israeli:heartbeat"
 
 
+def _safe_redis_url_for_ui(url: str) -> str:
+    """Host/port/db for UI; masks password. Uses same coercion as runtime client."""
+    u = urlparse(redis_util.coerce_redis_url_for_platform(url))
+    scheme = (u.scheme or "redis").lower()
+    host = u.hostname or "?"
+    port = u.port or 6379
+    db = ((u.path or "/0").strip("/").split("/")[0] or "0")
+    if u.username:
+        auth = f"{u.username}:***@"
+    elif u.password:
+        auth = "***@"
+    else:
+        auth = ""
+    return f"{scheme}://{auth}{host}:{port}/{db}"
+
+
+async def _probe_configured_redis_broker() -> bool:
+    """
+    One-off PING to ``settings.redis_url`` (real broker). Used when the API
+    process is on fakeredis so the UI can distinguish 'broker down' vs
+    'broker up, API stuck in degraded — restart API'.
+    """
+    url = redis_util.coerce_redis_url_for_platform(settings.redis_url)
+    from redis.asyncio import from_url as redis_from_url
+
+    client: Any = None
+    try:
+        client = redis_from_url(
+            url,
+            decode_responses=True,
+            socket_connect_timeout=3.0,
+            socket_timeout=3.0,
+        )
+        return bool(await client.ping())
+    except Exception:
+        return False
+    finally:
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+
+
 def _redis_db_index_for_log() -> str:
     try:
         p = urlparse(settings.redis_url)
@@ -517,11 +562,6 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
             else str(last_engine_err_raw)
         )
 
-    redis_degraded = _api_redis_is_degraded(request)
-    if redis_degraded:
-        _banner = _SWARM_DEGRADED_MSG
-        last_engine_error = f"{_banner} | {last_engine_error}" if last_engine_error else _banner
-
     engine_last_seen_ts = 0.0
     if heartbeat_raw:
         hb_txt = (
@@ -536,6 +576,27 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
                 ).timestamp()
             except Exception:
                 pass
+
+    redis_degraded = _api_redis_is_degraded(request)
+    broker_reachable: bool | None = None
+    configured_redis_url_safe: str | None = None
+
+    if redis_degraded:
+        broker_reachable = await _probe_configured_redis_broker()
+        configured_redis_url_safe = _safe_redis_url_for_ui(settings.redis_url)
+        # Fakeredis state must not look like a live swarm — engine uses the real broker only.
+        is_running = False
+        bots = []
+        active_talkers = 0
+        recent_messages = []
+        verified_count = 0
+        written_count = 0
+        last_message = ""
+        last_message_ts = 0.0
+        last_sender_phone = ""
+        engine_last_seen_ts = 0.0
+        _banner = _SWARM_DEGRADED_MSG
+        last_engine_error = f"{_banner} | {last_engine_error}" if last_engine_error else _banner
 
     return {
         "total_in_group": len(bots),
@@ -552,6 +613,8 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
         "last_engine_error": last_engine_error,
         "redis_degraded": redis_degraded,
         "engine_last_seen_ts": engine_last_seen_ts,
+        "broker_reachable": broker_reachable,
+        "configured_redis_url_safe": configured_redis_url_safe,
     }
 
 

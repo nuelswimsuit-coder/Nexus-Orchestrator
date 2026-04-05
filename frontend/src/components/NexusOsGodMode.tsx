@@ -895,6 +895,32 @@ function MasterHubView({ data }: { data: GodModeDashboard | null }) {
 
 // ── Create Group Modal ──────────────────────────────────────────────────────
 
+function formatFastApiDetail(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((x) =>
+        x && typeof x === "object" && "msg" in x
+          ? String((x as { msg: string }).msg)
+          : typeof x === "string"
+            ? x
+            : JSON.stringify(x),
+      )
+      .join("; ");
+  }
+  if (detail && typeof detail === "object") return JSON.stringify(detail);
+  return "";
+}
+
+function normalizeTelegramInviteHref(raw: string): string {
+  const s = raw.trim();
+  if (!s) return s;
+  if (/^https?:\/\//i.test(s)) return s;
+  if (/^(t\.me|telegram\.me)\//i.test(s)) return `https://${s}`;
+  if (s.startsWith("@")) return `https://t.me/${s.slice(1)}`;
+  return s;
+}
+
 interface CreateGroupModalProps {
   onClose: () => void;
   onCreated: (group: TelefixGroup) => void;
@@ -914,22 +940,32 @@ function CreateGroupModal({ onClose, onCreated }: CreateGroupModalProps) {
     setLoading(true);
     setError(null);
     try {
+      const normalizedInvite = normalizeTelegramInviteHref(inviteLink);
       const res = await fetch(`${API_BASE}/api/telefix/group-infiltration`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name_he: nameHe.trim(),
-          invite_link: inviteLink.trim() || null,
+          invite_link: normalizedInvite.trim() || null,
           is_private: isPrivate,
           warmup_days: warmupDays,
         }),
       });
+      const body = (await res.json().catch(() => ({}))) as {
+        group?: TelefixGroup;
+        id?: string;
+        name_he?: string;
+        detail?: unknown;
+      };
       if (!res.ok) {
-        const j = await res.json().catch(() => ({})) as { detail?: string };
-        throw new Error(j.detail ?? `שגיאה ${res.status}`);
+        const msg = formatFastApiDetail(body.detail) || `שגיאה ${res.status}`;
+        throw new Error(msg);
       }
-      const j = (await res.json()) as { group: TelefixGroup };
-      onCreated(j.group);
+      const group = body.group ?? (body as TelefixGroup);
+      if (!group?.id || !group?.name_he) {
+        throw new Error("תשובת שרת לא צפויה — חסר מזהה קבוצה");
+      }
+      onCreated(group);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "שגיאה לא ידועה");
@@ -971,10 +1007,12 @@ function CreateGroupModal({ onClose, onCreated }: CreateGroupModalProps) {
           <div>
             <label className="block text-xs font-bold text-slate-400 mb-1.5">קישור הזמנה (אופציונלי)</label>
             <input
-              type="url"
+              type="text"
+              inputMode="url"
+              autoComplete="url"
               value={inviteLink}
               onChange={(e) => setInviteLink(e.target.value)}
-              placeholder="https://t.me/..."
+              placeholder="https://t.me/... או t.me/..."
               className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition text-sm"
             />
           </div>
@@ -1037,15 +1075,6 @@ function CreateGroupModal({ onClose, onCreated }: CreateGroupModalProps) {
 }
 
 // ── Group Factory View ───────────────────────────────────────────────────────
-
-function normalizeTelegramInviteHref(raw: string): string {
-  const s = raw.trim();
-  if (!s) return s;
-  if (/^https?:\/\//i.test(s)) return s;
-  if (/^(t\.me|telegram\.me)\//i.test(s)) return `https://${s}`;
-  if (s.startsWith("@")) return `https://t.me/${s.slice(1)}`;
-  return s;
-}
 
 /** Returns a safe href for <a>, or null if nothing usable. */
 function displayTelegramInviteHref(raw: string | null | undefined): string | null {
@@ -6853,6 +6882,10 @@ interface SwarmFeedData {
   redis_degraded?: boolean;
   /** Unix seconds (UTC) when israeli_swarm last finished a cycle (Redis heartbeat). */
   engine_last_seen_ts?: number;
+  /** When degraded: separate PING to ``REDIS_URL`` (real broker), not the in-memory client. */
+  broker_reachable?: boolean | null;
+  /** When degraded: sanitized DSN the API was configured with (password masked). */
+  configured_redis_url_safe?: string | null;
 }
 
 function _formatEngineHeartbeatLine(
@@ -7033,13 +7066,34 @@ function LiveSwarmView() {
   return (
     <div className="space-y-6" dir="rtl">
       {feed?.redis_degraded && (
-        <div className="sticky top-0 z-20 rounded-2xl border border-rose-500/50 bg-rose-950/50 px-4 py-3 text-[12px] text-rose-100/95 leading-relaxed shadow-lg shadow-black/20 backdrop-blur-sm">
+        <div className="sticky top-0 z-20 rounded-2xl border border-rose-500/50 bg-rose-950/50 px-4 py-3 text-[12px] text-rose-100/95 leading-relaxed shadow-lg shadow-black/20 backdrop-blur-sm space-y-2">
           <span className="font-black text-rose-400 uppercase tracking-widest text-[10px] block mb-1">
-            Redis — מצב degraded (זיכרון מקומי)
+            Redis — מצב degraded (זיכרון מקומי / fakeredis)
           </span>
-          ה-API לא מחובר לברוקר Redis האמיתי. תהליך israeli-swarm קורא Redis אחר — לכן Start/Poke והפיד כאן{" "}
-          <strong>לא</strong> מגיעים למנוע. הפעל redis-server, בדוק REDIS_URL, והפעל מחדש את ה-API (בלי
-          NEXUS_ALLOW_DEGRADED).
+          <p>
+            ה-API לא מחובר לברוקר Redis האמיתי. תהליך <strong>israeli-swarm</strong> קורא את{" "}
+            <strong>Redis האמיתי</strong> מ-<code className="text-rose-200/90">REDIS_URL</code> — לכן אין דופק
+            מנוע בפיד הזה, ו-<strong>Start/Poke לא מגיעים למנוע</strong>.
+          </p>
+          {feed.configured_redis_url_safe && (
+            <p className="font-mono text-[11px] text-rose-200/80 break-all" dir="ltr">
+              ברוקר מוגדר: {feed.configured_redis_url_safe}
+            </p>
+          )}
+          {feed.broker_reachable === true && (
+            <p className="rounded-xl border border-emerald-500/40 bg-emerald-950/40 px-3 py-2 text-emerald-100/95">
+              <strong className="text-emerald-300">PING לברוקר הצליח</strong> — Redis זמין, אבל תהליך ה-API נשאר על
+              fakeredis. <strong>הפעל מחדש את שרת ה-API</strong> (או הרץ דרך <code className="text-emerald-200/90">nexus_launcher</code> אחרי ש-redis-server עלה) כדי
+              להתחבר לברוקר האמיתי.
+            </p>
+          )}
+          {feed.broker_reachable === false && (
+            <p className="rounded-xl border border-amber-500/40 bg-amber-950/35 px-3 py-2 text-amber-100/95">
+              <strong className="text-amber-300">PING לברוקר נכשל</strong> — הפעל <code className="text-amber-200/90">redis-server</code>, ודא
+              ש-<code className="text-amber-200/90">REDIS_URL</code> תואם לפורט/מחשב הנכון (ב-Windows לעיתים{" "}
+              <code className="text-amber-200/90">[::1]:6379</code>), ואז הפעל מחדש את ה-API.
+            </p>
+          )}
         </div>
       )}
       {/* Header */}

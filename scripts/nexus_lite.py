@@ -23,7 +23,7 @@ from nexus.shared.config import settings
 from nexus.shared.logging_config import configure_logging
 from nexus.shared.system_settings import read_system_settings
 from scripts.start_api import _patch_redis_for_environment
-from scripts.start_telegram_bot import start_bot_polling
+from scripts.start_telegram_bot import start_bot_polling, start_nexus_project_bot_polling
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -93,8 +93,11 @@ async def run(
     _patch_redis_for_environment()
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "") or settings.telegram_bot_token
-    if not token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Set it in .env or environment.")
+    nexus_tok = (os.environ.get("TELEGRAM_NEXUS_BOT_TOKEN") or "").strip()
+    if not token and not nexus_tok:
+        raise RuntimeError(
+            "Set TELEGRAM_BOT_TOKEN and/or TELEGRAM_NEXUS_BOT_TOKEN in .env (at least one required)."
+        )
 
     api_server, api_thread = _start_api_thread()
 
@@ -112,8 +115,20 @@ async def run(
     if before_telegram_poll is not None:
         await before_telegram_poll()
 
+    poll_tasks: list[asyncio.Task[None]] = []
+    if token:
+        poll_tasks.append(
+            asyncio.create_task(start_bot_polling(token), name="nexus-lite-tg-main"),
+        )
+    if nexus_tok and nexus_tok != token:
+        poll_tasks.append(
+            asyncio.create_task(
+                start_nexus_project_bot_polling(nexus_tok),
+                name="nexus-lite-tg-nexus",
+            ),
+        )
     try:
-        await start_bot_polling(token)
+        await asyncio.gather(*poll_tasks)
     finally:
         api_server.should_exit = True
         for _ in range(100):  # ~10s max graceful shutdown wait
