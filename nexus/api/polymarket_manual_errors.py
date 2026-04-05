@@ -7,13 +7,6 @@ from typing import Literal
 
 from nexus.trading.polymarket_client import get_polymarket_clob_funder_address
 
-# Bump when changing enrich copy; exposed on GET /api/polymarket/dashboard.json as manual_order_error_enrich.
-MANUAL_ORDER_ENRICH_REV = "v5"
-
-# Appended to every enriched balance error — if you never see this in the UI, the client is not
-# hitting the same Python codebase that defines this module (stale worker, wrong host, or old venv).
-_ENRICH_FOOTER = f"\n\n— nexus:polymarket-enrich@{MANUAL_ORDER_ENRICH_REV}"
-
 
 def enrich_manual_order_error(err: str | None, side: Literal["BUY", "SELL"]) -> str:
     """
@@ -62,7 +55,6 @@ def enrich_manual_order_error(err: str | None, side: Literal["BUY", "SELL"]) -> 
             "POLYMARKET_PORTFOLIO_ADDRESS so UI and trading refer to the same account."
             f"{deposit_line}\n\n"
             "מכירה: נדרשות מניות על כתובת ה-maker — לא USDC."
-            f"{_ENRICH_FOOTER}"
         )
 
     return (
@@ -71,5 +63,4 @@ def enrich_manual_order_error(err: str | None, side: Literal["BUY", "SELL"]) -> 
         f"\n{addr}{mismatch}{deposit_line}\n\n"
         "Set POLYMARKET_API_* (L2) so balance matches the app, or use Polymarket to refresh allowance after deposit.\n\n"
         "קנייה: נדרש USDC על כתובת החתימה / maker."
-        f"{_ENRICH_FOOTER}"
     )

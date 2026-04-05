@@ -18,11 +18,10 @@ from typing import Any, Literal
 import httpx
 import structlog
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from nexus.api.dependencies import RedisDep
-from nexus.api.polymarket_manual_errors import MANUAL_ORDER_ENRICH_REV, enrich_manual_order_error
+from nexus.api.polymarket_manual_errors import enrich_manual_order_error
 from nexus.api.routers import prediction as prediction_routes
 from nexus.trading.poly_bot_state import POLY_BOT_PNL_KEY
 from nexus.trading.polymarket_client import (
@@ -45,8 +44,6 @@ def _get_http_client() -> httpx.AsyncClient:
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/polymarket", tags=["polymarket"])
-
-_MANUAL_ORDER_HEADERS = {"X-Nexus-Manual-Order-Enrich": MANUAL_ORDER_ENRICH_REV}
 
 
 def _short_ts(ts: str) -> str:
@@ -352,7 +349,6 @@ async def polymarket_dashboard_json(redis: RedisDep) -> dict[str, Any]:
         "total_withdrawn": total_withdrawn,
         "break_even_delta": round(break_even_delta, 2),
         "realized_pnl": round(realized_pnl, 2),
-        "manual_order_error_enrich": MANUAL_ORDER_ENRICH_REV,
     }
 
 
@@ -470,15 +466,9 @@ class ManualOrderBody(BaseModel):
     price: float | None = Field(default=None, gt=0, lt=1)
 
 
-@router.post("/manual-order", response_model=None)
-async def polymarket_manual_order(
-    body: ManualOrderBody, redis: RedisDep
-) -> JSONResponse:
-    """Map UI BUY/SELL to YES buy or outcome sell; price defaults from bot snapshot or 0.5.
-
-    Every response includes header ``X-Nexus-Manual-Order-Enrich`` so DevTools can prove which
-    API build handled the request (HTTPException would drop injected headers).
-    """
+@router.post("/manual-order")
+async def polymarket_manual_order(body: ManualOrderBody, redis: RedisDep) -> dict[str, Any]:
+    """Map UI BUY/SELL to YES buy or outcome sell; price defaults from bot snapshot or 0.5."""
     price = body.price
     market_question = ""
     if price is None:
@@ -516,37 +506,24 @@ async def polymarket_manual_order(
                 redis=redis,
             )
     except TradingHalted as exc:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": str(exc)},
-            headers=_MANUAL_ORDER_HEADERS,
-        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except asyncio.TimeoutError:
-        return JSONResponse(
-            status_code=504,
-            content={"detail": "Order request timed out"},
-            headers=_MANUAL_ORDER_HEADERS,
-        )
+        raise HTTPException(status_code=504, detail="Order request timed out") from None
 
     if not result.success:
         raw_err = result.error or "Order rejected"
-        return JSONResponse(
+        raise HTTPException(
             status_code=400,
-            content={"detail": enrich_manual_order_error(raw_err, body.side)},
-            headers=_MANUAL_ORDER_HEADERS,
+            detail=enrich_manual_order_error(raw_err, body.side),
         )
 
-    return JSONResponse(
-        status_code=200,
-        content={
-            "ok": True,
-            "order_id": result.order_id,
-            "paper": result.paper,
-            "side": body.side,
-            "spent_usd": result.spent_usd,
-        },
-        headers=_MANUAL_ORDER_HEADERS,
-    )
+    return {
+        "ok": True,
+        "order_id": result.order_id,
+        "paper": result.paper,
+        "side": body.side,
+        "spent_usd": result.spent_usd,
+    }
 
 
 class DepositBody(BaseModel):

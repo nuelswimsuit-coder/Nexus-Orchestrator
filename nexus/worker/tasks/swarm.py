@@ -19,6 +19,7 @@ from typing import Any, Literal
 
 import structlog
 
+from nexus.worker.services.israeli_telegram_profile import ensure_israeli_factory_profile
 from nexus.worker.services.tg_session import (
     async_telegram_client,
     classify_telethon_account_error,
@@ -45,24 +46,6 @@ _factory_profile_verified_local: set[str] = set()
 GROUPS_TARGET_PER_OWNER = 20
 REACTION_EMOJIS = ["🔥", "😂", "💀", "🤯", "👀", "😱", "💪", "🤦", "😅", "❤️", "🙏"]
 THREAD_REACTION_EMOJIS = ["👍", "🤦‍♂️", "🤬"]
-
-ISRAELI_DISPLAY_NAMES = [
-    "Yossi",
-    "Avi C.",
-    "Rotem",
-    "Shir",
-    "Kobi_88",
-    "David",
-    "Noam",
-    "Tomer",
-    "Lior_77",
-    "Maya S.",
-    "Guy",
-    "Dana",
-    "Itai",
-    "Omer",
-    "Nir",
-]
 
 ISRAELI_NEWS_SYSTEM_PROMPT = (
     "You are an Israeli Telegram user in a local news/politics group. \n"
@@ -256,53 +239,14 @@ async def _redis_delete_keys_with_prefix(redis: Any, prefix: str) -> None:
         log.warning("factory_redis_delete_failed", prefix=prefix, error=str(exc))
 
 
-def _display_name_is_non_israeli(first: str, last: str) -> bool:
-    combined = f"{first or ''} {last or ''}".strip()
-    if not combined:
-        return True
-    if re.search(r"[\u0590-\u05FF]", combined):
-        return False
-    latin = re.sub(r"[^A-Za-z]", "", combined)
-    if len(latin) < 2:
-        return False
-    return True
-
-
 async def _ensure_factory_profile(client: Any, redis: Any, session_base: str) -> None:
-    if redis is not None:
-        try:
-            if await redis.sismember(KEY_PROFILE_GATE, session_base):
-                return
-        except Exception:
-            pass
-    elif session_base in _factory_profile_verified_local:
-        return
-
-    profile_ok = False
-    try:
-        me = await client.get_me()
-        fn = str(getattr(me, "first_name", None) or "")
-        ln = str(getattr(me, "last_name", None) or "")
-        if not _display_name_is_non_israeli(fn, ln):
-            profile_ok = True
-        else:
-            from telethon.tl.functions.account import UpdateProfileRequest  # type: ignore[import-untyped]
-
-            label = random.choice(ISRAELI_DISPLAY_NAMES)
-            await client(UpdateProfileRequest(first_name=label[:64], last_name=""))
-            profile_ok = True
-    except Exception as exc:
-        log.debug("factory_profile_fix_skipped", error=str(exc))
-        return
-
-    if profile_ok:
-        if redis is not None:
-            try:
-                await redis.sadd(KEY_PROFILE_GATE, session_base)
-            except Exception:
-                pass
-        else:
-            _factory_profile_verified_local.add(session_base)
+    await ensure_israeli_factory_profile(
+        client,
+        redis,
+        session_base,
+        gate_key=KEY_PROFILE_GATE,
+        local_verified=_factory_profile_verified_local,
+    )
 
 
 def _roll_thread_role(has_thread: bool) -> Literal["lurk", "opener", "replier", "reactor"]:
@@ -715,6 +659,8 @@ async def community_factory_create_groups_tick(parameters: dict[str, Any]) -> di
                 await _enqueue_task("swarm.community_factory.create_groups_tick", parameters)
                 return {"status": "skipped", "reason": "owner_unauthorized"}
 
+            await _ensure_factory_profile(client, redis, owner_base)
+
             created = await client(
                 CreateChannelRequest(title=title[:128], about="", megagroup=True, broadcast=False)
             )
@@ -853,6 +799,7 @@ async def community_factory_join_tick(parameters: dict[str, Any]) -> dict[str, A
                     await _mark_banned(redis, session_base)
                     await _bump_metric(redis, "bans", 1)
                     continue
+                await _ensure_factory_profile(client, redis, session_base)
                 await client(ImportChatInviteRequest(h))
             await _bump_metric(redis, "joins_ok", 1)
             state["join_flat_idx"] = j

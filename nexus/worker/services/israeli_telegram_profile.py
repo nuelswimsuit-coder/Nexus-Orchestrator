@@ -15,7 +15,7 @@ import string
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, Awaitable, TypeVar
 
 import httpx
 import structlog
@@ -213,7 +213,7 @@ async def _sleep_flood_wait(exc: BaseException) -> None:
 async def _safe_call(coro: Awaitable[T], *, context: str) -> T | None:
     try:
         return await coro
-    except BaseException as exc:
+    except Exception as exc:
         try:
             from telethon.errors import FloodWaitError  # type: ignore[import-untyped]
 
@@ -232,9 +232,9 @@ async def _update_profile_name_bio(client: Any, fn: str, ln: str, about: str) ->
     await _safe_call(
         client(
             UpdateProfileRequest(
-                first_name=fn or None,
-                last_name=ln or None,
-                about=about or None,
+                first_name=fn,
+                last_name=ln,
+                about=about,
             )
         ),
         context="update_profile",
@@ -242,14 +242,19 @@ async def _update_profile_name_bio(client: Any, fn: str, ln: str, about: str) ->
 
 
 async def _update_username(client: Any, username: str) -> None:
-    from telethon.errors import UsernameOccupiedError  # type: ignore[import-untyped]
+    from telethon.errors import (  # type: ignore[import-untyped]
+        UsernameInvalidError,
+        UsernameOccupiedError,
+    )
     from telethon.tl.functions.account import UpdateUsernameRequest  # type: ignore[import-untyped]
 
     try:
         await client(UpdateUsernameRequest(username=username))
     except UsernameOccupiedError:
         log.debug("israeli_profile_username_occupied", username=username[:32])
-    except BaseException as exc:
+    except UsernameInvalidError:
+        log.debug("israeli_profile_username_invalid", username=username[:32])
+    except Exception as exc:
         try:
             from telethon.errors import FloodWaitError  # type: ignore[import-untyped]
 
@@ -261,37 +266,6 @@ async def _update_username(client: Any, username: str) -> None:
         log.debug("israeli_profile_username_failed", error=str(exc))
 
 
-async def _delete_all_profile_photos(client: Any) -> None:
-    from telethon.tl.functions.photos import DeletePhotosRequest  # type: ignore[import-untyped]
-    from telethon.utils import get_input_photo  # type: ignore[import-untyped]
-
-    try:
-        photos = await client.get_profile_photos("me")
-    except BaseException as exc:
-        await _sleep_flood_wait(exc) if _is_flood(exc) else None
-        log.debug("israeli_profile_list_photos_failed", error=str(exc))
-        return
-
-    ph_list: list[Any] = []
-    if photos is None:
-        return
-    if hasattr(photos, "photos"):
-        ph_list = list(getattr(photos, "photos", None) or [])
-    elif isinstance(photos, list):
-        ph_list = photos
-
-    if not ph_list:
-        return
-
-    try:
-        ids = [get_input_photo(p) for p in ph_list]
-        await _safe_call(client(DeletePhotosRequest(id=ids)), context="delete_photos")
-    except BaseException as exc:
-        if _is_flood(exc):
-            await _sleep_flood_wait(exc)
-        log.debug("israeli_profile_delete_photos_failed", error=str(exc))
-
-
 def _is_flood(exc: BaseException) -> bool:
     try:
         from telethon.errors import FloodWaitError  # type: ignore[import-untyped]
@@ -299,6 +273,31 @@ def _is_flood(exc: BaseException) -> bool:
         return isinstance(exc, FloodWaitError)
     except ImportError:
         return False
+
+
+async def _delete_all_profile_photos(client: Any) -> None:
+    from telethon.tl.functions.photos import DeletePhotosRequest  # type: ignore[import-untyped]
+    from telethon.utils import get_input_photo  # type: ignore[import-untyped]
+
+    try:
+        ph_list = await client.get_profile_photos("me", limit=100).collect()
+    except Exception as exc:
+        if _is_flood(exc):
+            await _sleep_flood_wait(exc)
+        else:
+            log.debug("israeli_profile_list_photos_failed", error=str(exc))
+        return
+
+    if not ph_list:
+        return
+
+    try:
+        ids = [get_input_photo(p) for p in ph_list]
+        await _safe_call(client(DeletePhotosRequest(id=ids)), context="delete_photos")
+    except Exception as exc:
+        if _is_flood(exc):
+            await _sleep_flood_wait(exc)
+        log.debug("israeli_profile_delete_photos_failed", error=str(exc))
 
 
 async def _upload_picsum_profile_photo(client: Any, picsum_seed: str) -> None:
@@ -323,7 +322,7 @@ async def _upload_picsum_profile_photo(client: Any, picsum_seed: str) -> None:
             client(UploadProfilePhotoRequest(file=uploaded)),
             context="upload_profile_photo",
         )
-    except BaseException as exc:
+    except Exception as exc:
         if _is_flood(exc):
             await _sleep_flood_wait(exc)
         log.debug("israeli_profile_picsum_failed", error=str(exc))

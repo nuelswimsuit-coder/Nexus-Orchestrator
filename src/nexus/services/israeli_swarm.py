@@ -10,7 +10,7 @@ Orchestrates a full Israeli-Hebrew Telegram swarm:
 2. COMMUNITY ENGINE   — Drives bots to join a target group and generate
                         contextual Israeli Hebrew chat (news-community tone) via Gemini.
                         Reads recent messages so bots reply like humans; no hashtag spam.
-                        Optional: SWARM_UPDATE_PROFILES sets Israeli display names + avatars.
+                        Optional: SWARM_UPDATE_PROFILES sets Israeli-style display names, bios, usernames, and non-face photos (picsum or cleared avatar).
 
 3. DASHBOARD STATS    — Reads telefix.db and Redis to expose live metrics
                         for the "Live AI Swarm" tab:
@@ -46,7 +46,6 @@ import random
 import re
 import shutil
 import sqlite3
-import tempfile
 import time
 import threading
 import zipfile
@@ -416,24 +415,6 @@ ISRAELI_NEWS_SYSTEM_PROMPT = (
     "5. Do not sound poetic, formal, or like a translated article. Express cynical, stressed, or typical Israeli attitudes towards news."
 )
 
-ISRAELI_DISPLAY_NAMES_LATIN = [
-    "Yossi",
-    "Avi C.",
-    "Rotem",
-    "Shir",
-    "Kobi_88",
-    "David",
-    "Noam",
-    "Tomer",
-    "Lior_77",
-    "Maya S.",
-    "Guy",
-    "Dana",
-    "Itai",
-    "Omer",
-    "Nir",
-]
-
 _REDIS_SWARM_PROFILE_GATE = "nexus:swarm:israeli:profile_gate"
 _THREAD_ID_CAP = 5
 _THREAD_REACTION_EMOJIS = ["👍", "🤦‍♂️", "🤬"]
@@ -613,7 +594,24 @@ async def _async_thread_ids_push(group_link: str, msg_id: int) -> None:
         await r.aclose()
 
 
+async def _sadd_swarm_profile_gate(stem: str) -> None:
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import]
+
+        r = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            await r.sadd(_REDIS_SWARM_PROFILE_GATE, stem)
+        finally:
+            await r.aclose()
+    except Exception:
+        pass
+
+
 async def _ensure_swarm_profile_ascii_fix(client: Any, stem: str) -> None:
+    ident = _load_or_create_swarm_identity(stem)
+    if ident.get("profile_applied"):
+        await _sadd_swarm_profile_gate(stem)
+        return
     try:
         import redis.asyncio as aioredis  # type: ignore[import]
 
@@ -626,36 +624,19 @@ async def _ensure_swarm_profile_ascii_fix(client: Any, stem: str) -> None:
     except Exception:
         pass
     try:
+        from nexus.worker.services.israeli_telegram_profile import roll_display_name  # type: ignore[import]
+
         me = await client.get_me()
         fn = str(getattr(me, "first_name", None) or "")
         ln = str(getattr(me, "last_name", None) or "")
         if _display_name_is_non_israeli(fn, ln):
             from telethon.tl.functions.account import UpdateProfileRequest  # type: ignore[import]
 
-            label = random.choice(ISRAELI_DISPLAY_NAMES_LATIN)
-            await client(UpdateProfileRequest(first_name=label[:64], last_name=""))
+            nfn, nln = roll_display_name()
+            await client(UpdateProfileRequest(first_name=nfn, last_name=nln))
     except Exception as exc:
         log.debug("[COMMUNITY] On-the-fly profile fix skipped: %s", exc)
-    try:
-        import redis.asyncio as aioredis  # type: ignore[import]
-
-        r2 = await aioredis.from_url(_REDIS_URL, decode_responses=True)
-        try:
-            await r2.sadd(_REDIS_SWARM_PROFILE_GATE, stem)
-        finally:
-            await r2.aclose()
-    except Exception:
-        pass
-
-
-def _download_file_sync(url: str, dest: pathlib.Path) -> bool:
-    try:
-        import urllib.request
-
-        urllib.request.urlretrieve(url, str(dest))
-        return dest.exists() and dest.stat().st_size > 256
-    except Exception:
-        return False
+    await _sadd_swarm_profile_gate(stem)
 
 
 async def _apply_swarm_identity(client: Any, stem: str) -> None:
@@ -664,51 +645,28 @@ async def _apply_swarm_identity(client: Any, stem: str) -> None:
     ident = _load_or_create_swarm_identity(stem)
     if ident.get("profile_applied"):
         return
-    fn = str(ident.get("first_name") or "").strip() or "חבר"
-    ln = str(ident.get("last_name") or "").strip()
-    seed = str(ident.get("avatar_seed") or stem).strip() or stem
-    from urllib.parse import quote
-
-    avatar_url = f"https://i.pravatar.cc/512?u={quote(seed, safe='')}"
-
     try:
-        from telethon.tl.functions.account import UpdateProfileRequest  # type: ignore[import]
-        from telethon.tl.functions.photos import UploadProfilePhotoRequest  # type: ignore[import]
-
-        await client(UpdateProfileRequest(first_name=fn[:64], last_name=ln[:64]))
+        from nexus.worker.services.israeli_telegram_profile import (  # type: ignore[import]
+            apply_israeli_profile_roll,
+            roll_israeli_profile,
+        )
     except Exception as exc:
-        log.warning("[COMMUNITY] Profile name update failed for %s: %s", stem, exc)
+        log.warning("[COMMUNITY] Israeli profile module unavailable for %s: %s", stem, exc)
         return
 
-    tmp_path: pathlib.Path | None = None
+    roll = roll_israeli_profile(stem)
     try:
-        fd, tmp = tempfile.mkstemp(suffix=".jpg")
-        os.close(fd)
-        tmp_path = pathlib.Path(tmp)
-        loop = asyncio.get_event_loop()
-        dest = tmp_path
-
-        def _dl() -> bool:
-            return _download_file_sync(avatar_url, dest)
-
-        ok = await loop.run_in_executor(None, _dl)
-        if ok and tmp_path is not None:
-            file = await client.upload_file(str(tmp_path))
-            await client(UploadProfilePhotoRequest(file=file))
-        else:
-            log.debug("[COMMUNITY] Avatar download skipped/failed for %s", stem)
+        await apply_israeli_profile_roll(client, roll)
     except Exception as exc:
-        log.warning("[COMMUNITY] Profile photo update failed for %s: %s", stem, exc)
-    finally:
-        if tmp_path is not None:
-            try:
-                if tmp_path.exists():
-                    tmp_path.unlink()
-            except Exception:
-                pass
+        log.warning("[COMMUNITY] Profile apply failed for %s: %s", stem, exc)
+        return
 
+    ident["first_name"] = roll.first_name
+    ident["last_name"] = roll.last_name
     ident["profile_applied"] = True
+    ident.pop("avatar_seed", None)
     _save_swarm_identity(stem, ident)
+    await _sadd_swarm_profile_gate(stem)
 
 
 async def _fetch_group_transcript_and_meta(

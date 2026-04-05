@@ -1378,6 +1378,7 @@ export interface SwarmLiveFeedResponse {
   last_message: string;
   last_message_ts: number;
   last_sender_phone: string;
+  last_sender_display_name?: string;
   is_running: boolean;
   bots: unknown[];
   verified_count?: number;
@@ -1387,6 +1388,7 @@ export interface SwarmLiveFeedResponse {
   /** Paired *.session + *.json under vault roots (recursive). */
   tg_session_files_on_disk?: number;
   recent_messages?: unknown[];
+  schedule?: Record<string, unknown> | null;
   last_engine_error?: string;
   redis_degraded?: boolean;
   engine_last_seen_ts?: number;

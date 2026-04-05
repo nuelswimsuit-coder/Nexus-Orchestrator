@@ -99,8 +99,6 @@ export interface GodModeDashboard {
   total_withdrawn?: number;
   break_even_delta?: number;
   realized_pnl?: number;
-  /** Matches nexus.api.polymarket_manual_errors.MANUAL_ORDER_ENRICH_REV — if missing or old, UI talks to stale API */
-  manual_order_error_enrich?: string;
 }
 
 interface TelefixGroup {
@@ -2955,23 +2953,8 @@ function PolymarketTradingView({
     }
   };
 
-  const expectedManualOrderEnrich = "v4";
-
   return (
     <div className="space-y-6" style={{ background: "transparent" }}>
-
-      {data && data.manual_order_error_enrich !== expectedManualOrderEnrich && (
-        <div className="rounded-xl border border-rose-500/50 bg-rose-950/35 px-4 py-3 text-[12px] text-rose-100/95 leading-relaxed">
-          <span className="font-black uppercase tracking-widest text-[10px] text-rose-400">API build mismatch / גרסת שרת</span>
-          <p className="mt-1">
-            <code className="text-white">dashboard.json</code> did not report{" "}
-            <code className="text-white">manual_order_error_enrich={expectedManualOrderEnrich}</code>
-            {" "}(got <code className="text-white">{String(data.manual_order_error_enrich ?? "∅")}</code>).{" "}
-            This browser is calling a Nexus API that is <strong className="text-white">not</strong> the current repo build — manual-order errors stay on old wording until you deploy/restart the API on{" "}
-            <code className="text-white">{API_BASE}</code>.
-          </p>
-        </div>
-      )}
 
       {polyWalletMismatch && data?.portfolio_address && (data?.clob_funder_address || data?.signer_address) && (() => {
         const tradeAddr = data.clob_funder_address ?? data.signer_address ?? "";
@@ -7326,7 +7309,7 @@ function LiveSwarmView() {
 
   useEffect(() => {
     let cancelled = false;
-    async function loadWarmer() {
+    async function loadWarmer(pickDefault: boolean) {
       try {
         const res = await fetch(`${API_BASE}/api/swarm/dashboard`);
         if (!res.ok || cancelled) return;
@@ -7334,13 +7317,15 @@ function LiveSwarmView() {
         const rows = Array.isArray(d.groups) ? d.groups : [];
         if (cancelled) return;
         setWarmerRows(rows);
-        setWarmerKey((k) => (k.trim() ? k : rows[0]?.group_key ?? ""));
+        if (pickDefault) {
+          setWarmerKey((k) => (k.trim() ? k : rows[0]?.group_key ?? ""));
+        }
       } catch {
         /* ignore */
       }
     }
-    void loadWarmer();
-    const t = setInterval(loadWarmer, 12000);
+    void loadWarmer(true);
+    const t = setInterval(() => void loadWarmer(false), 12000);
     return () => {
       cancelled = true;
       clearInterval(t);
@@ -7586,6 +7571,11 @@ function LiveSwarmView() {
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
           <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">הודעה אחרונה</div>
           <div className="text-xs font-black text-slate-300 truncate">{feed?.last_message || "—"}</div>
+          {(feed?.last_sender_display_name || feed?.last_sender_phone) && (
+            <div className="text-[10px] text-purple-400/90 font-bold truncate mt-0.5">
+              {feed?.last_sender_display_name || feed?.last_sender_phone}
+            </div>
+          )}
           <div className="text-[9px] text-slate-600 mt-1">{lastMsgTime}</div>
         </div>
       </div>
@@ -7659,6 +7649,151 @@ function LiveSwarmView() {
         )}
       </div>
 
+      {/* Telegram-style live chat snapshot (Israeli + Warmer) */}
+      <div className="rounded-2xl border border-slate-800/80 bg-slate-950/50 p-5 space-y-4">
+        <div className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
+          צ׳אט קבוצה (לייב · סנופשוט טלגרם)
+        </div>
+        <div className="flex flex-wrap gap-2 items-center">
+          <button
+            type="button"
+            onClick={() => setChatSource("israeli")}
+            className={`px-4 py-2 rounded-xl text-[11px] font-black uppercase tracking-wider transition border ${
+              chatSource === "israeli"
+                ? "bg-purple-600/35 border-purple-500/50 text-purple-100"
+                : "bg-slate-900/80 border-slate-700 text-slate-500 hover:text-slate-300"
+            }`}
+          >
+            נחיל ישראלי
+          </button>
+          <button
+            type="button"
+            onClick={() => setChatSource("warmer")}
+            className={`px-4 py-2 rounded-xl text-[11px] font-black uppercase tracking-wider transition border ${
+              chatSource === "warmer"
+                ? "bg-amber-600/30 border-amber-500/45 text-amber-100"
+                : "bg-slate-900/80 border-slate-700 text-slate-500 hover:text-slate-300"
+            }`}
+          >
+            Warmer
+          </button>
+          {chatSource === "warmer" && (
+            <select
+              value={warmerKey}
+              onChange={(e) => setWarmerKey(e.target.value)}
+              className="flex-1 min-w-[12rem] max-w-md bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono"
+              dir="ltr"
+            >
+              <option value="">— בחר קבוצה —</option>
+              {warmerRows.map((r) => (
+                <option key={r.group_key} value={r.group_key}>
+                  {(r.config?.group_title || r.group_key).slice(0, 48)}
+                  {r.config?.group_id != null ? ` · id ${r.config.group_id}` : ""}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        {chatSource === "israeli" && (
+          <div className="grid md:grid-cols-2 gap-3">
+            <div className="rounded-xl border border-purple-500/25 bg-purple-950/20 p-4">
+              <div className="text-[10px] text-purple-300/80 font-black uppercase mb-2 tracking-widest">
+                תזמון מחזור נחיל
+              </div>
+              {sched?.phase === "waiting" && sched?.next_cycle_at && (
+                <>
+                  <div className="text-2xl font-black text-white font-mono tracking-tight">
+                    {_formatCountdown(waitSec)}
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-1">משוער עד מחזור הבא</p>
+                  {typeof sched.delay_total_s === "number" && sched.delay_total_s > 0 && waitSec !== null && (
+                    <div className="mt-3 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-l from-purple-500 to-fuchsia-500 transition-all duration-1000"
+                        style={{
+                          width: `${Math.min(100, Math.max(0, (1 - waitSec / sched.delay_total_s) * 100))}%`,
+                        }}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+              {sched?.phase === "cycle" && (
+                <p className="text-sm text-cyan-200/95 leading-relaxed">
+                  מחזור פעיל — Telethon + מודל (עשוי להימשך דקות)
+                </p>
+              )}
+              {!sched?.phase && (
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  אין נתוני תזמון (מנוע לא רץ או גרסה לפני שדה schedule)
+                </p>
+              )}
+            </div>
+            <div className="rounded-xl border border-cyan-500/20 bg-slate-900/60 p-4 space-y-3">
+              <div className="text-[10px] text-cyan-300/80 font-black uppercase tracking-widest">ניסיון שליחה אחרון</div>
+              {lastAttempt ? (
+                <div>
+                  <div className="text-xs font-black text-cyan-300 font-mono">
+                    {lastAttempt.display_name?.trim() || lastAttempt.phone || "—"}
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1">{lastAttempt.message}</p>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-600">אין ניסיון מתועד בפיד</p>
+              )}
+              <div className="text-[10px] text-slate-600 font-black uppercase tracking-widest pt-1 border-t border-slate-800">
+                אחרון שנשלח לקבוצה
+              </div>
+              <div className="text-xs font-bold text-emerald-400/95">
+                {feed?.last_sender_display_name?.trim() || feed?.last_sender_phone || "—"}
+              </div>
+              {feed?.last_message && (
+                <p className="text-[11px] text-slate-400 line-clamp-3 leading-relaxed">{feed.last_message}</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {chatSource === "warmer" && (
+          <div className="grid md:grid-cols-2 gap-3">
+            <div className="rounded-xl border border-amber-500/25 bg-amber-950/15 p-4">
+              <div className="text-[10px] text-amber-300/80 font-black uppercase mb-2 tracking-widest">
+                הרצה הבאה (warmer)
+              </div>
+              <div className="text-2xl font-black text-white font-mono">{_formatCountdown(warmerNextSec)}</div>
+              {warmerRow?.next_run_at && (
+                <p className="text-[9px] text-slate-500 font-mono mt-2 break-all" dir="ltr">
+                  {warmerRow.next_run_at}
+                </p>
+              )}
+              {!warmerKey.trim() && (
+                <p className="text-xs text-slate-500 mt-2">בחר קבוצה מהרשימה</p>
+              )}
+            </div>
+            <div className="rounded-xl border border-slate-700 bg-slate-900/50 p-4">
+              <div className="text-[10px] text-slate-500 font-black uppercase mb-2 tracking-widest">
+                דובר הבא (רוטציה)
+              </div>
+              {warmerRow?.next_speaker && Object.keys(warmerRow.next_speaker).length > 0 ? (
+                <pre className="text-[11px] text-slate-300 whitespace-pre-wrap font-mono max-h-40 overflow-y-auto nexus-os-scrollbar">
+                  {JSON.stringify(warmerRow.next_speaker, null, 2)}
+                </pre>
+              ) : (
+                <p className="text-xs text-slate-500">אין personas ב-state עדיין</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        <SwarmTelegramChatPanel
+          loading={tgLoading}
+          error={tgErr}
+          messages={tgMsgs}
+          cached={tgCached}
+        />
+      </div>
+
       {/* Tabs: Bots / Live Feed */}
       {feed && (feed.bots.length > 0 || recentMessages.length > 0) && (
         <div className="space-y-4">
@@ -7715,7 +7850,9 @@ function LiveSwarmView() {
                         <div className="w-1.5 h-1.5 rounded-full bg-purple-400 mt-1.5 flex-shrink-0" />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                            <span className="text-[10px] font-black font-mono text-purple-400">{msg.phone}</span>
+                            <span className="text-[10px] font-black font-mono text-purple-400">
+                              {msg.display_name?.trim() || msg.phone || "—"}
+                            </span>
                             {msg.topic && (
                               <span className="text-[9px] px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded-full text-slate-500 font-bold uppercase tracking-widest">
                                 {msg.topic}
