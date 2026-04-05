@@ -8,8 +8,10 @@ and scans; Redis keys under ``nexus:sessions:*`` only store that metadata.
 from __future__ import annotations
 
 import json
+import time as _time_module
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -23,6 +25,27 @@ from nexus.shared import redis_util
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/swarm", tags=["swarm"])
+
+
+# #region agent log
+def _agent_debug_fd2e46(payload: dict[str, Any]) -> None:
+    try:
+        root = Path(__file__).resolve().parents[3]
+        line = json.dumps(
+            {
+                "sessionId": "fd2e46",
+                "timestamp": int(_time_module.time() * 1000),
+                **payload,
+            },
+            ensure_ascii=False,
+        ) + "\n"
+        with open(root / "debug-fd2e46.log", "a", encoding="utf-8") as _df:
+            _df.write(line)
+    except Exception:
+        pass
+
+
+# #endregion
 
 _SWARM_DEGRADED_MSG = (
     "הדשבורד רץ במצב זמני מקומי ולא מסונכן עם שירות הנחיל שמפעיל חשבונות טלגרם מהסריקה. "
@@ -580,6 +603,8 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
         )
 
     engine_last_seen_ts = 0.0
+    hb_parse_exc_name = ""
+    hb_txt = ""
     if heartbeat_raw:
         hb_txt = (
             heartbeat_raw.decode("utf-8", errors="replace")
@@ -591,8 +616,10 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
                 engine_last_seen_ts = datetime.fromisoformat(hb_txt).replace(
                     tzinfo=timezone.utc
                 ).timestamp()
-            except Exception:
-                pass
+            except Exception as _hb_exc:
+                hb_parse_exc_name = type(_hb_exc).__name__
+
+    engine_last_seen_ts_before_degraded = engine_last_seen_ts
 
     redis_degraded = _api_redis_is_degraded(request)
     broker_reachable: bool | None = None
@@ -614,6 +641,35 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
         engine_last_seen_ts = 0.0
         _banner = _SWARM_DEGRADED_MSG
         last_engine_error = f"{_banner} | {last_engine_error}" if last_engine_error else _banner
+
+    # #region agent log
+    _ru = urlparse(settings.redis_url)
+    _status_norm = (
+        (status_raw or "").strip().lower()
+        if isinstance(status_raw, str)
+        else str(status_raw or b"").strip().lower()
+    )
+    _agent_debug_fd2e46(
+        {
+            "location": "nexus/api/routers/swarm.py:get_live_feed",
+            "message": "live_feed_snapshot",
+            "hypothesisId": "H1-H5",
+            "data": {
+                "redis_degraded": redis_degraded,
+                "is_running": is_running,
+                "status_normalized": _status_norm[:24],
+                "heartbeat_key_nonempty": bool(heartbeat_raw),
+                "heartbeat_sample": hb_txt[:100],
+                "engine_ts_parsed": engine_last_seen_ts,
+                "engine_ts_before_degraded": engine_last_seen_ts_before_degraded,
+                "hb_parse_exc": hb_parse_exc_name,
+                "redis_host": _ru.hostname,
+                "redis_db_index": _redis_db_index_for_log(),
+                "total_sessions": total_sessions,
+            },
+        }
+    )
+    # #endregion
 
     return {
         "total_in_group": len(bots),

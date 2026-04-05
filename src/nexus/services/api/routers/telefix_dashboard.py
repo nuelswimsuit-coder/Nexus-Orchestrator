@@ -620,7 +620,8 @@ def _get_telefix_groups_legacy_sync() -> TelefixGroupsResponse:
 async def _telefix_groups_factory_scope(redis: Any) -> TelefixGroupsResponse:
     """
     Group Factory list: only ``managed_groups`` rows with a public t.me-style link,
-    whose ``owner_session`` matches a scanned swarm session (Redis) or ``sessions.phone`` in DB.
+    whose ``owner_session`` matches a **Telegram (Telethon) session** identity from fleet
+    scan (metadata published via the Redis broker) or ``sessions.phone`` in telefix.db.
     """
     from nexus.api.routers.swarm import get_all_scanned
 
@@ -654,8 +655,8 @@ async def _telefix_groups_factory_scope(redis: Any) -> TelefixGroupsResponse:
                     groups=[],
                     count=0,
                     source="telefix.db:managed_groups",
-                    hint="אין זהויות סשן מסריקה (Swarm / Redis) או טלפונים ב-sessions ב-DB. "
-                    "ודאו שסריקת הסשנים רצה וש-owner_session ב-managed_groups תואם.",
+                    hint="אין מזהי סשני טלגרם זמינים מסריקת הצי (או טלפון בטבלת sessions). "
+                    "ודאו שסורק/session_manager מפרסמים סשני טלגרם לברוקר וש-owner_session ב-managed_groups תואם למספר או מזהה סשן.",
                 )
 
             has_groups_tbl = _sqlite_table_exists(cur, "groups")
@@ -697,7 +698,7 @@ async def _telefix_groups_factory_scope(redis: Any) -> TelefixGroupsResponse:
                 source="telefix.db:managed_groups+factory",
                 hint=None
                 if out
-                else "אין קבוצות שעומדות בכל התנאים: קישור t.me, רשומה ב-managed_groups, ובעלות סשן מסריקה.",
+                else "אין קבוצות שעומדות בכל התנאים: קישור t.me, רשומה ב-managed_groups, ובעלות סשן טלגרם שמזוהה בסריקה.",
             )
         finally:
             conn.close()
@@ -715,7 +716,7 @@ async def _telefix_groups_factory_scope(redis: Any) -> TelefixGroupsResponse:
 async def get_telefix_groups(
     scope: str | None = Query(
         None,
-        description="factory — רק קבוצות אמיתיות מ-managed_groups עם קישור ובעלות סשן מסריקה",
+        description="factory — רק קבוצות מ-managed_groups עם קישור t.me ובעלות סשן טלגרם שמזוהה בסריקת הצי או ב-DB",
     ),
     redis: RedisDep = ...,
 ) -> TelefixGroupsResponse:

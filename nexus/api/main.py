@@ -1439,6 +1439,7 @@ def create_app() -> FastAPI:
     app.include_router(system.router, prefix="/api")
     app.include_router(flight_mode.router, prefix="/api")
     app.include_router(scan.router, prefix="/api")
+    app.include_router(seo.router, prefix="/api")
     app.include_router(proxy.router, prefix="/api")
     app.include_router(telefix.router, prefix="/api")
     app.include_router(group_infiltration.router, prefix="/api")

@@ -1363,8 +1363,8 @@ function GroupFactoryView() {
             </h3>
             <p className="text-slate-500 text-sm mt-1">
               מוצגות רק קבוצות מ־managed_groups ב־telefix.db עם קישור t.me, שבעלותן (
-              <span className="text-slate-400">owner_session</span>) תואמת סשנים מסריקה או טלפון ב־sessions. חימום
-              ואינדוקס: vault/group_infiltration.json
+              <span className="text-slate-400">owner_session</span>) תואמת סשן טלגרם (מסריקת הצי) או טלפון בטבלת{" "}
+              <span className="text-slate-400">sessions</span>. חימום ואינדוקס: vault/group_infiltration.json
             </p>
             {scheduleSettings?.automation_armed && (
               <p className="text-emerald-500/90 text-xs font-bold mt-2 flex items-center gap-2">
@@ -1503,7 +1503,7 @@ function GroupFactoryView() {
               <Users size={40} className="mx-auto mb-3 opacity-30" />
               <div className="font-bold text-slate-400">אין קבוצות אמיתיות להצגה</div>
               <div className="text-sm mt-1 max-w-xl mx-auto leading-relaxed">
-                נדרשים: קישור ציבורי (t.me), רשומה ב־managed_groups, ו־owner_session שתואם לסשן מסריקה או לטלפון
+                נדרשים: קישור ציבורי (t.me), רשומה ב־managed_groups, ו־owner_session שתואם לסשן טלגרם מהסריקה או לטלפון
                 בטבלת sessions. אפשר ליצור קבוצה חדשה מהמפעל או לסנכרן את הבוט.
               </div>
               {factoryGroupsHint && (
@@ -4850,10 +4850,10 @@ function SwarmMonitorView() {
             </div>
             <div className="text-lg font-black text-cyan-300">
               {!inventoryReady
-                ? "טוען מלאי סשני טלגרם (מ-Redis)…"
+                ? "טוען מלאי סשני טלגרם (מסריקת הצי)…"
                 : bannerPick && bannerPick.sessions.length > 0
-                  ? `${bannerPick.sessions.length} סשני טלגרם במלאי (מסונכרן ל-Redis, ${bannerPick.machineId}) · ${bannerPick.sessions[0]?.phone || "—"}`
-                  : "אין סשני טלגרם רשומים במלאי — מפתחות nexus:sessions:inventory:* ריקים. «Redis: ONLINE» אומר שהברוקר עונה בלבד; צריך session_manager / swarm שמפרסמים את מלאי סשני הטלגרם."}
+                  ? `${bannerPick.sessions.length} סשני טלגרם במלאי (מהסורק — ${bannerPick.machineId}) · ${bannerPick.sessions[0]?.phone || "—"}`
+                  : "אין סשני טלגרם רשומים במלאי — מפתחות nexus:sessions:inventory:* ריקים. «Redis: ONLINE» אומר שהברוקר עונה בלבד; צריך session_manager / סורק שמפרסמים את מלאי סשני הטלגרם לברוקר."}
             </div>
           </div>
         </div>
@@ -4931,7 +4931,7 @@ function SwarmMonitorView() {
       <div className="bg-slate-900/40 border border-slate-800 rounded-[2rem] p-6">
         <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
           <Search size={12} className="text-cyan-400" />
-          🔍 סריקה חיה — סשני טלגרם (מלאי ב-Redis)
+          🔍 סריקה חיה — סשני טלגרם (מלאי מהסורק)
         </div>
         <div className="space-y-2 max-h-[200px] overflow-y-auto nexus-os-scrollbar pr-1">
           {!inventoryReady && allSessions.length === 0 ? (
@@ -4958,7 +4958,7 @@ function SwarmMonitorView() {
                 >
                   <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${isMaster ? "bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.8)]" : "bg-slate-600"}`} />
                   <span className={`text-xs font-mono font-bold ${isMaster ? "text-cyan-300" : "text-slate-300"}`}>
-                    🔍 סשן טלגרם: {s.phone || s.machine_id} (מלאי Redis)
+                    🔍 סשן טלגרם: {s.phone || s.machine_id}
                   </span>
                   <span className={`text-[10px] font-bold ml-auto shrink-0 px-2 py-0.5 rounded-lg ${
                     s.status === "active" || s.status === "running"
@@ -5202,7 +5202,7 @@ function SessionSwarmView() {
             📡 Global Session Swarm (All Scanned)
           </h3>
           <p className="text-slate-500 text-sm mt-1">
-            סריקה מלאה דרך Redis — כל סשני הטלגרם (חשבונות) הפעילים בנחיל, מקובצים לפי מחשב
+            סריקה מלאה של סשני טלגרם בצי — כל החשבונות הפעילים בנחיל, מקובצים לפי מחשב (מטא־דאטה דרך הברוקר)
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -5240,14 +5240,14 @@ function SessionSwarmView() {
       {loading && !data && (
         <div className="flex items-center justify-center py-16 text-slate-500 gap-3">
           <RefreshCw size={20} className="animate-spin" />
-          <span className="text-sm">סורק מלאי סשני טלגרם ב-Redis…</span>
+          <span className="text-sm">סורק מלאי סשני טלגרם מהצי…</span>
         </div>
       )}
 
       {!loading && filteredMachines.length === 0 && (
         <div className="text-center py-16 text-slate-600 text-sm space-y-2">
           <div className="text-2xl">📭</div>
-          <div>{q ? "לא נמצאו תוצאות לחיפוש זה." : "אין סשני טלגרם פעילים במלאי (Redis)"}</div>
+          <div>{q ? "לא נמצאו תוצאות לחיפוש זה." : "אין סשני טלגרם פעילים במלאי"}</div>
           {!q && (
             <div className="text-xs text-slate-700 mt-1">
               ממתין לדיווחי סשני טלגרם מ-session_manager, deployer, או vault
@@ -5413,7 +5413,7 @@ function GlobalSwarmTableView() {
             🌐 Global Swarm Inventory
           </h3>
           <p className="text-slate-500 text-sm mt-1">
-            מלאי סשני טלגרם מ-Redis — מקובץ לפי מחשב מקור
+            מלאי סשני טלגרם מסריקת הצי — מקובץ לפי מחשב מקור
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -5452,13 +5452,13 @@ function GlobalSwarmTableView() {
       {loading && !data && (
         <div className="flex items-center justify-center py-16 text-slate-500 gap-3">
           <RefreshCw size={20} className="animate-spin" />
-          <span className="text-sm">סורק מלאי סשני טלגרם ב-Redis…</span>
+          <span className="text-sm">סורק מלאי סשני טלגרם מהצי…</span>
         </div>
       )}
 
       {!loading && filteredMachines.length === 0 && (
         <div className="text-center py-16 text-slate-500 text-sm">
-          {q ? "לא נמצאו תוצאות לחיפוש זה." : "אין סשני טלגרם פעילים במלאי (Redis)"}
+          {q ? "לא נמצאו תוצאות לחיפוש זה." : "אין סשני טלגרם פעילים במלאי"}
         </div>
       )}
 
@@ -7032,6 +7032,29 @@ function LiveSwarmView() {
       const data = (await res.json()) as SwarmFeedData;
       setFeed(data);
       setSwarmRunning(data.is_running ?? false);
+      // #region agent log
+      fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Debug-Session-Id": "fd2e46",
+        },
+        body: JSON.stringify({
+          sessionId: "fd2e46",
+          location: "NexusOsGodMode.tsx:LiveSwarmView:fetchFeed",
+          message: "live_feed_client",
+          hypothesisId: "H1-H5",
+          data: {
+            ok: res.ok,
+            is_running: data.is_running,
+            engine_last_seen_ts: data.engine_last_seen_ts ?? null,
+            redis_degraded: data.redis_degraded ?? null,
+            total_sessions: data.total_sessions ?? null,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
     } catch {
       /* ignore */
     }

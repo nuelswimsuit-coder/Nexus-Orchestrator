@@ -463,10 +463,13 @@ async def seo_watchdog_audit(parameters: dict[str, Any]) -> dict[str, Any]:
     t0 = time.monotonic()
     staged_dir = Path(parameters.get("staged_dir", str(_DEFAULT_STAGED)))
     raw_off = parameters.get("session_start_offset", 0)
-    if raw_off in (-1, "-1"):
+    if raw_off in (-1, "-1") or str(raw_off).strip() == "-1":
         session_start_offset = int(time.time() // 3600)
     else:
-        session_start_offset = int(raw_off)
+        try:
+            session_start_offset = int(raw_off)
+        except (TypeError, ValueError):
+            session_start_offset = 0
     default_sub_days = int(parameters.get("subscription_days", _default_subscription_days()))
     if default_sub_days not in (30, 60):
         default_sub_days = 30
