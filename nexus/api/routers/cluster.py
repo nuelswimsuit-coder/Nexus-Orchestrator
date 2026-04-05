@@ -162,28 +162,27 @@ def _normalize_lan_ip(ip: str) -> str:
     return (ip or "").strip().lower().strip("[]")
 
 
-def _fleet_master_lan_ips_for_labels() -> set[str]:
+def _canonical_fleet_master_lan_ip_for_labels() -> str:
     """
-    LAN IPs that identify the fleet master host for /cluster/health display_label.
+    Single LAN IP that represents «the master / Redis host» for dashboard copy.
 
-    Includes the documented Linux fleet stub (10.100.102.8), non-loopback
-    MASTER_IP / REDIS_HOST, and the hostname from settings.redis_url so a
-    hybrid Windows master (Redis on [::1] but heartbeat local_ip is LAN) still
-    shows the master label.
+    Order: MASTER_IP → REDIS_HOST → redis_url hostname, then the Linux fleet
+    stub (10.100.102.8) when the broker URL is loopback (e.g. Windows [::1]).
     """
-    ips: set[str] = {_normalize_lan_ip(LINUX_FLEET_REDIS_HOST)}
-    for key in ("MASTER_IP", "REDIS_HOST"):
-        raw = (os.environ.get(key) or "").strip()
-        if raw and not redis_host_is_loopback(raw):
-            ips.add(_normalize_lan_ip(raw))
+    for raw in (
+        os.environ.get("MASTER_IP"),
+        os.environ.get("REDIS_HOST"),
+    ):
+        s = (raw or "").strip()
+        if s and not redis_host_is_loopback(s):
+            return _normalize_lan_ip(s)
     try:
         host = urlparse(settings.redis_url).hostname
         if host and not redis_host_is_loopback(host):
-            ips.add(_normalize_lan_ip(host))
+            return _normalize_lan_ip(host)
     except Exception:
         pass
-    ips.discard("")
-    return ips
+    return _normalize_lan_ip(LINUX_FLEET_REDIS_HOST)
 
 
 async def _load_target_heatmap(redis: Redis) -> list[TargetHeatCell]:
@@ -258,15 +257,20 @@ async def get_cluster_health(redis: RedisDep) -> ClusterHealthResponse:
 
     parsed.sort(key=lambda t: (t[0].role != NodeRole.MASTER, t[0].node_id))
 
-    master_lan_ips = _fleet_master_lan_ips_for_labels()
+    broker_lan = _canonical_fleet_master_lan_ip_for_labels()
     nodes_out: list[ClusterHealthNode] = []
     for hb, st, probe_ms in parsed:
         is_master = hb.role == NodeRole.MASTER
         os_lower = (hb.os_info or "").lower()
         is_windows = "windows" in os_lower
-        on_master_host = _normalize_lan_ip(hb.local_ip or "") in master_lan_ips
-        if is_master or on_master_host:
-            label = "מחשב מאסטר עובד ומנהל בהתאמה"
+        local_norm = _normalize_lan_ip(hb.local_ip or "")
+        on_broker_lan = bool(broker_lan) and local_norm == broker_lan
+        if is_master:
+            # Orchestrator / dispatcher — not the same as a worker process.
+            label = "מאסטר — מנהל הנחיל (דיספצ'ר / משימות)"
+        elif on_broker_lan:
+            # Worker heartbeat from the same LAN IP as the configured broker host.
+            label = "וורקר — רץ על מחשב המאסטר (עובד / ביצוע משימות)"
         else:
             label = "לפטופ ווינדוס עובד" if is_windows else "לפטופ לינוקס עובד"
         nodes_out.append(
