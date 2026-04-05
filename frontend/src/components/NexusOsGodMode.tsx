@@ -166,6 +166,7 @@ interface TelefixDbGroup {
   invite_link: string | null;
   username: string | null;
   member_count: number | null;
+  owner_session?: string | null;
 }
 
 interface TelefixScrapeFile {
@@ -1121,6 +1122,7 @@ function GroupFactoryView() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [startFactoryLoading, setStartFactoryLoading] = useState(false);
+  const [factoryGroupsHint, setFactoryGroupsHint] = useState<string | null>(null);
 
   const showToast = (msg: string, ok = true) => {
     // #region agent log
@@ -1152,11 +1154,17 @@ function GroupFactoryView() {
 
   const loadDbGroups = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/telefix/groups`);
-      if (!res.ok) return;
-      const j = (await res.json()) as { groups: TelefixDbGroup[] };
+      const res = await fetch(`${API_BASE}/api/telefix/groups?scope=factory`);
+      if (!res.ok) {
+        setFactoryGroupsHint(null);
+        return;
+      }
+      const j = (await res.json()) as { groups: TelefixDbGroup[]; hint?: string | null };
       setDbGroups(j.groups ?? []);
-    } catch { /* ignore */ }
+      setFactoryGroupsHint(typeof j.hint === "string" && j.hint.trim() ? j.hint.trim() : null);
+    } catch {
+      setFactoryGroupsHint(null);
+    }
   }, []);
 
   const loadSchedule = useCallback(async () => {
@@ -1338,38 +1346,22 @@ function GroupFactoryView() {
     if (g.invite_link) inviteByTitle.set(g.title, g.invite_link);
   }
 
-  // Merge warmup state with real DB invite links
-  const rows =
-    dbGroups.length > 0
-      ? dbGroups.map((g, i) => {
-          const warmup = warmupGroups.find((w) => w.id === String(g.id));
-          return {
-            id: String(g.id),
-            name: g.title,
-            invite: pickGroupInviteLink(g, warmup, inviteByTitle),
-            days: warmup?.warmup_days ?? (i % 2 === 0 ? 14 : 7),
-            status: warmup?.in_search
-              ? "READY"
-              : (warmup?.warmup_days ?? 0) >= 14
-                ? "FAILED_RETRY"
-                : "WARMING",
-            search: warmup?.in_search ?? false,
-            isPrivate: false,
-          };
-        })
-      : warmupGroups.map((g) => ({
-          id: g.id,
-          name: g.name_he,
-          invite: pickGroupInviteLink(undefined, g, inviteByTitle),
-          days: g.warmup_days,
-          status: g.in_search
-            ? "READY"
-            : g.warmup_days >= 14
-              ? "FAILED_RETRY"
-              : "WARMING",
-          search: g.in_search,
-          isPrivate: false,
-        }));
+  // רק קבוצות מ־API (managed_groups + קישור + בעלות סשן); מצב חימום מ־vault לפי id
+  const rows = dbGroups.map((g) => {
+    const warmup = warmupGroups.find((w) => w.id === String(g.id));
+    const wd = warmup?.warmup_days ?? 0;
+    const inSearch = warmup?.in_search ?? false;
+    return {
+      id: String(g.id),
+      name: g.title,
+      invite: pickGroupInviteLink(g, warmup, inviteByTitle),
+      days: wd,
+      status: inSearch ? "READY" : wd >= 14 ? "FAILED_RETRY" : "WARMING",
+      search: inSearch,
+      isPrivate: false,
+      ownerSession: g.owner_session ?? null,
+    };
+  });
 
   const totalReady = rows.filter((r) => r.status === "READY").length;
   const totalWarming = rows.filter((r) => r.status === "WARMING").length;
@@ -1392,7 +1384,9 @@ function GroupFactoryView() {
               מפעל קבוצות - חדירה לחיפוש
             </h3>
             <p className="text-slate-500 text-sm mt-1">
-              ניהול חימום שבועיים ואוטומציית אינדוקס (vault/group_infiltration.json)
+              מוצגות רק קבוצות מ־managed_groups ב־telefix.db עם קישור t.me, שבעלותן (
+              <span className="text-slate-400">owner_session</span>) תואמת סשנים מסריקה או טלפון ב־sessions. חימום
+              ואינדוקס: vault/group_infiltration.json
             </p>
             {scheduleSettings?.automation_armed && (
               <p className="text-emerald-500/90 text-xs font-bold mt-2 flex items-center gap-2">
@@ -1414,7 +1408,10 @@ function GroupFactoryView() {
             </button>
             <button
               type="button"
-              onClick={() => void loadWarmup()}
+              onClick={() => {
+                void loadWarmup();
+                void loadDbGroups();
+              }}
               className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-3 rounded-2xl font-bold transition flex items-center gap-2"
               title="רענן נתונים"
             >
@@ -1526,8 +1523,17 @@ function GroupFactoryView() {
           {rows.length === 0 && (
             <div className="text-center py-16 text-slate-600">
               <Users size={40} className="mx-auto mb-3 opacity-30" />
-              <div className="font-bold">אין קבוצות עדיין</div>
-              <div className="text-sm mt-1">לחץ &quot;צור קבוצה חדשה&quot; כדי להתחיל</div>
+              <div className="font-bold text-slate-400">אין קבוצות אמיתיות להצגה</div>
+              <div className="text-sm mt-1 max-w-xl mx-auto leading-relaxed">
+                נדרשים: קישור ציבורי (t.me), רשומה ב־managed_groups, ו־owner_session שתואם לסשן מסריקה או לטלפון
+                בטבלת sessions. אפשר ליצור קבוצה חדשה מהמפעל או לסנכרן את הבוט.
+              </div>
+              {factoryGroupsHint && (
+                <div className="text-xs text-amber-500/90 mt-4 max-w-lg mx-auto leading-relaxed font-semibold">
+                  {factoryGroupsHint}
+                </div>
+              )}
+              <div className="text-sm mt-4 text-slate-500">לחץ &quot;צור קבוצה חדשה&quot; כדי להוסיף למעקב המפעל</div>
             </div>
           )}
           {rows.map((group) => {
@@ -1590,6 +1596,14 @@ function GroupFactoryView() {
                       </span>
                     </div>
                   ) : null}
+                  {group.ownerSession?.trim() ? (
+                    <div
+                      className="text-[10px] text-slate-500 mt-1 font-mono dir-ltr text-left truncate max-w-xl"
+                      title={group.ownerSession}
+                    >
+                      בעלות סשן: {group.ownerSession}
+                    </div>
+                  ) : null}
                   <div className="flex items-center gap-3 mt-1">
                     <span className="text-xs text-slate-500 font-bold">
                       חימום: {group.days}/14 יום
@@ -1646,6 +1660,8 @@ function GroupFactoryView() {
           onClose={() => setShowCreateModal(false)}
           onCreated={(g) => {
             setWarmupGroups((prev) => [...prev, g]);
+            void loadDbGroups();
+            void loadWarmup();
             showToast(`קבוצה "${g.name_he}" נוצרה בהצלחה ✅`);
           }}
         />

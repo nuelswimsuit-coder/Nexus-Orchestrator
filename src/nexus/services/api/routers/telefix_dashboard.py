@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
+from nexus.api.dependencies import RedisDep
 from nexus.shared.config import settings
 
 log = structlog.get_logger(__name__)
@@ -414,16 +415,113 @@ class TelefixGroupRecord(BaseModel):
     invite_link: str | None = None
     username: str | None = None
     member_count: int | None = None
+    owner_session: str | None = None
 
 
 class TelefixGroupsResponse(BaseModel):
     groups: list[TelefixGroupRecord]
     count: int
     source: str
+    hint: str | None = None
 
 
-@router.get("/groups", response_model=TelefixGroupsResponse)
-async def get_telefix_groups() -> TelefixGroupsResponse:
+def _sqlite_table_exists(cur: sqlite3.Cursor, name: str) -> bool:
+    cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        (name,),
+    )
+    return cur.fetchone() is not None
+
+
+def _session_identity_tokens_from_db(conn: sqlite3.Connection) -> set[str]:
+    tokens: set[str] = set()
+    try:
+        cur = conn.cursor()
+        if not _sqlite_table_exists(cur, "sessions"):
+            return tokens
+        cur.execute("PRAGMA table_info(sessions)")
+        cols = {row[1] for row in cur.fetchall()}
+        phone_col = "phone" if "phone" in cols else None
+        if not phone_col:
+            return tokens
+        cur.execute(f"SELECT DISTINCT {phone_col} FROM sessions")
+        for (p,) in cur.fetchall():
+            if not p:
+                continue
+            s = str(p).strip()
+            if not s:
+                continue
+            tokens.add(s.lower())
+            digits = "".join(c for c in s if c.isdigit())
+            if len(digits) >= 8:
+                tokens.add(digits)
+    except Exception as exc:
+        log.debug("session_tokens_db_skip", error=str(exc))
+    return tokens
+
+
+def _merge_scanned_and_db_session_tokens(
+    scanned_payload: dict[str, Any],
+    conn: sqlite3.Connection,
+) -> set[str]:
+    tokens: set[str] = set()
+    for sessions in (scanned_payload.get("sessions_by_machine") or {}).values():
+        if not isinstance(sessions, list):
+            continue
+        for e in sessions:
+            if not isinstance(e, dict):
+                continue
+            for k in ("phone_number", "session_id"):
+                v = str(e.get(k) or "").strip()
+                if not v:
+                    continue
+                tokens.add(v.lower())
+                digits = "".join(c for c in v if c.isdigit())
+                if len(digits) >= 8:
+                    tokens.add(digits)
+    tokens |= _session_identity_tokens_from_db(conn)
+    return tokens
+
+
+def _owner_matches_session_tokens(owner_raw: str | None, tokens: set[str]) -> bool:
+    o = str(owner_raw or "").strip()
+    if not o or o == "(unassigned)":
+        return False
+    ol = o.lower()
+    if ol in tokens:
+        return True
+    od = "".join(c for c in o if c.isdigit())
+    if len(od) >= 8:
+        for t in tokens:
+            if len(t) >= 8 and t.isdigit():
+                if od == t or od.endswith(t[-10:]) or t.endswith(od[-10:]):
+                    return True
+    for t in tokens:
+        if len(t) > 4 and not t.isdigit() and t in ol:
+            return True
+    return False
+
+
+def _invite_for_managed_row(joined_invite: Any, username: Any) -> str | None:
+    if joined_invite:
+        s = str(joined_invite).strip()
+        if s:
+            return s
+    if username:
+        un = str(username).strip().lstrip("@")
+        if un:
+            return f"https://t.me/{un}"
+    return None
+
+
+def _is_usable_telegram_public_link(invite: str | None) -> bool:
+    if not invite:
+        return False
+    low = invite.lower()
+    return "t.me/" in low or "telegram.me/" in low
+
+
+def _get_telefix_groups_legacy_sync() -> TelefixGroupsResponse:
     """
     Return actual group records from telefix.db — title and invite link (t.me/…).
     Falls back to the JSON vault if the DB is unavailable.
@@ -517,6 +615,113 @@ async def get_telefix_groups() -> TelefixGroupsResponse:
         count=len(fallback),
         source="vault/group_infiltration.json",
     )
+
+
+async def _telefix_groups_factory_scope(redis: Any) -> TelefixGroupsResponse:
+    """
+    Group Factory list: only ``managed_groups`` rows with a public t.me-style link,
+    whose ``owner_session`` matches a scanned swarm session (Redis) or ``sessions.phone`` in DB.
+    """
+    from nexus.api.routers.swarm import get_all_scanned
+
+    db_path = _find_telefix_db_path()
+    if db_path is None or not db_path.is_file():
+        return TelefixGroupsResponse(
+            groups=[],
+            count=0,
+            source="telefix.db:missing",
+            hint="לא נמצא telefix.db — סנכרן או בדוק נתיב TELEFIX_DB_PATH.",
+        )
+
+    scanned = await get_all_scanned(redis)
+
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=5, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        try:
+            cur = conn.cursor()
+            if not _sqlite_table_exists(cur, "managed_groups"):
+                return TelefixGroupsResponse(
+                    groups=[],
+                    count=0,
+                    source="telefix.db:no_managed_groups",
+                    hint="אין טבלת managed_groups ב-DB — רק קבוצות מהבוט/טלפיקס מופיעות כאן.",
+                )
+
+            tokens = _merge_scanned_and_db_session_tokens(scanned, conn)
+            if not tokens:
+                return TelefixGroupsResponse(
+                    groups=[],
+                    count=0,
+                    source="telefix.db:managed_groups",
+                    hint="אין זהויות סשן מסריקה (Swarm / Redis) או טלפונים ב-sessions ב-DB. "
+                    "ודאו שסריקת הסשנים רצה וש-owner_session ב-managed_groups תואם.",
+                )
+
+            has_groups_tbl = _sqlite_table_exists(cur, "groups")
+            if has_groups_tbl:
+                sql = """
+                    SELECT mg.group_id, mg.title, mg.username, mg.owner_session,
+                           g.invite_link AS joined_invite
+                    FROM managed_groups mg
+                    LEFT JOIN groups g ON CAST(mg.group_id AS TEXT) = CAST(g.id AS TEXT)
+                """
+            else:
+                sql = """
+                    SELECT mg.group_id, mg.title, mg.username, mg.owner_session,
+                           NULL AS joined_invite
+                    FROM managed_groups mg
+                """
+            cur.execute(sql)
+            out: list[TelefixGroupRecord] = []
+            for row in cur.fetchall():
+                owner = row["owner_session"]
+                if not _owner_matches_session_tokens(owner, tokens):
+                    continue
+                invite = _invite_for_managed_row(row["joined_invite"], row["username"])
+                if not _is_usable_telegram_public_link(invite):
+                    continue
+                gid = row["group_id"]
+                out.append(
+                    TelefixGroupRecord(
+                        id=gid,
+                        title=str(row["title"] or "").strip() or str(gid),
+                        invite_link=invite,
+                        username=str(row["username"]).strip() if row["username"] else None,
+                        owner_session=str(owner).strip() if owner else None,
+                    )
+                )
+            return TelefixGroupsResponse(
+                groups=out,
+                count=len(out),
+                source="telefix.db:managed_groups+factory",
+                hint=None
+                if out
+                else "אין קבוצות שעומדות בכל התנאים: קישור t.me, רשומה ב-managed_groups, ובעלות סשן מסריקה.",
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("telefix_groups_factory_error", error=str(exc))
+        return TelefixGroupsResponse(
+            groups=[],
+            count=0,
+            source="telefix.db:error",
+            hint=f"שגיאה בקריאת DB: {exc}",
+        )
+
+
+@router.get("/groups", response_model=TelefixGroupsResponse)
+async def get_telefix_groups(
+    scope: str | None = Query(
+        None,
+        description="factory — רק קבוצות אמיתיות מ-managed_groups עם קישור ובעלות סשן מסריקה",
+    ),
+    redis: RedisDep = ...,
+) -> TelefixGroupsResponse:
+    if (scope or "").strip().lower() == "factory":
+        return await _telefix_groups_factory_scope(redis)
+    return _get_telefix_groups_legacy_sync()
 
 
 def _ids_match_row(want: str, raw_id: Any) -> bool:
