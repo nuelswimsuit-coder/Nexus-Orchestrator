@@ -160,6 +160,21 @@ interface SwarmInventoryResponse {
   sessions_by_machine: Record<string, SwarmInventorySession[]>;
 }
 
+/** Swarm monitor banner: prefer demo host, else any machine with sessions (by count). */
+function pickBannerInventoryMachine(
+  inv: SwarmInventoryResponse | null,
+): { machineId: string; sessions: SwarmInventorySession[] } | null {
+  if (!inv?.sessions_by_machine) return null;
+  const sm = inv.sessions_by_machine;
+  const jacob = sm["Jacob-PC"];
+  if (jacob?.length) return { machineId: "Jacob-PC", sessions: jacob };
+  const keys = Object.keys(sm).filter((k) => (sm[k]?.length ?? 0) > 0);
+  if (!keys.length) return null;
+  keys.sort((a, b) => (sm[b]?.length ?? 0) - (sm[a]?.length ?? 0));
+  const mid = keys[0];
+  return { machineId: mid, sessions: sm[mid] ?? [] };
+}
+
 interface TelefixDbGroup {
   id: string | number;
   title: string;
@@ -4577,6 +4592,7 @@ interface TelefixDbStatus {
 function SwarmMonitorView() {
   const [nodes, setNodes] = useState<ClusterHealthNode[]>([]);
   const [inventory, setInventory] = useState<SwarmInventoryResponse | null>(null);
+  const [inventoryReady, setInventoryReady] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncQueue, setSyncQueue] = useState<string[]>([]);
   const [syncStatus, setSyncStatus] = useState<"idle" | "active" | "error">("idle");
@@ -4596,9 +4612,18 @@ function SwarmMonitorView() {
   }, []);
 
   const loadInventory = useCallback(async () => {
+    const empty: SwarmInventoryResponse = {
+      status: "ok",
+      total: 0,
+      machines: [],
+      sessions_by_machine: {},
+    };
     try {
       const res = await fetch(`${API_BASE}/api/swarm/sessions/inventory`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        setInventory(empty);
+        return;
+      }
       const j = (await res.json()) as InventoryResponse;
       // Map InventoryResponse → SwarmInventoryResponse shape for the table
       const mapped: SwarmInventoryResponse = {
@@ -4619,7 +4644,11 @@ function SwarmMonitorView() {
         ),
       };
       setInventory(mapped);
-    } catch { /* ignore */ }
+    } catch {
+      setInventory(empty);
+    } finally {
+      setInventoryReady(true);
+    }
   }, []);
 
   const loadDbStatus = useCallback(async () => {
@@ -4748,8 +4777,8 @@ function SwarmMonitorView() {
     }
   }
 
-  // Jacob-PC master session for the top status banner
-  const jacobSessions = inventory?.sessions_by_machine["Jacob-PC"] ?? [];
+  const bannerPick = pickBannerInventoryMachine(inventory);
+  const highlightMachineId = bannerPick?.machineId ?? "Jacob-PC";
 
   return (
     <div className="space-y-8 animate-in fade-in max-h-[calc(100vh-200px)] overflow-y-auto nexus-os-scrollbar pr-1">
@@ -4820,9 +4849,11 @@ function SwarmMonitorView() {
               👑 מחשב מאסטר עובד ומנהל בהתאמה
             </div>
             <div className="text-lg font-black text-cyan-300">
-              {jacobSessions.length > 0
-                ? `${jacobSessions.length} סשנים פעילים · ${jacobSessions[0]?.phone || "—"}`
-                : "ממתין לחיבור Redis…"}
+              {!inventoryReady
+                ? "טוען מלאי סשנים מ-Redis…"
+                : bannerPick && bannerPick.sessions.length > 0
+                  ? `${bannerPick.sessions.length} סשנים ב-Redis (${bannerPick.machineId}) · ${bannerPick.sessions[0]?.phone || "—"}`
+                  : "אין סשנים במלאי Redis — מפתחות nexus:sessions:inventory:* ריקים. תג «Redis: ONLINE» אומר שהברוקר עונה; עדיין צריך תהליך שמפרסם סריקה (session_manager / swarm)."}
             </div>
           </div>
         </div>
@@ -4903,14 +4934,19 @@ function SwarmMonitorView() {
           🔍 סריקה חיה — telefix.db sessions
         </div>
         <div className="space-y-2 max-h-[200px] overflow-y-auto nexus-os-scrollbar pr-1">
-          {allSessions.length === 0 ? (
+          {!inventoryReady && allSessions.length === 0 ? (
             <div className="flex items-center gap-3 p-3 bg-slate-950/50 rounded-xl border border-slate-800/50 text-slate-500 text-xs">
               <RefreshCw size={12} className="animate-spin text-cyan-400" />
-              מחפש סשנים ב-Redis…
+              טוען מלאי מ-Redis…
+            </div>
+          ) : allSessions.length === 0 ? (
+            <div className="p-3 bg-slate-950/50 rounded-xl border border-slate-800/50 text-slate-500 text-xs leading-relaxed">
+              אין סשנים ב-Redis. ודא שסורק הסשנים רץ על אותו ברוקר כמו ה-API, ושהוא כותב ל־
+              <code className="text-slate-400 mx-1" dir="ltr">nexus:sessions:inventory:&lt;hostname&gt;</code>.
             </div>
           ) : (
             allSessions.map((s, i) => {
-              const isMaster = s.machine_id === "Jacob-PC";
+              const isMaster = s.machine_id === highlightMachineId;
               return (
                 <div
                   key={`${s.redis_key}-${i}`}
