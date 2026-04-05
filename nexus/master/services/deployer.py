@@ -49,6 +49,7 @@ import io
 import json
 import os
 import socket
+import sys
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +62,18 @@ log = structlog.get_logger(__name__)
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 NEXUS_ROOT = Path(__file__).resolve().parent.parent.parent.parent  # project root
+
+# #region agent log
+def _agent_dbg_deploy(payload: dict) -> None:
+    try:
+        import time as _time
+
+        row = {"sessionId": "7f9550", "timestamp": int(_time.time() * 1000), **payload}
+        with open(NEXUS_ROOT / "debug-7f9550.log", "a", encoding="utf-8") as _f:
+            _f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+# #endregion
 
 # Directories to sync (relative to project root)
 SYNC_DIRS = ["nexus", "scripts"]
@@ -458,6 +471,29 @@ class DeployerService:
             or ""
         )
 
+        # #region agent log
+        _st_ip = ""
+        if self._settings is not None:
+            _st_ip = str(getattr(self._settings, "worker_ip", "") or "")
+        _agent_dbg_deploy(
+            {
+                "location": "deployer.py:sync_to_worker:pre_tcp_probe",
+                "message": "nexus-push target resolved before TCP probe",
+                "hypothesisId": "H2",
+                "runId": "pre-fix",
+                "data": {
+                    "connect_ip": ip,
+                    "env_WORKER_IP": (os.environ.get("WORKER_IP") or "").strip(),
+                    "settings_worker_ip": _st_ip.strip(),
+                    "ssh_user": ssh_user,
+                    "platform": sys.platform,
+                    "auth_password_set": bool(ssh_pass),
+                    "auth_key_configured": bool(ssh_key and os.path.isfile(ssh_key)),
+                },
+            }
+        )
+        # #endregion
+
         if not ssh_pass and not ssh_key:
             detail = "WORKER_SSH_PASSWORD is not set in .env or Vault"
             await self._emit(node_id, "error", "error", detail)
@@ -498,6 +534,22 @@ class DeployerService:
                     return {"tcp_ok": False, "errno": None, "err": str(e)[:240]}
 
             _probe = await loop.run_in_executor(None, _tcp_probe_22)
+            # #region agent log
+            _agent_dbg_deploy(
+                {
+                    "location": "deployer.py:sync_to_worker:post_tcp_probe",
+                    "message": "TCP :22 probe finished",
+                    "hypothesisId": "H1,H3,H4",
+                    "runId": "pre-fix",
+                    "data": {
+                        "connect_ip": ip,
+                        "tcp_ok": bool(_probe.get("tcp_ok")),
+                        "probe_errno": _probe.get("errno"),
+                        "probe_err": (str(_probe.get("err") or "")[:320]),
+                    },
+                }
+            )
+            # #endregion
             if not _probe.get("tcp_ok"):
                 err_tail = str(_probe.get("err") or "connection failed")[:200]
                 detail = (
