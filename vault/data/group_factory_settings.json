@@ -2,5 +2,7 @@
   "warmup_days": 14,
   "cooldown_hours": 24,
   "groups_per_day": 50,
-  "updated_at": "2026-03-27T22:42:12.566922+00:00"
+  "automation_armed": true,
+  "updated_at": "2026-04-05T10:24:06.948949+00:00",
+  "armed_at": "2026-04-05T10:24:06.948949+00:00"
 }

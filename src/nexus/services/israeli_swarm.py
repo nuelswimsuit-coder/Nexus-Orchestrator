@@ -107,12 +107,14 @@ _REDIS_LAST_ENGINE_ERROR_KEY = "nexus:swarm:israeli:last_engine_error"
 _ISRAELI_EVENTS_KEY = "nexus:swarm:israeli:events"
 _REDIS_POKE_KEY = "nexus:swarm:israeli:poke"
 _ISRAELI_HEARTBEAT_KEY = "nexus:swarm:israeli:heartbeat"
+_ISRAELI_ENGINE_PID_KEY = "nexus:swarm:israeli:engine_pid"
 
 
 def _touch_engine_heartbeat_sync() -> None:
     """So GET /live-feed can tell the community thread is alive (ISO UTC)."""
     ts = datetime.now(timezone.utc).isoformat()
     _redis_sync_set(_ISRAELI_HEARTBEAT_KEY, ts, ex=600)
+    _redis_sync_set(_ISRAELI_ENGINE_PID_KEY, str(os.getpid()), ex=400)
 
 
 def _rpush_feed_line(message: str, topic: str = "engine") -> None:

@@ -433,6 +433,43 @@ def _sqlite_table_exists(cur: sqlite3.Cursor, name: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _session_tokens_from_vault_disk() -> set[str]:
+    """
+    Stems of ``*.session`` under the vault (same tree :mod:`nexus.services.session_vault`
+    uses). Lets ``owner_session`` match Telefix rows even when nothing published
+    session rows to Redis yet — the dashboard already counts these files for swarm UI.
+    """
+    tokens: set[str] = set()
+    try:
+        from nexus.services.session_vault import vault_candidate_roots
+
+        roots = vault_candidate_roots()
+    except Exception as exc:
+        log.debug("vault_disk_tokens_roots_skip", error=str(exc))
+        roots = []
+    if not roots:
+        hub = (_REPO_ROOT / "vault" / "sessions").resolve()
+        if hub.is_dir():
+            roots = [hub]
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            for sess in root.rglob("*.session"):
+                if sess.name.endswith("-journal"):
+                    continue
+                stem = str(sess.stem or "").strip()
+                if not stem:
+                    continue
+                tokens.add(stem.lower())
+                digits = "".join(c for c in stem if c.isdigit())
+                if len(digits) >= 8:
+                    tokens.add(digits)
+        except Exception as exc:
+            log.debug("vault_disk_tokens_scan_skip", root=str(root), error=str(exc))
+    return tokens
+
+
 def _session_identity_tokens_from_db(conn: sqlite3.Connection) -> set[str]:
     tokens: set[str] = set()
     try:
@@ -480,6 +517,7 @@ def _merge_scanned_and_db_session_tokens(
                 if len(digits) >= 8:
                     tokens.add(digits)
     tokens |= _session_identity_tokens_from_db(conn)
+    tokens |= _session_tokens_from_vault_disk()
     return tokens
 
 

@@ -7,7 +7,11 @@ and scans; Redis keys under ``nexus:sessions:*`` only store that metadata.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import subprocess
+import sys
 import time as _time_module
 import uuid
 from datetime import datetime, timezone
@@ -417,6 +421,116 @@ _ISRAELI_STATUS_KEY = "nexus:swarm:israeli:status"
 _ISRAELI_LAST_ENGINE_ERROR_KEY = "nexus:swarm:israeli:last_engine_error"
 _ISRAELI_POKE_KEY = "nexus:swarm:israeli:poke"
 _ISRAELI_HEARTBEAT_KEY = "nexus:swarm:israeli:heartbeat"
+_ISRAELI_ENGINE_PID_KEY = "nexus:swarm:israeli:engine_pid"
+_ISRAELI_SPAWN_GUARD_KEY = "nexus:swarm:israeli:spawn_guard"
+
+
+def _pid_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+
+        k = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        h = k.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, ctypes.c_uint32(pid))
+        if h:
+            k.CloseHandle(h)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _heartbeat_iso_age_seconds(hb_txt: str) -> float | None:
+    t = (hb_txt or "").strip()
+    if not t:
+        return None
+    try:
+        norm = t.replace("Z", "+00:00") if t.endswith("Z") else t
+        ts = datetime.fromisoformat(norm)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc).timestamp() - ts.timestamp()
+    except Exception:
+        return None
+
+
+async def _israeli_engine_seems_alive(redis: Any) -> bool:
+    hb_raw = await redis.get(_ISRAELI_HEARTBEAT_KEY)
+    if hb_raw:
+        txt = hb_raw if isinstance(hb_raw, str) else str(hb_raw)
+        age = _heartbeat_iso_age_seconds(txt)
+        if age is not None and 0 <= age < 50:
+            return True
+    pid_raw = await redis.get(_ISRAELI_ENGINE_PID_KEY)
+    if pid_raw:
+        try:
+            pid = int(str(pid_raw).strip())
+        except ValueError:
+            pid = 0
+        if pid and _pid_running(pid):
+            return True
+    return False
+
+
+async def _ensure_israeli_swarm_process(request: Request, redis: Any) -> None:
+    """
+    If Redis says the swarm is active but the israeli_swarm.py process is not
+    publishing a heartbeat (typical when only API+frontend run without launcher),
+    spawn the engine once. Coordinated via Redis NX guard to avoid duplicates.
+    """
+    if _api_redis_is_degraded(request):
+        return
+    if await _israeli_engine_seems_alive(redis):
+        return
+    got = await redis.set(_ISRAELI_SPAWN_GUARD_KEY, "1", nx=True, ex=25)
+    if not got:
+        return
+    if await _israeli_engine_seems_alive(redis):
+        return
+    repo = Path(__file__).resolve().parents[3]
+    script = repo / "src" / "nexus" / "services" / "israeli_swarm.py"
+    if not script.is_file():
+        log.warning("israeli_swarm_script_missing", path=str(script))
+        return
+    url = redis_util.coerce_redis_url_for_platform(settings.redis_url)
+    child_env = os.environ.copy()
+    child_env["REDIS_URL"] = url
+
+    def _popen() -> None:
+        kwargs: dict[str, Any] = dict(
+            args=[sys.executable, str(script)],
+            cwd=str(repo),
+            env=child_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            close_fds=sys.platform != "win32",
+        )
+        if sys.platform == "win32":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen(**kwargs)
+
+    try:
+        await asyncio.to_thread(_popen)
+    except Exception as exc:
+        log.warning("israeli_swarm_auto_spawn_failed", error=str(exc))
+        return
+    log.info("israeli_swarm_auto_spawned_from_api", script=str(script))
+    # #region agent log
+    _agent_debug_fd2e46(
+        {
+            "location": "nexus/api/routers/swarm.py:_ensure_israeli_swarm_process",
+            "message": "auto_spawned_israeli_swarm",
+            "hypothesisId": "H1-fix",
+            "data": {"script": str(script)},
+        }
+    )
+    # #endregion
 
 
 def _safe_redis_url_for_ui(url: str) -> str:
@@ -539,6 +653,9 @@ async def get_live_feed(request: Request, redis: RedisDep) -> dict[str, Any]:
     verified_count = int(verified_raw or 0)
     written_count = int(written_raw or 0)
     is_running = (status_raw or "").strip().lower() == "running"
+
+    if is_running and not _api_redis_is_degraded(request):
+        await _ensure_israeli_swarm_process(request, redis)
 
     # Build deduplicated bot list from recent events
     bots_by_phone: dict[str, dict[str, Any]] = {}
@@ -736,6 +853,8 @@ async def start_swarm(request: Request, body: SwarmStartBody, redis: RedisDep) -
         "[דשבורד] נשלחה התרעה למנוע (poke) — מחזור פעילות אמור להתחיל תוך עד ~5 שניות",
         topic="api_start",
     )
+
+    await _ensure_israeli_swarm_process(request, redis)
 
     return {"ok": True, "status": "running"}
 
