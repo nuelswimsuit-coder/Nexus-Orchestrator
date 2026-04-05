@@ -1,9 +1,8 @@
 """
 Redis connection utilities with Windows-safe retry logic.
 
-Uses ::1 (IPv6 loopback) on Windows — the bundled redis-server binds [::] which
-covers IPv6. Avoid 127.0.0.1 on Windows as port-proxy rules (WSL2/Hyper-V) can
-hijack that address and cause WinError 64/10054 connection drops.
+Uses IPv4 loopback (127.0.0.1) by default on all platforms; ``REDIS_URL`` /
+``REDIS_HOST`` from the environment take precedence.
 Retries up to 5 times with exponential back-off before raising.
 
 Remote-worker resilience parameters (socket_keepalive, health_check_interval,
@@ -25,7 +24,7 @@ __all__ = [
     "create_redis_pool_sync",
 ]
 
-_DEFAULT_HOST = "[::1]" if sys.platform == "win32" else "127.0.0.1"
+_DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 6379
 _DEFAULT_DB = 0
 _MAX_RETRIES = 5
@@ -33,17 +32,17 @@ _RETRY_BASE_DELAY = 0.5  # seconds; doubles each attempt
 
 
 def get_redis_url(host: str | None = None, port: int | None = None, db: int | None = None) -> str:
-    """Return a Redis DSN using ::1 on Windows to bypass IPv4 port-proxy issues."""
+    """Return a Redis DSN; honours ``REDIS_URL`` then ``REDIS_HOST`` / ``MASTER_IP``."""
     env_url = (os.getenv("REDIS_URL") or "").strip()
     if env_url:
-        if sys.platform == "win32":
-            for old in ("redis://localhost", "redis://127.0.0.1"):
-                env_url = env_url.replace(old, "redis://[::1]")
         return env_url
 
-    _host = (host or os.getenv("REDIS_HOST") or _DEFAULT_HOST).strip()
-    if sys.platform == "win32" and _host.lower() in ("localhost", "127.0.0.1"):
-        _host = "[::1]"
+    _host = (
+        host
+        or os.getenv("REDIS_HOST")
+        or os.getenv("MASTER_IP")
+        or _DEFAULT_HOST
+    ).strip()
 
     _port = port or int(os.getenv("REDIS_PORT", str(_DEFAULT_PORT)))
     _db = db if db is not None else int(os.getenv("REDIS_DB", str(_DEFAULT_DB)))

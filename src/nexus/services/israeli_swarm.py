@@ -8,9 +8,9 @@ Orchestrates a full Israeli-Hebrew Telegram swarm:
                         .session files into vault/sessions automatically.
 
 2. COMMUNITY ENGINE   — Drives bots to join a target group and generate
-                        natural Israeli Hebrew dialogue via Gemini API.
-                        Topics: פוליטיקה, אקטואליה, צהוב, כלכלה.
-                        Style: slang, emojis, GIFs, reactions.
+                        contextual Israeli Hebrew chat (news-community tone) via Gemini.
+                        Reads recent messages so bots reply like humans; no hashtag spam.
+                        Optional: SWARM_UPDATE_PROFILES sets Israeli display names + avatars.
 
 3. DASHBOARD STATS    — Reads telefix.db and Redis to expose live metrics
                         for the "Live AI Swarm" tab:
@@ -27,6 +27,8 @@ VAULT_INCOMING_DIR      — Override path to vault/incoming (default: auto-detec
 VAULT_SESSIONS_DIR      — Override path to vault/sessions (default: auto-detect)
 SWARM_SESSIONS_PER_CYCLE — Telethon send attempts per engine cycle (default 3, max 12)
 SWARM_TELETHON_TIMEOUT_S — Max seconds per Telethon connect/send attempt (default 90, max 300)
+SWARM_UPDATE_PROFILES   — If not 0/false/off, set each session's Telegram first/last name
+                          and a distinct avatar once (writes *.swarm_identity.json).
 
 A daemon thread publishes ``nexus:swarm:israeli:heartbeat`` every 15s so the dashboard
 sees a pulse even while ``CommunityEngine`` is blocked inside a long Telethon cycle.
@@ -35,13 +37,16 @@ sees a pulse even while ``CommunityEngine`` is blocked inside a long Telethon cy
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import pathlib
 import random
+import re
 import shutil
 import sqlite3
+import tempfile
 import time
 import threading
 import zipfile
@@ -378,31 +383,315 @@ async def _ensure_swarm_target_entity(client: Any, group_link: str) -> Any:
     return ent
 
 
-# ── Hebrew dialogue topics & slang pool ───────────────────────────────────────
+# ── Israeli display names (deterministic per session stem) ──────────────────
 
-_TOPICS = ["פוליטיקה", "אקטואליה", "צהוב", "כלכלה"]
-
-_SLANG_OPENERS = [
-    "אחי שמעת על זה?? 😂",
-    "וואלה לא מאמין 🤯",
-    "יא אלהי זה אמיתי?? 😱",
-    "בן אדם רציני תגיד לי",
-    "חבר'ה מה קורה פה בכלל 😅",
-    "ממש לא מבין את המדינה הזאת 🤦",
-    "אז מה אתם חושבים על זה?",
-    "שמעתם את הבאסה האחרונה?? 💀",
-    "לא יאומן כי יסופר 😤",
-    "אנשים, תתעוררו כבר 🔥",
+_ISRAELI_FIRST_NAMES = [
+    "יוסי", "דני", "אורי", "נועם", "איתי", "רועי", "עומר", "גיא", "תומר", "אלון",
+    "מיכאל", "אדם", "עידו", "ליאור", "שי", "רן", "עמית", "אביב", "הדר", "גל",
+    "מיכל", "נועה", "שירה", "מאיה", "תמר", "יעל", "רות", "דנה", "ליאת", "ענת",
+    "הילה", "קרן", "שקד", "מור", "אור", "ספיר", "לילך", "רוני", "מיטל", "עדי",
 ]
 
-_REACTIONS = ["🔥", "😂", "💀", "🤯", "👀", "😱", "🫡", "💪", "🤦", "😅", "❤️", "🙏"]
+_ISRAELI_LAST_NAMES = [
+    "כהן", "לוי", "מזרחי", "דהן", "אביב", "שפירא", "גולן", "ברק", "אדרי", "ביטון",
+    "פרידמן", "גרין", "רוזן", "קליין", "אשכנזי", "סגל", "טל", "נחום", "אורבך", "חיים",
+    "דוד", "משה", "יוסף", "אליהו", "רפאל", "עמר", "זיו", "שמש", "אילן", "נבו",
+]
 
-_GEMINI_SYSTEM_PROMPT = (
-    "אתה ישראלי צעיר שמשתתף בקבוצת טלגרם. "
-    "כתוב הודעה קצרה (1-2 משפטים) בעברית ישראלית יומיומית עם סלנג, "
-    "אימוג'ים, ותגובה אותנטית לנושא שניתן. "
-    "אל תהיה רשמי. תהיה ספונטני וטבעי כמו בן אדם אמיתי."
-)
+_NEWS_ANGLES = [
+    "ביטחון וסביב הגדרה",
+    "מחירים ויוקר המחיה",
+    "פוליטיקה מקומית",
+    "חדשות מהאזור",
+    "משפט ותקשורת",
+    "כלכלה ושוק העבודה",
+    "בריאות ומערכות ציבוריות",
+]
+
+_FALLBACK_CHAT_LINES = [
+    "נשמע לי מוגזם קצת, יש לכם מקור על זה?",
+    "אני חושב שצריך לחכות לעוד פרטים לפני שמספקים.",
+    "מסכים חלקית — תלוי איך זה יתפתח בשבוע הקרוב.",
+    "מישהו ראה את זה גם בכתבה אחרת או שזה רק כאן?",
+    "לא בטוח שזה משקף את המציאות, נראה לי שחסר קונטקסט.",
+    "וואי, אם זה נכון זה משנה את התמונה לגמרי.",
+    "בעיקרון זה מה שדיברו עליו אתמול בתכנית, לא?",
+    "אני פחות מכיר את הנושא — מישהו יכול לפרק את זה בקצרה?",
+    "יש פה כמה נקודות טובות, אבל גם נקודה שמפריעה לי.",
+    "תכל'ס, מה זה אומר בשבילנו בפועל?",
+]
+
+
+def _swarm_identity_path(stem: str) -> pathlib.Path:
+    return _VAULT_SESSIONS / f"{stem}.swarm_identity.json"
+
+
+def _identity_from_stem(stem: str) -> dict[str, Any]:
+    h = hashlib.sha256(stem.encode("utf-8")).digest()
+    fi = h[0] % len(_ISRAELI_FIRST_NAMES)
+    li = h[1] % len(_ISRAELI_LAST_NAMES)
+    return {
+        "first_name": _ISRAELI_FIRST_NAMES[fi],
+        "last_name": _ISRAELI_LAST_NAMES[li],
+        "avatar_seed": stem,
+        "profile_applied": False,
+    }
+
+
+def _load_or_create_swarm_identity(stem: str) -> dict[str, Any]:
+    p = _swarm_identity_path(stem)
+    if p.exists():
+        try:
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict) and d.get("first_name"):
+                d.setdefault("profile_applied", False)
+                d.setdefault("last_name", "")
+                return d
+        except Exception:
+            pass
+    base = _identity_from_stem(stem)
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(base, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return base
+
+
+def _save_swarm_identity(stem: str, data: dict[str, Any]) -> None:
+    try:
+        with open(_swarm_identity_path(stem), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _swarm_profiles_enabled() -> bool:
+    v = (os.getenv("SWARM_UPDATE_PROFILES", "1") or "").strip().lower()
+    return v not in ("0", "false", "no", "off", "")
+
+
+def _strip_hashtags_and_cleanup(text: str) -> str:
+    s = re.sub(r"#\S+", "", text or "")
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    t = (text or "").strip()
+    if not t:
+        return None
+    try:
+        i = t.index("{")
+        j = t.rindex("}") + 1
+        return json.loads(t[i:j])
+    except Exception:
+        return None
+
+
+def _download_file_sync(url: str, dest: pathlib.Path) -> bool:
+    try:
+        import urllib.request
+
+        urllib.request.urlretrieve(url, str(dest))
+        return dest.exists() and dest.stat().st_size > 256
+    except Exception:
+        return False
+
+
+async def _apply_swarm_identity(client: Any, stem: str) -> None:
+    if not _swarm_profiles_enabled():
+        return
+    ident = _load_or_create_swarm_identity(stem)
+    if ident.get("profile_applied"):
+        return
+    fn = str(ident.get("first_name") or "").strip() or "חבר"
+    ln = str(ident.get("last_name") or "").strip()
+    seed = str(ident.get("avatar_seed") or stem).strip() or stem
+    from urllib.parse import quote
+
+    avatar_url = f"https://i.pravatar.cc/512?u={quote(seed, safe='')}"
+
+    try:
+        from telethon.tl.functions.account import UpdateProfileRequest  # type: ignore[import]
+        from telethon.tl.functions.photos import UploadProfilePhotoRequest  # type: ignore[import]
+
+        await client(UpdateProfileRequest(first_name=fn[:64], last_name=ln[:64]))
+    except Exception as exc:
+        log.warning("[COMMUNITY] Profile name update failed for %s: %s", stem, exc)
+        return
+
+    tmp_path: pathlib.Path | None = None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".jpg")
+        os.close(fd)
+        tmp_path = pathlib.Path(tmp)
+        loop = asyncio.get_event_loop()
+        ok = await loop.run_in_executor(
+            None,
+            lambda: _download_file_sync(avatar_url, tmp_path),  # type: ignore[misc]
+        )
+        if ok and tmp_path is not None:
+            from telethon.tl.functions.photos import UploadProfilePhotoRequest  # type: ignore[import]
+
+            file = await client.upload_file(str(tmp_path))
+            await client(UploadProfilePhotoRequest(file=file))
+        else:
+            log.debug("[COMMUNITY] Avatar download skipped/failed for %s", stem)
+    except Exception as exc:
+        log.warning("[COMMUNITY] Profile photo update failed for %s: %s", stem, exc)
+    finally:
+        if tmp_path is not None:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+
+    ident["profile_applied"] = True
+    _save_swarm_identity(stem, ident)
+
+
+async def _fetch_group_transcript_and_meta(
+    session_file: pathlib.Path,
+    api_id: int,
+    api_hash: str,
+    group_link: str,
+    limit: int = 22,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Return (chronological transcript for the prompt, newest-first meta for reply IDs)."""
+    from telethon import TelegramClient  # type: ignore[import]
+
+    session_path = str(session_file.with_suffix(""))
+    client = TelegramClient(session_path, api_id, api_hash)
+    await client.connect()
+    try:
+        if not await client.is_user_authorized():
+            return "", []
+        target = await _ensure_swarm_target_entity(client, group_link)
+        msgs = await client.get_messages(target, limit=limit)
+        lines: list[str] = []
+        meta_newest_first: list[dict[str, Any]] = []
+        for m in reversed([x for x in msgs if x]):
+            raw = (getattr(m, "message", None) or getattr(m, "raw_text", None) or "") or ""
+            text = str(raw).strip()
+            if not text:
+                continue
+            sid = int(getattr(m, "id", 0) or 0)
+            if not sid:
+                continue
+            name = "משתמש"
+            try:
+                sdr = await m.get_sender()
+                if sdr is not None:
+                    parts = [
+                        str(getattr(sdr, "first_name", "") or "").strip(),
+                        str(getattr(sdr, "last_name", "") or "").strip(),
+                    ]
+                    name = " ".join(p for p in parts if p).strip() or name
+            except Exception:
+                pass
+            lines.append(f"[{sid}] {name}: {text}")
+            meta_newest_first.insert(0, {"id": sid, "sender": name})
+        return "\n".join(lines), meta_newest_first
+    except Exception as exc:
+        log.debug("[COMMUNITY] Fetch transcript failed: %s", exc)
+        return "", []
+    finally:
+        await client.disconnect()
+
+
+async def _generate_community_message(
+    transcript: str,
+    meta_newest_first: list[dict[str, Any]],
+    speaker_first: str,
+    speaker_last: str,
+) -> tuple[str, int | None]:
+    """
+    One short Hebrew group line; optional reply_to_id must appear in meta.
+    """
+    allowed_ids = {int(x["id"]) for x in meta_newest_first if x.get("id") is not None}
+    angle = random.choice(_NEWS_ANGLES)
+    display = f"{speaker_first} {speaker_last}".strip()
+
+    if not _GEMINI_KEY:
+        text = random.choice(_FALLBACK_CHAT_LINES)
+        reply_id: int | None = None
+        if meta_newest_first and random.random() < 0.65:
+            reply_id = int(meta_newest_first[0]["id"])
+        return _strip_hashtags_and_cleanup(text), reply_id
+
+    sys_prompt = (
+        "אתה משתתף בקבוצת טלגרם ישראלית על חדשות ואקטואליה. "
+        "כתוב הודעה אחת קצרה (עד 2–3 משפטים) בעברית מדוברת, טבעית, כמו בני אדם — "
+        "אפשר להסכים, להתווכח, לשאול שאלת המשך, או להוסיף פרט/ספק. "
+        "חובה: להתייחס לתוכן מהצ'אט האחרון כשיש (לא לדבר לריק). "
+        "אסור: האשטגים (#), קישורים מומצאים, 'כבוט', או ניסוח שיווקי. "
+        "אימוג'י — לכל היותר אחד, רק אם זה באמת מתאים. "
+        'החזר אך ורק JSON תקין: {"text":"...","reply_to_id":null או מספר שלם} '
+        "כאשר reply_to_id הוא מזהה הודעה מהרשימה בלבד אם אתה משיב ישירות למישהו, אחרת null."
+    )
+    user_obj = {
+        "group_theme": "קהילת חדשות ישראל — דיון אקטואלי",
+        "angle_hint": angle,
+        "your_display_name": display,
+        "recent_chat_chronological": (transcript or "(אין הודעות אחרונות — תפתח נושא אקטואלי עדין)")[
+            -5500:
+        ],
+        "message_ids_newest_first": meta_newest_first[:20],
+    }
+    user_payload = json.dumps(user_obj, ensure_ascii=False)
+
+    try:
+        import urllib.request
+
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-pro:generateContent?key={_GEMINI_KEY}"
+        )
+        prompt = f"{sys_prompt}\n\nהקשר JSON:\n{user_payload}"
+        body = json.dumps(
+            {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"maxOutputTokens": 200, "temperature": 0.88},
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        loop = asyncio.get_event_loop()
+        response_bytes = await loop.run_in_executor(
+            None,
+            lambda: urllib.request.urlopen(req, timeout=22).read(),
+        )
+        data = json.loads(response_bytes)
+        raw = (
+            data.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+            .strip()
+        )
+        parsed = _extract_json_object(raw) or {}
+        text = _strip_hashtags_and_cleanup(str(parsed.get("text") or "").strip())
+        rid = parsed.get("reply_to_id")
+        reply_to: int | None = None
+        if rid is not None and str(rid).strip().lstrip("-").isdigit():
+            cand = int(rid)
+            if cand in allowed_ids:
+                reply_to = cand
+        if text:
+            return text, reply_to
+    except Exception as exc:
+        log.debug("[GEMINI] Community message failed (%s) — fallback", exc)
+
+    text = random.choice(_FALLBACK_CHAT_LINES)
+    reply_id_fb = int(meta_newest_first[0]["id"]) if meta_newest_first else None
+    return _strip_hashtags_and_cleanup(text), reply_id_fb
 
 
 # ── Session Harvester ─────────────────────────────────────────────────────────
@@ -490,59 +779,6 @@ class SessionHarvester:
             except ImportError:
                 log.warning("[HARVESTER] rarfile not installed — cannot extract .rar archives")
         return extracted
-
-
-# ── Gemini Hebrew Dialogue Generator ─────────────────────────────────────────
-
-async def _generate_hebrew_message(topic: str) -> str:
-    """Call Gemini API to generate a natural Israeli Hebrew message about topic."""
-    if not _GEMINI_KEY:
-        opener = random.choice(_SLANG_OPENERS)
-        reaction = random.choice(_REACTIONS)
-        return f"{opener} #{topic} {reaction}"
-
-    try:
-        import urllib.request
-        import urllib.error
-
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-pro:generateContent?key={_GEMINI_KEY}"
-        )
-        prompt = f"{_GEMINI_SYSTEM_PROMPT}\n\nנושא: {topic}"
-        payload = json.dumps({
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"maxOutputTokens": 80, "temperature": 0.9},
-        }).encode("utf-8")
-
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        loop = asyncio.get_event_loop()
-        response_bytes = await loop.run_in_executor(
-            None,
-            lambda: urllib.request.urlopen(req, timeout=15).read(),
-        )
-        data = json.loads(response_bytes)
-        text = (
-            data.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [{}])[0]
-            .get("text", "")
-            .strip()
-        )
-        if text:
-            reaction = random.choice(_REACTIONS)
-            return f"{text} {reaction}"
-    except Exception as exc:
-        log.debug("[GEMINI] Generation failed (%s) — using fallback", exc)
-
-    opener = random.choice(_SLANG_OPENERS)
-    reaction = random.choice(_REACTIONS)
-    return f"{opener} #{topic} {reaction}"
 
 
 # ── Community Engine ──────────────────────────────────────────────────────────
@@ -637,6 +873,27 @@ class CommunityEngine:
                 per = 3
             per = max(1, min(per, 12, len(sessions)))
 
+            api_id = int(os.getenv("TELEGRAM_API_ID", "0") or "0")
+            if not api_id:
+                api_id = int(os.getenv("TELEFIX_API_ID", "0") or "0")
+            api_hash = (
+                os.getenv("TELEGRAM_API_HASH", "")
+                or os.getenv("TELEFIX_API_HASH", "")
+                or ""
+            ).strip()
+
+            transcript = ""
+            meta_nf: list[dict[str, Any]] = []
+            if api_id and api_hash:
+                fetch_order = list(sessions)
+                random.shuffle(fetch_order)
+                for probe in fetch_order:
+                    transcript, meta_nf = await _fetch_group_transcript_and_meta(
+                        probe, api_id, api_hash, group_link
+                    )
+                    if transcript or meta_nf:
+                        break
+
             used_stems: set[str] = set()
             any_sent = False
             has_api = bool(
@@ -647,18 +904,28 @@ class CommunityEngine:
                 session_file = random.choice(pool)
                 used_stems.add(session_file.stem)
                 phone = session_file.stem
-                topic = random.choice(_TOPICS)
-                message = await _generate_hebrew_message(topic)
-                log.info(
-                    "[COMMUNITY] Bot %s → topic=%s  msg=%s",
-                    phone, topic, message[:60],
+                ident = _load_or_create_swarm_identity(phone)
+                sf = str(ident.get("first_name") or "")
+                sl = str(ident.get("last_name") or "")
+                message, reply_to = await _generate_community_message(
+                    transcript, meta_nf, sf, sl
                 )
-                sent = await self._try_send_telethon(session_file, message, group_link)
+                log.info(
+                    "[COMMUNITY] Bot %s → msg=%s reply_to=%s",
+                    phone, message[:60], reply_to,
+                )
+                sent = await self._try_send_telethon(
+                    session_file, message, group_link, reply_to=reply_to
+                )
                 if sent:
                     any_sent = True
                     self.messages_sent += 1
-                    await self._push_redis_event(phone, topic, message)
+                    topic_tag = "חדשות"
+                    await self._push_redis_event(phone, topic_tag, message)
                     await self._mark_verified_written(phone)
+                    who = f"{sf} {sl}".strip() or phone
+                    chunk = f"[הודעה חדשה במחזור זה] {who}: {message}"
+                    transcript = (transcript + "\n" + chunk)[-5500:] if transcript else chunk
 
             if not any_sent and has_api:
                 _rpush_feed_line(
@@ -669,7 +936,12 @@ class CommunityEngine:
             _touch_engine_heartbeat_sync()
 
     async def _try_send_telethon(
-        self, session_file: pathlib.Path, message: str, group_link: str
+        self,
+        session_file: pathlib.Path,
+        message: str,
+        group_link: str,
+        *,
+        reply_to: int | None = None,
     ) -> bool:
         if not group_link:
             return False
@@ -716,8 +988,11 @@ class CommunityEngine:
                         _publish_engine_error(detail)
                         return False
                     try:
+                        await _apply_swarm_identity(client, session_file.stem)
                         target = await _ensure_swarm_target_entity(client, group_link)
-                        await client.send_message(target, message)
+                        await client.send_message(
+                            target, message, reply_to=reply_to if reply_to else None
+                        )
                         return True
                     except errors.ChatWriteForbiddenError as cw_exc:
                         detail = (

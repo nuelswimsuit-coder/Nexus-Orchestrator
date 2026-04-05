@@ -7055,6 +7055,60 @@ function SwarmBotCard({ bot }: { bot: SwarmBot }) {
   );
 }
 
+const SWARM_GROUP_PRESETS_KEY = "nexus-swarm-group-presets";
+const SWARM_PRESETS_MAX = 24;
+const SWARM_PRESET_SAVE_DEBOUNCE_MS = 500;
+
+function _normalizeSwarmGroupLink(raw: string): string {
+  return raw.trim();
+}
+
+function _isPlausibleSwarmTarget(s: string): boolean {
+  const t = s.trim();
+  if (t.length < 5) return false;
+  const low = t.toLowerCase();
+  if (low.includes("t.me/") || low.includes("telegram.me/")) return true;
+  if (/^\+[\w-]+$/.test(t)) return true;
+  if (/^@?[a-zA-Z][a-zA-Z0-9_]{3,}$/.test(t)) return true;
+  return false;
+}
+
+function _readSwarmPresets(): string[] {
+  try {
+    const raw = localStorage.getItem(SWARM_GROUP_PRESETS_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((x): x is string => typeof x === "string")
+      .map(_normalizeSwarmGroupLink)
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function _writeSwarmPresets(list: string[]): void {
+  try {
+    localStorage.setItem(
+      SWARM_GROUP_PRESETS_KEY,
+      JSON.stringify(list.slice(0, SWARM_PRESETS_MAX)),
+    );
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+/** Returns the updated preset list (newest first, de-duplicated). */
+function _addSwarmPreset(link: string): string[] {
+  const norm = _normalizeSwarmGroupLink(link);
+  if (!norm || !_isPlausibleSwarmTarget(norm)) return _readSwarmPresets();
+  const prev = _readSwarmPresets();
+  const next = [norm, ...prev.filter((x) => x !== norm)].slice(0, SWARM_PRESETS_MAX);
+  _writeSwarmPresets(next);
+  return next;
+}
+
 function LiveSwarmView() {
   const [feed, setFeed] = useState<SwarmFeedData | null>(null);
   const [swarmRunning, setSwarmRunning] = useState(false);
@@ -7062,7 +7116,9 @@ function LiveSwarmView() {
   const [startCooldown, setStartCooldown] = useState(false);
   const startCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startInFlightRef = useRef(false);
+  const presetSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [targetGroup, setTargetGroup] = useState("");
+  const [groupPresets, setGroupPresets] = useState<string[]>([]);
   const [statusMsg, setStatusMsg] = useState("");
   const [swarmTab, setSwarmTab] = useState<"bots" | "feed">("bots");
 
@@ -7071,6 +7127,36 @@ function LiveSwarmView() {
       if (startCooldownTimerRef.current) clearTimeout(startCooldownTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    const list = _readSwarmPresets();
+    setGroupPresets(list);
+    if (list.length > 0) {
+      setTargetGroup((cur) => (cur.trim() ? cur : list[0]!));
+    }
+  }, []);
+
+  useEffect(() => {
+    const t = _normalizeSwarmGroupLink(targetGroup);
+    if (!_isPlausibleSwarmTarget(t)) {
+      if (presetSaveTimerRef.current) {
+        clearTimeout(presetSaveTimerRef.current);
+        presetSaveTimerRef.current = null;
+      }
+      return;
+    }
+    if (presetSaveTimerRef.current) clearTimeout(presetSaveTimerRef.current);
+    presetSaveTimerRef.current = setTimeout(() => {
+      presetSaveTimerRef.current = null;
+      setGroupPresets(_addSwarmPreset(t));
+    }, SWARM_PRESET_SAVE_DEBOUNCE_MS);
+    return () => {
+      if (presetSaveTimerRef.current) {
+        clearTimeout(presetSaveTimerRef.current);
+        presetSaveTimerRef.current = null;
+      }
+    };
+  }, [targetGroup]);
 
   const fetchFeed = useCallback(async () => {
     try {
@@ -7314,6 +7400,31 @@ function LiveSwarmView() {
             </button>
           )}
         </div>
+        <p className="text-[10px] text-slate-600 font-bold uppercase tracking-widest">
+          קישור תקין נשמר אוטומטית כ־preset (מקומי בדפדפן)
+        </p>
+        {groupPresets.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Presets</div>
+            <div className="flex flex-wrap gap-2" dir="ltr">
+              {groupPresets.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setTargetGroup(p)}
+                  className={`max-w-full truncate text-[11px] font-mono px-2.5 py-1.5 rounded-lg border transition ${
+                    _normalizeSwarmGroupLink(targetGroup) === p
+                      ? "bg-purple-600/25 border-purple-500/50 text-purple-200"
+                      : "bg-slate-800/80 border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-300"
+                  }`}
+                  title={p}
+                >
+                  {p.length > 44 ? `${p.slice(0, 41)}…` : p}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {statusMsg && (
           <div className="text-[12px] text-slate-400 font-mono">{statusMsg}</div>
         )}

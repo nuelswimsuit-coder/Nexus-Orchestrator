@@ -1,10 +1,9 @@
 """
 Smart Redis URL defaults and Windows auto-recovery helpers.
 
-- Windows (``win32``), **local master**: broker defaults to ``[::1]``; URLs that
-  still point at the fleet stub ``10.100.102.8``, ``127.0.0.1``, or
-  ``localhost`` are rewritten to ``[::1]`` to avoid WSL2/Hyper-V port-proxy
-  hijack (WinError 64).
+- Windows (``win32``), **local master**: broker defaults to ``127.0.0.1`` (IPv4
+  loopback). ``REDIS_URL`` / ``REDIS_HOST`` / ``MASTER_IP`` from the environment
+  are respected; loopback is not rewritten to ``[::1]``.
 - Windows **remote worker** (``NODE_ROLE=worker``, ``NODE_ID`` prefix
   ``worker``, or ``--worker`` outside ``nexus_core``): loopback is overridden to
   the LAN fleet master ``10.100.102.8``; that IP is **not** rewritten to
@@ -25,9 +24,7 @@ from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 LINUX_FLEET_REDIS_HOST = "10.100.102.8"
-# Use IPv6 loopback on Windows — the bundled redis-server binds [::] which covers
-# IPv6. Avoid 127.0.0.1: WSL2/Hyper-V port-proxy rules can hijack it (WinError 64).
-WINDOWS_LOCAL_REDIS_HOST = "[::1]" if sys.platform == "win32" else "127.0.0.1"
+WINDOWS_LOCAL_REDIS_HOST = "127.0.0.1"
 DEGRADED_ENV_FLAG = "NEXUS_ALLOW_DEGRADED"
 
 # Connection hardening — prevents OS from silently dropping long-lived sockets.
@@ -95,8 +92,9 @@ def default_redis_host() -> str:
 
 
 def default_redis_url_string() -> str:
-    """Full ``redis://`` DSN with platform-appropriate host."""
-    return f"redis://{default_redis_host()}:6379/0"
+    """Full ``redis://`` DSN using ``REDIS_HOST`` / ``MASTER_IP`` when set, else platform default."""
+    host = _effective_redis_host()
+    return f"redis://{host}:6379/0"
 
 
 def _effective_redis_host() -> str:
@@ -130,7 +128,7 @@ def _replace_redis_hostname(url: str, new_host: str) -> str:
 def coerce_redis_url_for_platform(redis_url: str) -> str:
     """
     Rewrite known misconfigurations:
-    - Windows local master: fleet master IP / 127.0.0.1 / localhost -> [::1]
+    - Windows local master: do not remap loopback or fleet IP to ``[::1]``.
     - Windows remote worker: loopback -> fleet master IP; real LAN / fleet IP unchanged
     - Linux worker: 127.0.0.1 / localhost -> fleet master IP (self-loop guard)
     """
@@ -143,8 +141,6 @@ def coerce_redis_url_for_platform(redis_url: str) -> str:
             if _host_is_loopback(host):
                 return _replace_redis_hostname(redis_url, LINUX_FLEET_REDIS_HOST)
             return redis_url
-        if host in (LINUX_FLEET_REDIS_HOST.lower(), "127.0.0.1", "localhost"):
-            return _replace_redis_hostname(redis_url, WINDOWS_LOCAL_REDIS_HOST)
     else:
         corrected = _resolve_worker_host(host)
         if corrected != host:

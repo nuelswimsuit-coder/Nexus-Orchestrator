@@ -2,8 +2,17 @@ from __future__ import annotations
 
 import sys, os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-sys.path.insert(0, os.getcwd())
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(_PROJECT_ROOT, "src"))
+sys.path.insert(0, _PROJECT_ROOT)
+
+from dotenv import load_dotenv  # noqa: E402
+
+for _env in (
+    os.path.join(_PROJECT_ROOT, "configs", ".env"),
+    os.path.join(_PROJECT_ROOT, ".env"),
+):
+    load_dotenv(_env, override=False)
 
 # Suppress asyncio debug noise and paramiko buffer flooding
 os.environ.setdefault("PYTHONASYNCIODEBUG", "0")
@@ -65,18 +74,12 @@ def _count_tg_sessions_on_disk() -> int | None:
         return None
 
 
-_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
-
 import structlog  # noqa: E402
 import uvicorn  # noqa: E402
-from dotenv import load_dotenv  # noqa: E402
 from fastapi import FastAPI, Request, status  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse  # noqa: E402
 from typing import Any  # noqa: E402
-
-for _env in (_PROJECT_ROOT / "configs" / ".env", _PROJECT_ROOT / ".env"):
-    load_dotenv(_env, override=False)
 
 try:
     import ujson  # noqa: E402
@@ -112,7 +115,7 @@ def _locate_telefix_db() -> pathlib.Path:
             return p
 
     # 2. Project root
-    project_root = _PROJECT_ROOT
+    project_root = pathlib.Path(_PROJECT_ROOT)
     canonical = project_root / "telefix.db"
     if canonical.exists():
         print(f"✅ [TELEFIX] DB at project root: {canonical}", flush=True)

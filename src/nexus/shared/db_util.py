@@ -112,7 +112,10 @@ def _apply_management_ddl_sync(conn: sqlite3.Connection) -> None:
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+# Repo root: .../src/nexus/shared/db_util.py → parents[3]; .../nexus/shared/db_util.py → parents[2]
+_p_file = Path(__file__).resolve()
+_nexus_parent = _p_file.parents[2]
+_REPO_ROOT = _p_file.parents[3] if _nexus_parent.name == "src" else _nexus_parent
 _DATA_DIR = _REPO_ROOT / "data"
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
 

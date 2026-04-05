@@ -23,6 +23,9 @@ from nexus.shared.redis_util import (
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_CONFIGS_ENV = _REPO_ROOT / "configs" / ".env"
+if _CONFIGS_ENV.is_file():
+    load_dotenv(_CONFIGS_ENV, override=False)
 _ENV_FILE = _REPO_ROOT / ".env"
 if _ENV_FILE.is_file():
     # Repo `.env` must win over stale machine/user env (e.g. old POLYMARKET_* from
