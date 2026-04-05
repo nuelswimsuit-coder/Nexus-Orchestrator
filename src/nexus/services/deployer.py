@@ -50,8 +50,9 @@ Configuration (.env)
 
     Optional: WORKER_IP_WINDOWS_FALLBACK overrides the default when the Windows IP
     is unset. You may also set ``worker_ip_windows`` in ``nexus/shared/config.json``.
-    Fallback order ends with the LAN worker host (10.100.102.20) so SSH/SFTP and
-    ``nexus_payload.zip`` use the correct interface instead of loopback.
+    Linux ``WORKER_IP`` has no silent LAN default: set it to the worker address or
+    ``127.0.0.1`` for same-machine deploy (skips SSH). Windows fallback still uses
+    the LAN helper constant when nothing else is configured.
 """
 
 from __future__ import annotations
@@ -478,13 +479,13 @@ def _is_loopback_deploy_host(host: str) -> bool:
 
 def _effective_worker_linux_ssh_host(configured_ip: str) -> str:
     """
-    Use the LAN worker (``DEFAULT_WORKER_LAN_HOST``) when ``WORKER_IP`` is unset
-    or loopback so ``nexus_payload.zip`` and SSH traverse the correct interface.
+    Normalized ``WORKER_IP`` only — no substitution.
+
+    Historically, empty or loopback values were replaced with a hardcoded LAN host,
+    which forced SSH to an unreachable address and blocked local loopback deploy.
+    Callers treat empty as unset (error) and non-empty loopback as local deploy.
     """
-    c = (configured_ip or "").strip()
-    if not c or _is_loopback_deploy_host(c):
-        return DEFAULT_WORKER_LAN_HOST
-    return c
+    return (configured_ip or "").strip()
 
 
 def _close_own_tcp_connections_to_host(host: str, port: int = 22) -> None:
@@ -1038,8 +1039,13 @@ class DeployerService:
         node_id = "worker_linux"
         raw_ip = (self._get_setting("worker_ip") or "").strip()
         ip = _effective_worker_linux_ssh_host(raw_ip)
-        if not raw_ip:
-            log.info("deployer_project_sync_default_worker_ip", host=ip)
+        if not ip:
+            detail = (
+                "WORKER_IP is not set — set WORKER_IP in .env to your Linux worker "
+                "IP, or 127.0.0.1 for same-machine deploy (no SSH)."
+            )
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
 
         if not os.path.exists(project_path):
             detail = f"Project path does not exist: {project_path}"
@@ -1456,8 +1462,14 @@ class DeployerService:
         node_id = "worker_linux"
         raw_ip = (self._get_setting("worker_ip") or "").strip()
         ip = _effective_worker_linux_ssh_host(raw_ip)
-        if not raw_ip:
-            log.info("deployer_linux_zip_default_worker_ip", host=ip)
+        if not ip:
+            detail = (
+                "WORKER_IP is not set — set WORKER_IP in .env to your Linux worker "
+                "IP, or 127.0.0.1 for same-machine deploy (no SSH)."
+            )
+            await self.clear_progress(node_id)
+            await self._emit(node_id, "error", "error", detail)
+            return f"error: {detail}"
 
         if _is_loopback_deploy_host(ip):
             await self.clear_progress(node_id)
@@ -1994,7 +2006,7 @@ class DeployerService:
         # or ``_fallback_worker_windows_ip`` so Nexus-Push does not IDLE-skip.
         targets.append("worker_windows")
 
-        # Linux worker — default SSH host is LAN (``DEFAULT_WORKER_LAN_HOST``) when unset
+        # Linux worker — IP from WORKER_IP / heartbeat (no implicit LAN host)
         targets.append("worker_linux")
 
         # Redis-discovered workers
@@ -2150,8 +2162,8 @@ class DeployerService:
         0. If ``node_id`` is already a literal IP address, use it as the host
            (Sentinel auto-deploy and ad-hoc targets).
         1. ``worker_windows`` + ``WORKER_IP_WINDOWS`` / settings.
-        2. ``worker_linux`` + non-loopback ``WORKER_IP``, else heartbeat ``local_ip``,
-           else ``DEFAULT_WORKER_LAN_HOST`` (replaces loopback for SSH).
+        2. ``worker_linux`` + ``WORKER_IP`` (any value), else heartbeat ``local_ip``,
+           else stripped ``WORKER_IP`` (may be empty if unset).
         3. Otherwise ``local_ip`` from the Redis heartbeat.
         """
         stripped = node_id.strip()

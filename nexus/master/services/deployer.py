@@ -258,9 +258,12 @@ class DeployerService:
         Returns "ok" or "error: <reason>".
         """
         node_id = "worker_linux"
-        ip = self._get_setting("worker_ip")
+        ip = (self._get_setting("worker_ip") or "").strip()
         if not ip:
-            detail = "WORKER_IP is not set in .env — cannot sync"
+            detail = (
+                "WORKER_IP is not set — set WORKER_IP in .env to your Linux worker "
+                "IP (reachable on port 22)."
+            )
             await self._emit(node_id, "error", "error", detail)
             return f"error: {detail}"
 
@@ -428,9 +431,12 @@ class DeployerService:
         Returns "ok" or "error: <reason>".
         """
         node_id = "worker_linux"
-        ip      = self._get_setting("worker_ip")
+        ip = (self._get_setting("worker_ip") or "").strip()
         if not ip:
-            detail = "WORKER_IP is not set in .env — cannot sync"
+            detail = (
+                "WORKER_IP is not set — set WORKER_IP in .env to your Linux worker "
+                "IP (reachable on port 22)."
+            )
             await self._emit(node_id, "error", "error", detail)
             return f"error: {detail}"
 
@@ -679,7 +685,7 @@ class DeployerService:
         targets: list[str] = []
 
         # Static WORKER_IP entry — always included when configured
-        worker_ip = self._get_setting("worker_ip")
+        worker_ip = (self._get_setting("worker_ip") or "").strip()
         if worker_ip:
             targets.append("worker_linux")  # canonical ID for the static laptop
 
@@ -721,7 +727,7 @@ class DeployerService:
         1. If node_id == "worker_linux" and WORKER_IP is set → use it directly.
         2. Otherwise look up local_ip from the Redis heartbeat.
         """
-        worker_ip = self._get_setting("worker_ip")
+        worker_ip = (self._get_setting("worker_ip") or "").strip()
         if node_id == "worker_linux" and worker_ip:
             return worker_ip
 
