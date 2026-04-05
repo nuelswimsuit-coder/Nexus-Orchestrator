@@ -14,9 +14,12 @@ Production features
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
+import time
 import uuid
+from pathlib import Path
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from urllib.parse import unquote, urlparse
@@ -1401,6 +1404,30 @@ def create_app() -> FastAPI:
     # ── Global exception handler ───────────────────────────────────────────────
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        # #region agent log
+        try:
+            _dbg_path = Path(__file__).resolve().parents[2] / "debug-b7d870.log"
+            _dbg_path.open("a", encoding="utf-8").write(
+                json.dumps(
+                    {
+                        "sessionId": "b7d870",
+                        "hypothesisId": "BCE",
+                        "location": "main.py:global_exception_handler",
+                        "message": "unhandled_exception",
+                        "data": {
+                            "path": str(request.url.path),
+                            "method": request.method,
+                            "exc_type": type(exc).__name__,
+                            "exc_str": str(exc)[:800],
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    },
+                )
+                + "\n",
+            )
+        except Exception:
+            pass
+        # #endregion
         log.exception(
             "unhandled_api_exception",
             path=str(request.url.path),

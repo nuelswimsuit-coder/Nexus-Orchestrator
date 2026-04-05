@@ -40,12 +40,37 @@ function _resolveApiUrl(path: string): string {
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(_resolveApiUrl(path), {
+  const resolved = _resolveApiUrl(path);
+  const res = await fetch(resolved, {
     headers: { "Content-Type": "application/json", ...init?.headers },
     ...init,
   });
   if (!res.ok) {
     const body = await res.text();
+    // #region agent log
+    if (typeof window !== "undefined" && path.includes("/deploy/")) {
+      fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Debug-Session-Id": "b7d870",
+        },
+        body: JSON.stringify({
+          sessionId: "b7d870",
+          location: "api.ts:apiFetch",
+          message: "deploy_path_error",
+          data: {
+            path,
+            resolved,
+            status: res.status,
+            bodySnippet: body.slice(0, 500),
+          },
+          timestamp: Date.now(),
+          hypothesisId: "A",
+        }),
+      }).catch(() => {});
+    }
+    // #endregion
     throw new Error(`API ${res.status}: ${body}`);
   }
   return res.json() as Promise<T>;

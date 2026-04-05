@@ -308,9 +308,31 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
 
     try {
       // Call the new /api/deploy/sync endpoint (Phase 18)
-      const res = await fetch(`${API_BASE}/api/deploy/sync`, { method: "POST" });
+      const syncUrl = `${API_BASE}/api/deploy/sync`;
+      const res = await fetch(syncUrl, { method: "POST" });
       if (!res.ok) {
         const body = await res.text();
+        // #region agent log
+        fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Debug-Session-Id": "b7d870",
+          },
+          body: JSON.stringify({
+            sessionId: "b7d870",
+            location: "Header.tsx:handleSync",
+            message: "deploy_sync_error",
+            data: {
+              syncUrl: syncUrl || "(same-origin)",
+              status: res.status,
+              bodySnippet: body.slice(0, 500),
+            },
+            timestamp: Date.now(),
+            hypothesisId: "A",
+          }),
+        }).catch(() => {});
+        // #endregion
         throw new Error(`API ${res.status}: ${body}`);
       }
       const data = await res.json();
