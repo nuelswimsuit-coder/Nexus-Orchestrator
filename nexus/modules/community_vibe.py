@@ -49,25 +49,29 @@ async def _gemini_json(
     *,
     temperature: float = 0.85,
     max_tokens: int = 1024,
+    frequency_penalty: float | None = None,
+    presence_penalty: float | None = None,
 ) -> dict[str, Any]:
     import httpx
 
     url = f"{GEMINI_URL}?key={api_key}"
     combined = f"{system_instruction}\n\n---\n\n{user_text}"
+    gen_cfg: dict[str, Any] = {
+        "temperature": temperature,
+        "maxOutputTokens": max_tokens,
+    }
+    if frequency_penalty is not None:
+        gen_cfg["frequencyPenalty"] = frequency_penalty
+    if presence_penalty is not None:
+        gen_cfg["presencePenalty"] = presence_penalty
     payload_primary = {
         "systemInstruction": {"parts": [{"text": system_instruction}]},
         "contents": [{"role": "user", "parts": [{"text": user_text}]}],
-        "generationConfig": {
-            "temperature": temperature,
-            "maxOutputTokens": max_tokens,
-        },
+        "generationConfig": gen_cfg,
     }
     payload_fallback = {
         "contents": [{"role": "user", "parts": [{"text": combined}]}],
-        "generationConfig": {
-            "temperature": temperature,
-            "maxOutputTokens": max_tokens,
-        },
+        "generationConfig": dict(gen_cfg),
     }
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(url, json=payload_primary)

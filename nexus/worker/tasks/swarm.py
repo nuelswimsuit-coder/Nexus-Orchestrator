@@ -38,7 +38,10 @@ KEY_COOLDOWNS = "nexus:swarm:factory:cooldowns"
 KEY_METRICS = "nexus:swarm:factory:metrics"
 KEY_PROFILE_GATE = "nexus:swarm:factory:profile_gate"
 THREAD_KEY_PREFIX = "nexus:swarm:factory:thread:"
+ACTIVE_TOPIC_KEY_PREFIX = "nexus:swarm:factory:active_topic:"
 THREAD_ID_CAP = 5
+RECENT_GROUP_MSG_CAP = 15
+RECENT_GROUP_MSG_MAX_CHARS = 180
 
 # When Redis is unavailable, avoid re-running profile checks every tick (Latin names stay "non_israeli" per heuristic).
 _factory_profile_verified_local: set[str] = set()
@@ -48,13 +51,14 @@ REACTION_EMOJIS = ["🔥", "😂", "💀", "🤯", "👀", "😱", "💪", "🤦
 THREAD_REACTION_EMOJIS = ["👍", "🤦‍♂️", "🤬"]
 
 ISRAELI_NEWS_SYSTEM_PROMPT = (
-    "You are an Israeli Telegram user in a local news/politics group. \n"
-    "RULES:\n"
-    "1. Write in extremely casual, modern colloquial Hebrew slang (e.g., 'אמאלה', 'הזייה', 'אין מצב', 'אחי', 'וואלה', 'פיגוע פלילי'). \n"
-    "2. NEVER use hashtags (#). Real people don't use them in chats.\n"
-    "3. Keep it short (1-10 words). People type fast on phones.\n"
-    "4. Occasional minor Hebrew typos are encouraged to simulate human typing.\n"
-    "5. Do not sound poetic, formal, or like a translated article. Express cynical, stressed, or typical Israeli attitudes towards news."
+    "You are a stressed, cynical Israeli in a chaotic Telegram news group. "
+    "Speak in extremely short, authentic spoken Hebrew — how people type on their phones, not LinkedIn or TV pundits.\n"
+    "Good vibe examples (do NOT copy the same line every time; stay varied): "
+    "חארטה של התקשורת, אמאלה איזה פחד, מישהו פה מהמרכז ויכול לאשר?, פייק ניוז, וואלה, אין מצב אחי, הזייה.\n"
+    "STRICT BANS: no politeness, no formal or essay tone. "
+    "Never use words/phrases like: קונטקסט, מסכים חלקית, בהקשר זה, לצערי, יתכן ש, ברם, נראה לי שמדובר — or anything that sounds like a LinkedIn comment.\n"
+    "NEVER use hashtags (#). Roughly 1–10 Hebrew words unless the user asks for one slightly longer 'breaking' opener.\n"
+    "Occasional believable Hebrew typos are encouraged."
 )
 
 FACTORY_TOPICS = [
@@ -219,6 +223,77 @@ async def _thread_ids_push(redis: Any, group_id: int | str, msg_id: int) -> None
     cur.append(int(msg_id))
     cur = cur[-THREAD_ID_CAP:]
     await redis.set(_thread_redis_key(group_id), json.dumps(cur, ensure_ascii=False))
+
+
+def _active_topic_redis_key(group_id: int | str) -> str:
+    return f"{ACTIVE_TOPIC_KEY_PREFIX}{int(group_id)}"
+
+
+async def _active_topic_read(redis: Any, group_id: int | str) -> dict[str, Any] | None:
+    raw = await _redis_json_get(redis, _active_topic_redis_key(group_id))
+    if isinstance(raw, dict) and str(raw.get("text") or "").strip():
+        return raw
+    return None
+
+
+async def _active_topic_write(redis: Any, group_id: int | str, text: str) -> None:
+    await _redis_json_set(
+        redis,
+        _active_topic_redis_key(group_id),
+        {
+            "text": (text or "").strip()[:2000],
+            "event_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
+def _active_topic_should_refresh(record: dict[str, Any] | None, threshold_sec: float) -> bool:
+    if not record:
+        return True
+    iso = record.get("event_at")
+    if not iso:
+        return True
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - dt).total_seconds()
+        return age >= threshold_sec
+    except Exception:
+        return True
+
+
+def _recent_texts_from_telethon_messages(
+    messages: list[Any], *, max_items: int = RECENT_GROUP_MSG_CAP, max_chars: int = RECENT_GROUP_MSG_MAX_CHARS
+) -> list[str]:
+    out: list[str] = []
+    for m in messages:
+        if m is None:
+            continue
+        raw = getattr(m, "message", None)
+        if raw is None:
+            continue
+        t = str(raw).strip()
+        if not t:
+            continue
+        if len(t) > max_chars:
+            t = t[: max_chars - 1] + "…"
+        out.append(t)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _anti_duplication_prompt_suffix(recent_texts: list[str]) -> str:
+    if not recent_texts:
+        return ""
+    lines = "\n".join(f"- {t}" for t in recent_texts)
+    return (
+        "\n\nחובה מוחלטת: אל תחזור, אל תפרפרז ואל תשכפל מבנים דומה להודעות האחרונות בקבוצה. "
+        "משהו אחר לגמרי.\n"
+        "הודעות אחרונות בקבוצה (אסור לחקות):\n"
+        f"{lines}\n"
+    )
 
 
 async def _redis_delete_keys_with_prefix(redis: Any, prefix: str) -> None:
@@ -437,27 +512,57 @@ async def _generate_hebrew_line(
     *,
     role: Literal["opener", "replier"],
     anchor_preview: str | None = None,
+    recent_texts: list[str] | None = None,
+    active_topic_line: str | None = None,
+    opener_fresh_event: bool = False,
 ) -> str:
     json_tail = ' Return only valid JSON: {"text":"your line here"}'
+    anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
+
     if role == "opener":
-        user_he = (
-            f'הנחיה: כתוב פתיח קצר בסגנון פלאש חדשות / "ראיתם מה...?" / וייב מקומי. '
-            f'נושא רלוונטי: "{topic}". '
-            f"עברית מדוברת בלבד.{json_tail}"
-        )
+        if opener_fresh_event:
+            user_he = (
+                "הנחיה: שורה אחת — שמועה/פלאש/מה זה עכשיו, כאילו מישהו זורק בקבוצת חדשות בטלגרם. "
+                "אפשר דיווח חדשותי, שמועה, מחיר (דולר וכו'), שביתה מחר, מהומה — קצר ומלוכלך, לא רשמי. "
+                f'רקע רחב בלבד (לא לצטט מילה במילה): "{topic}".'
+                f"{anti}{json_tail}"
+            )
+        else:
+            ctx = (active_topic_line or "").strip()[:400] or topic
+            user_he = (
+                f'הקבוצה כבר רותחת סביב: "{ctx}". '
+                "כתוב עוד משפט קצר — זווית אחרת לגמרי על אותו עניין. לא פורמלי, לא מנומס."
+                f"{anti}{json_tail}"
+            )
     else:
-        ap = (anchor_preview or "").strip()[:800] or "(אין טקסט — תגיב בקצרה לווייב חדשות)"
+        ap = (anchor_preview or "").strip()[:800] or "(אין טקסט — תגיב בקצרה)"
+        if (active_topic_line or "").strip():
+            head = f'הנושא הפעיל בקבוצה עכשיו: "{(active_topic_line or "").strip()[:400]}". '
+        else:
+            head = "אין אירוע מוגדר מפורש — תגיב רק למה שבציטוט. "
         user_he = (
-            "הנחיה: תגובה קצרצרה בשרשור למה שנכתב בקבוצת חדשות. "
-            f'תוכן ההודעה שאליה משיבים: "{ap}" {json_tail}'
+            f"{head}"
+            "תגובה קצרצרה בשרשור. "
+            f'מה שנכתב שאליו משיבים: "{ap}"'
+            f"{anti}{json_tail}"
         )
+
+    temperature = random.uniform(0.85, 0.95)
+    frequency_penalty = random.uniform(0.35, 0.5)
+    presence_penalty = random.uniform(0.35, 0.5)
 
     if api_key:
         try:
             from nexus.modules.community_vibe import _gemini_json  # type: ignore[attr-defined]
 
             out = await _gemini_json(
-                api_key, ISRAELI_NEWS_SYSTEM_PROMPT, user_he, temperature=0.9, max_tokens=128
+                api_key,
+                ISRAELI_NEWS_SYSTEM_PROMPT,
+                user_he,
+                temperature=temperature,
+                max_tokens=128,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
             )
             text = str(out.get("text", "")).strip()
             if text:
@@ -476,8 +581,10 @@ async def _generate_hebrew_line(
                     {"role": "system", "content": ISRAELI_NEWS_SYSTEM_PROMPT},
                     {"role": "user", "content": user_he},
                 ],
-                "temperature": 0.9,
+                "temperature": temperature,
                 "max_tokens": 120,
+                "frequency_penalty": frequency_penalty,
+                "presence_penalty": presence_penalty,
             }
             async with httpx.AsyncClient(timeout=60.0) as client:
                 r = await client.post(url, json=payload, headers=headers)
@@ -514,6 +621,7 @@ async def community_factory_bootstrap(parameters: dict[str, Any]) -> dict[str, A
             KEY_ROLES, KEY_GROUPS, KEY_STATE, KEY_BANNED, KEY_COOLDOWNS, KEY_METRICS, KEY_PROFILE_GATE
         )
         await _redis_delete_keys_with_prefix(redis, THREAD_KEY_PREFIX)
+        await _redis_delete_keys_with_prefix(redis, ACTIVE_TOPIC_KEY_PREFIX)
 
     roles_payload = {"owners": owners, "members": members}
 
@@ -936,6 +1044,16 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
         role = "opener"
 
     topic = random.choice(FACTORY_TOPICS)
+    active_record = await _active_topic_read(redis, gid_int)
+    event_threshold_sec = random.uniform(7200.0, 10800.0)
+    opener_fresh_event = False
+    active_topic_line: str | None = None
+    if role == "opener":
+        opener_fresh_event = _active_topic_should_refresh(active_record, event_threshold_sec)
+        if not opener_fresh_event and active_record:
+            active_topic_line = str(active_record.get("text") or "").strip() or None
+    elif role == "replier" and active_record:
+        active_topic_line = str(active_record.get("text") or "").strip() or None
 
     if role == "lurk":
         await _enqueue_next()
@@ -984,6 +1102,15 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
                 return {"status": "skipped", "reason": "unauthorized"}
             await _ensure_factory_profile(client, redis, session_base)
             ent = await client.get_entity(gid_int)
+            recent_texts: list[str] = []
+            try:
+                hist = await client.get_messages(ent, limit=RECENT_GROUP_MSG_CAP)
+                if hist:
+                    chronological = list(hist)
+                    chronological.reverse()
+                    recent_texts = _recent_texts_from_telethon_messages(chronological)
+            except Exception as exc:
+                log.debug("factory_recent_messages_failed", group_id=gid_int, error=str(exc))
             anchor_preview: str | None = None
             if reply_to_id is not None:
                 try:
@@ -999,6 +1126,9 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
                 openai_key,
                 role="opener" if role == "opener" else "replier",
                 anchor_preview=anchor_preview,
+                recent_texts=recent_texts,
+                active_topic_line=active_topic_line,
+                opener_fresh_event=opener_fresh_event,
             )
             if random.random() < 0.12 and len(line) > 3:
                 cut = random.randint(0, max(0, len(line) - 1))
@@ -1011,6 +1141,8 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
             mid = getattr(sent, "id", None)
             if mid is not None and role == "opener":
                 await _thread_ids_push(redis, gid_int, int(mid))
+            if role == "opener" and opener_fresh_event:
+                await _active_topic_write(redis, gid_int, line)
         await _bump_metric(redis, "messages_sent", 1)
     except ValueError as exc:
         log.warning("factory_converse_creds_missing", error=str(exc))
