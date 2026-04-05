@@ -1154,8 +1154,9 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
         }
 
     sent_n = 0
-    for _ in range(count):
-        await asyncio.sleep(random.uniform(2.0, 15.0))
+    for burst_i in range(count):
+        if burst_i > 0:
+            await asyncio.sleep(random.uniform(2.0, 15.0))
         random.shuffle(pool)
         picked = False
         for session_base in pool:
@@ -1372,6 +1373,7 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
     stance = random.choice(AMCHA_STANCES_HE)
     typo_must_correct = random.random() < 0.15
 
+    sent_list: list[Any] = []
     try:
         async with async_telegram_client(session_base, parameters) as client:
             if not await client.is_user_authorized():
