@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from nexus.shared.redis_util import (
@@ -90,6 +90,16 @@ class Settings(BaseSettings):
     # my.telegram.org — MTProto credentials for Telethon user sessions (session factory).
     telegram_api_id: int = Field(default=0)
     telegram_api_hash: str = Field(default="")
+    # Cap concurrent Telethon MTProto connections / network slots (swarm + vault probes).
+    telegram_network_concurrency: int = Field(
+        default=30,
+        ge=1,
+        le=500,
+        validation_alias=AliasChoices(
+            "NEXUS_TELEGRAM_NETWORK_CONCURRENCY",
+            "TELEGRAM_NETWORK_CONCURRENCY",
+        ),
+    )
     # Your personal chat ID or a group/channel ID.
     # Find yours by messaging @userinfobot on Telegram.
     telegram_admin_chat_id: str = Field(default="")

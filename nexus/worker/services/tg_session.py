@@ -1,6 +1,9 @@
 """
 Async Telethon helpers for worker tasks: per-session ``*.json`` api_id/api_hash
 (vault layout) with TELEFIX_* fallback, and consistent MTProto error classification.
+
+Uses :class:`telethon.sessions.StringSession` when the task parameters carry a leased
+``string_session`` (Master vault lease path) to avoid repeated SQLite session file I/O.
 """
 
 from __future__ import annotations
@@ -13,6 +16,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 import structlog
+
+from nexus.worker.services.tg_connection import (
+    telegram_network_slot,
+    telethon_connect_kwargs_for_session_base,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -84,13 +92,32 @@ async def async_telegram_client(
     session_base: str,
     parameters: dict[str, Any],
 ) -> AsyncIterator[Any]:
-    """Connected async Telethon client for ``session_base`` (path without ``.session``)."""
+    """
+    Connected async Telethon client for ``session_base`` (path without ``.session``),
+    or for a leased ``string_session`` string in ``parameters`` (in-memory session).
+    """
     from telethon import TelegramClient  # type: ignore[import-untyped]
+    from telethon.sessions import StringSession  # type: ignore[import-untyped]
 
     api_id, api_hash = resolve_telethon_creds(session_base, parameters)
     if not api_id or not api_hash:
         raise ValueError(
             "Telethon api_id/api_hash missing: add <stem>.json next to the session or set TELEFIX_API_ID / TELEFIX_API_HASH"
         )
-    async with TelegramClient(session_base, api_id, api_hash) as client:
-        yield client
+
+    leased = (parameters.get("string_session") or "").strip()
+    stem = Path(session_base).name
+    extra = telethon_connect_kwargs_for_session_base(session_base, stem)
+
+    async with telegram_network_slot(task_name="async_telegram_client"):
+        if leased:
+            async with TelegramClient(
+                StringSession(leased),
+                api_id,
+                api_hash,
+                **extra,
+            ) as client:
+                yield client
+        else:
+            async with TelegramClient(session_base, api_id, api_hash, **extra) as client:
+                yield client

@@ -84,24 +84,62 @@ EXAMPLES OF GOOD, AUTHENTIC OUTPUTS (DO THIS):
 'מישהו ראה את זה בעוד מקום?'
 'הזייה מה שהולך פה'"""
 
-# Micro-personas: one chosen at random per LLM call and injected into the system prompt.
-ISRAELI_SWARM_MICRO_PERSONAS: list[str] = [
+# Twelve fixed archetypes — index chosen deterministically from MD5(session path).
+PERSONA_ARCHETYPES: list[str] = [
     (
-        "Persona A (The Cynic): You are extremely cynical. You don't believe the news. "
-        "You answer in 2-4 words. You use words like 'חארטה', 'פייק', 'שוב עובדים עלינו'."
+        "ARCHETYPE Ars/פרח: עצבני, סלנג אגרסיבי, 'אחי' 'נודר' 'בדוק', טעויות כתיב מכוונות "
+        "('ניראה' במקום 'נראה'). קצר וחד."
     ),
     (
-        "Persona B (The Boomer): You are a 60-year-old Israeli. You use too many dots '...' "
-        "and emojis like 🙏 🌹 🤬. You complain about the government/youth."
+        "ARCHETYPE Boomer: בן/בת 60+, נקודות '...' ואימוג'ים 🙏🌹, מתלונן על ממשלה/צעירים, "
+        "סגנון ווטסאפ משפחתי."
     ),
     (
-        "Persona C (The Ars/Teen): You use aggressive slang, make spelling mistakes on purpose "
-        "('ניראה' instead of 'נראה', 'אמיתי' without question marks). Use 'אחי', 'נודר', 'בדוק'."
+        "ARCHETYPE Religious: מילים נקיות יותר אבל עדיין יומיומי, 'בעזה\"ש' לפעמים, לא פורמלי."
     ),
     (
-        "Persona D (The Anxious): You panic easily about news. "
-        "Use 'אמאלה', 'איזה פחד', 'מה נסגר'."
+        "ARCHETYPE Cynic: לא מאמין לחדשות, 2–6 מילים, 'חארטה' 'פייק' 'שוב עובדים עלינו'."
     ),
+    (
+        "ARCHETYPE Anxious: נלחץ מחדשות, 'אמאלה' 'איזה פחד' 'מה נסגר'."
+    ),
+    (
+        "ARCHETYPE Tech-bro: סטארטאפים, 'דיסרפשן' בציניות, מעורבב עברית-אנגלית קז'ואל."
+    ),
+    (
+        "ARCHETYPE Student: חצי ישן, 'אני במבחן' 'אין כסף', סלנג קצת צעיר."
+    ),
+    (
+        "ARCHETYPE Mizrahi uncle: חום, 'מאל'ס' 'יאללה', בדיחות משפחה, לא מנומס מדי."
+    ),
+    (
+        "ARCHETYPE Ashkenazi grandma: 'אוי ואבוי' 'נו באמת', קצת יידיש בעברית, תלונה חמה."
+    ),
+    (
+        "ARCHETYPE Russian-mix: עברית עם שיבושים רוסיים קלים, 'נורמלי?' 'בסדר' הרבה."
+    ),
+    (
+        "ARCHETYPE Periphery: עיר פיתוח/פריפריה, ריאליזם כלכלי, 'אין עבודה' 'המחירים'."
+    ),
+    (
+        "ARCHETYPE Beach-chill: אילתי/חוף בראש, רגוע, 'נשבע' 'וואלה כיף', פחות זעם."
+    ),
+]
+
+# Twelve geo anchors — second index from same MD5 digest (different byte range).
+GEO_ANCHORS: list[str] = [
+    "GEO-ANCHOR פתח תקווה: פרברים, פקקים, חניה, חיי יום-יום.",
+    "GEO-ANCHOR אילת: חום, תיירים, 'שם זה אחרת'.",
+    "GEO-ANCHOR תל אביב: קצב מהיר, ציניזם עירוני, 'תכלס'.",
+    "GEO-ANCHOR ירושלים: מתח דתי-חילוני ברקע, שפה חמה.",
+    "GEO-ANCHOR חיפה: גרים על הגבעה/מורדות, רוח צפון.",
+    "GEO-ANCHOR באר שבע: דרום, קצת מרוחק מהמרכז, ישירות.",
+    "GEO-ANCHOR אשדוד: נמל, עבודה, משפחות.",
+    "GEO-ANCHOR נתניה: שרון, קרוב לים, טון בינוני.",
+    "GEO-ANCHOR רמת גן: ליד גוש דן, פרגודי בניין.",
+    "GEO-ANCHOR חולון/בת ים: גוש דן, לא 'מרכז העולם' אבל מגניב.",
+    "GEO-ANCHOR קריית שמונה/צפון: קרוב לגבול, טון מקומי.",
+    "GEO-ANCHOR רעננה/השרון: פרבר ירוק, קצת 'בועה' אבל עדיין עממי.",
 ]
 
 # Often-weak final letters in casual Hebrew (for optional typo-like trimming on very short lines).
@@ -250,6 +288,7 @@ def _anti_robot_message_text(text: str, *, short_mutations: bool = True) -> str:
     s = re.sub(r"\s{2,}", " ", s).strip()
     while s.endswith("."):
         s = s[:-1].rstrip()
+    s = _strip_trailing_periods_hebrew(s)
     if not short_mutations or not s:
         return s
     words = s.split()
@@ -403,6 +442,43 @@ def _session_persona_seed(session_base: str) -> str:
     return hashlib.sha256(raw).hexdigest()[:24]
 
 
+def _deterministic_persona_axes(session_base: str) -> tuple[str, str]:
+    """MD5(session id/path) → fixed archetype + geo (stable per Telethon session file)."""
+    raw = (session_base or "default").encode("utf-8", errors="ignore")
+    d = hashlib.md5(raw).digest()
+    ai = int.from_bytes(d[0:2], "big") % len(PERSONA_ARCHETYPES)
+    gi = int.from_bytes(d[2:4], "big") % len(GEO_ANCHORS)
+    return PERSONA_ARCHETYPES[ai], GEO_ANCHORS[gi]
+
+
+def _resolve_ollama_base_url() -> str:
+    return (os.getenv("NEXUS_OLLAMA_BASE_URL") or os.getenv("OLLAMA_HOST") or "").strip().rstrip("/")
+
+
+def _resolve_ollama_model() -> str:
+    return (os.getenv("NEXUS_OLLAMA_MODEL") or "llama3").strip() or "llama3"
+
+
+def _reading_delay_before_typing_seconds(*context_parts: str, wpm: int = 250) -> float:
+    """Simulate reading incoming chat before showing the typing indicator (250 WPM default)."""
+    combined = " ".join((p or "").strip() for p in context_parts if (p or "").strip())
+    if not combined:
+        return 0.35
+    n_words = max(1, len(combined.split()))
+    sec = (n_words / float(max(1, wpm))) * 60.0
+    return max(0.25, min(sec, 60.0))
+
+
+def _strip_trailing_periods_hebrew(text: str) -> str:
+    """Human-flaw filter: drop trailing '.' on Hebrew-heavy lines (LLMs over-punctuate)."""
+    s = text or ""
+    if not any(_is_hebrew_char(c) for c in s):
+        return s
+    while s.endswith("."):
+        s = s[:-1].rstrip()
+    return s
+
+
 def _global_outgoing_prompt_suffix(lines: list[str]) -> str:
     if not lines:
         return ""
@@ -447,16 +523,16 @@ async def _redis_recent_outgoing_push(redis: Any, fragment: str) -> None:
         log.debug("factory_recent_outgoing_push_failed", error=str(exc))
 
 
-def _build_amcha_system_prompt(persona_seed: str | None) -> str:
+def _build_amcha_system_prompt(session_base: str, persona_seed: str | None) -> str:
     """
-    System prompt: base Israeli swarm rules, few-shot BAD/GOOD examples, random micro-persona,
-    and optional uniqueness seed.
+    System prompt: base Israeli swarm rules, few-shot BAD/GOOD examples,
+    deterministic archetype + geo from MD5(session), and optional uniqueness seed.
     """
-    micro = random.choice(ISRAELI_SWARM_MICRO_PERSONAS)
+    arch, geo = _deterministic_persona_axes(session_base)
     parts = [
         AMCHA_ISRAEL_SYSTEM_PROMPT,
         AMCHA_FEW_SHOT_BLOCK,
-        f"MICRO-PERSONA (pick this voice for this reply only):\n{micro}",
+        f"PERSONA (קבוע לחשבון — תמיד אותו קול ומיקום מנטלי):\n{arch}\n{geo}",
     ]
     if (persona_seed or "").strip():
         parts.append(
@@ -504,11 +580,11 @@ def _finalize_primary_message(text: str) -> str:
     parts = s.split()
     if len(parts) <= 8 or len(s) <= 40:
         s = re.sub(r"[.!?]+\s*$", "", s).strip()
-    return s
+    return _strip_trailing_periods_hebrew(s)
 
 
 def _finalize_correction_message(text: str) -> str:
-    return _cap_hebrew_words(_strip_hashtags_and_cleanup(text), 20)
+    return _strip_trailing_periods_hebrew(_cap_hebrew_words(_strip_hashtags_and_cleanup(text), 20))
 
 
 def _safe_md_link_label(label: str) -> str:
@@ -561,10 +637,13 @@ def _coerce_bool(v: Any) -> bool:
 
 def _normalize_amcha_dict(obj: dict[str, Any]) -> dict[str, Any]:
     pm = str(obj.get("primary_message") or obj.get("text") or "").strip()
-    cm = str(obj.get("correction_message") or "").strip()
+    cm = str(obj.get("correction_message") or obj.get("correction") or "").strip()
+    nc_raw = obj.get("needs_correction")
+    if nc_raw is None:
+        nc_raw = bool(cm)
     return {
         "primary_message": pm,
-        "needs_correction": _coerce_bool(obj.get("needs_correction")),
+        "needs_correction": _coerce_bool(nc_raw),
         "correction_message": cm,
         "article_url": str(obj.get("article_url") or "").strip(),
         "link_label": str(obj.get("link_label") or "").strip(),
@@ -642,11 +721,54 @@ async def _send_amcha_messages(
     return sent
 
 
+async def _ollama_chat_completion_content(
+    base_url: str,
+    model: str,
+    system_prompt: str,
+    user_he: str,
+    *,
+    temperature: float,
+    max_tokens: int,
+) -> str | None:
+    """Ollama OpenAI-compatible /api/chat — returns assistant message text."""
+    import httpx
+
+    url = f"{base_url.rstrip('/')}/api/chat"
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_he},
+        ],
+        "stream": False,
+        "options": {
+            "temperature": float(temperature),
+            "num_predict": int(max_tokens),
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(url, json=payload)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as exc:
+        log.warning("factory_ollama_failed", error=str(exc))
+        return None
+    if not isinstance(data, dict):
+        return None
+    msg = data.get("message")
+    if not isinstance(msg, dict):
+        return None
+    raw = str(msg.get("content") or "").strip()
+    return raw or None
+
+
 async def _generate_amcha_turn(
     api_key: str,
     topic: str,
     openai_key: str,
     *,
+    session_base: str,
     role: Literal["opener", "replier"],
     stance_he: str,
     last_five_block: str,
@@ -662,13 +784,13 @@ async def _generate_amcha_turn(
 ) -> dict[str, Any]:
     anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
     anti += _global_outgoing_prompt_suffix(list(global_recent_outgoing or []))
-    system_prompt = _build_amcha_system_prompt(persona_seed)
+    system_prompt = _build_amcha_system_prompt(session_base, persona_seed)
 
     if rich_media_mode:
         json_schema = (
             "החזר אך ורק JSON תקף (בלי טקסט נוסף) עם המפתחות: "
             '"action_type","message_text","image_query",'
-            '"primary_message","needs_correction","correction_message","article_url","link_label". '
+            '"primary_message" או "text","needs_correction","correction_message" או "correction","article_url","link_label". '
             "action_type חייב להיות אחד מ: text | text_with_emoji | sticker | gif | image. "
             "בערך לאורך זמן: ~60% text או text_with_emoji, ~15% sticker, ~15% gif, ~10% image. "
             "ב-sticker/gif/image: message_text יכול להיות ריק או כיתוב קצר; image_query — מילת מפתח באנגלית לחיפוש (למשל coffee, traffic, shawarma). "
@@ -677,19 +799,19 @@ async def _generate_amcha_turn(
         )
     else:
         json_schema = (
-            "החזר אך ורק JSON תקף (בלי טקסט נוסף) עם המפתחות: "
-            '"primary_message","needs_correction","correction_message","article_url","link_label". '
+            "החזר אך ורק JSON תקף (בלי טקסט נוסף) במבנה: "
+            '{"text":"...","needs_correction":true/false,"correction":"..."} — מותר גם primary_message/correction_message במקום text/correction. '
             "article_url ו-link_label — מחרוזות; כשאין קישור חדשותי השאר ריק."
         )
     if typo_must_correct:
-        typo_field = "message_text ו-primary_message" if rich_media_mode else "primary_message"
+        typo_field = "message_text, primary_message או text" if rich_media_mode else "primary_message או text"
         typo_rule = (
             f"חובה: needs_correction=true — שים ב-{typo_field} טעות הקלדה עברית נפוצה "
             "(למשל בוט במקום טוב, או ניראה לי במקום נראה לי), "
-            "וב-correction_message תיקון אותנטי קצר כמו 'טוב*' או 'סליחה טוב*' או 'איזה אהבל אני, טוב*'."
+            "וב-correction או correction_message תיקון אותנטי קצר כמו 'טוב*' או 'סליחה טוב*' או 'איזה אהבל אני, טוב*'."
         )
     else:
-        typo_rule = "needs_correction חייב להיות false; correction_message יכול להיות מחרוזת ריקה."
+        typo_rule = "needs_correction חייב להיות false; correction/correction_message יכול להיות מחרוזת ריקה."
 
     opener_news_clause = ""
     if news_opener:
@@ -758,6 +880,24 @@ async def _generate_amcha_turn(
             normalized = _normalize_amcha_dict(out)
             return _apply_anti_robot_to_turn_dict(normalized, rich_media_mode=False)
         return None
+
+    ollama_base = _resolve_ollama_base_url()
+    ollama_model = _resolve_ollama_model()
+    if ollama_base:
+        raw_ol = await _ollama_chat_completion_content(
+            ollama_base,
+            ollama_model,
+            system_prompt,
+            user_he,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        if raw_ol:
+            obj_ol = _parse_llm_json_object(raw_ol)
+            if obj_ol:
+                processed_ol = _postprocess_llm_dict(obj_ol)
+                if processed_ol is not None:
+                    return processed_ol
 
     if api_key:
         try:
@@ -1763,6 +1903,7 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         api_key,
                         topic,
                         openai_key,
+                        session_base=session_base,
                         role="replier",
                         stance_he=stance,
                         last_five_block=last_five,
@@ -1775,8 +1916,11 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         persona_seed=_session_persona_seed(session_base),
                     )
                     body = _finalize_primary_message(turn["primary_message"])
+                    await asyncio.sleep(
+                        _reading_delay_before_typing_seconds(last_five, anchor_preview or "", active_topic_line or "")
+                    )
                     async with client.action(ent, "typing"):
-                        await asyncio.sleep(random.uniform(1.0, 4.0))
+                        await asyncio.sleep(random.uniform(0.4, 1.8))
                     msgs = await _send_amcha_messages(
                         client,
                         ent,
@@ -1943,6 +2087,7 @@ async def _factory_converse_slot(
                 api_key,
                 topic,
                 openai_key,
+                session_base=session_base,
                 role="opener" if role == "opener" else "replier",
                 stance_he=stance,
                 last_five_block=last_five_block,
@@ -1975,6 +2120,13 @@ async def _factory_converse_slot(
                     at, "הודעה"
                 )
 
+            await asyncio.sleep(
+                _reading_delay_before_typing_seconds(
+                    last_five_block,
+                    str(anchor_preview or ""),
+                    str(active_topic_line or ""),
+                )
+            )
             async with client.action(ent, "typing"):
                 await asyncio.sleep(random.uniform(0.3, 1.5))
 
