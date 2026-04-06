@@ -2,8 +2,9 @@
 CLI entrypoint for ``nexus-push`` — cluster deploy via the same DeployerService
 used by POST /api/deploy/cluster.
 
-Exits with code 0 only when every targeted worker returns ``ok`` (not ``skipped:``
-or ``error:``). Unreachable hosts are logged per node and do not abort other workers.
+Unreachable workers produce ``skipped:`` results; other nodes still deploy.
+Exits 0 when at least one worker returns ``ok`` and none return ``error:``.
+Exits 1 if every target failed, skipped, or returned an error.
 """
 
 from __future__ import annotations
@@ -65,19 +66,34 @@ async def _async_main(args: argparse.Namespace) -> None:
             print(f"[nexus-push] {line}")
 
         if not results:
-            print("[nexus-push] Failure: no deploy targets (check WORKER_IP / Redis heartbeats).", file=sys.stderr)
+            print("[nexus-push] Failure: no deploy targets (check workers.json / WORKER_IP / Redis).", file=sys.stderr)
             raise SystemExit(1)
 
-        bad = {k: v for k, v in results.items() if v != "ok"}
-        if bad:
+        errors = {k: v for k, v in results.items() if str(v).startswith("error:")}
+        if errors:
             print(
-                "[nexus-push] Failure: not all workers returned ok — "
-                f"failed or skipped: {bad}",
+                "[nexus-push] Failure: one or more workers returned an error — "
+                f"{errors}",
                 file=sys.stderr,
             )
             raise SystemExit(1)
 
-        print("[nexus-push] Success: all workers deployed.")
+        if not any(v == "ok" for v in results.values()):
+            print(
+                "[nexus-push] Failure: no worker returned ok (all unreachable or skipped).",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
+        skipped = {k: v for k, v in results.items() if str(v).startswith("skipped:")}
+        if skipped:
+            print(
+                "[nexus-push] Warning: some workers were skipped (offline / SSH unreachable): "
+                f"{skipped}",
+                file=sys.stderr,
+            )
+
+        print("[nexus-push] Success: deploy finished (ok on all reachable workers).")
     finally:
         await redis.aclose()
 

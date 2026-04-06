@@ -47,23 +47,14 @@ def tcp_port_open(host: str, port: int = 22, *, timeout: float = 15.0) -> bool:
         return False
 
 
-def preflight_remote_ssh(host: str) -> str | None:
+def preflight_remote_ssh(host: str, *, port: int = 22) -> str | None:
     """
-    Run ICMP ping then TCP check on port 22. Return None if OK, else a user-facing
-    error string (already includes leading emoji where required).
+    Gate deploy on TCP reachability to the SSH port (not ICMP — many hosts block ping).
+
+    Return None if the port accepts a connection, else a user-facing skip reason.
     """
-    if not icmp_ping_host(host):
-        msg = (
-            f"❌ NETWORK ERROR: Cannot ping {host}. The worker is either offline, asleep, "
-            "or the IP has changed."
-        )
-        _print_red(msg)
-        return msg
-    if not tcp_port_open(host, 22, timeout=15.0):
-        msg = (
-            "❌ SSH ERROR: IP is reachable, but port 22 is closed. Ensure 'sshd' is "
-            "running on the Linux worker."
-        )
-        _print_red(msg)
-        return msg
-    return None
+    if tcp_port_open(host, port, timeout=15.0):
+        return None
+    msg = f"Host {host} unreachable — SSH port {port} closed, timed out, or host down"
+    _print_red(f"[SKIPPED] {msg}")
+    return msg

@@ -1,0 +1,14 @@
+{
+  "workers": [
+    {
+      "node_id": "worker_linux",
+      "host": "10.100.102.20",
+      "deploy_root": "/home/yadmin/Desktop/Nexus-Orchestrator"
+    },
+    {
+      "node_id": "worker_mac_mini",
+      "host": "10.100.102.50",
+      "deploy_root": "/Users/yadmin/Desktop/Nexus-Orchestrator"
+    }
+  ]
+}

@@ -33,21 +33,29 @@ Each step emits a JSON event to  nexus:deploy:progress:<node_id>  ::
         "ts":      "2025-01-01T00:00:00Z"
     }
 
-Configuration (.env)
----------------------
-    WORKER_SSH_USER=yadmin
-    WORKER_SSH_PASSWORD=<password>
-    WORKER_IP=192.168.1.42            # direct IP — no Redis heartbeat needed
-    WORKER_DEPLOY_ROOT_LINUX=/home/yadmin/Desktop/Nexus-Orchestrator
-    WORKER_DEPLOY_ROOT_WIN=C:\\Users\\Yarin\\Desktop\\Nexus-Orchestrator
+Configuration
+-------------
+    Optional static cluster list: ``configs/workers.json`` (or ``NEXUS_WORKERS_CONFIG``).
+    Each entry: ``node_id``, ``host`` (IP or DNS), optional ``deploy_root``.
+
+    Environment (.env) still supported::
+
+        WORKER_SSH_USER=yadmin
+        WORKER_SSH_PASSWORD=<password>
+        WORKER_IP=192.168.1.42            # used when workers.json is absent
+        WORKER_DEPLOY_ROOT_LINUX=/home/yadmin/Desktop/Nexus-Orchestrator
+        WORKER_DEPLOY_ROOT_DARWIN=/Users/yadmin/Desktop/Nexus-Orchestrator
+        WORKER_DEPLOY_ROOT_WIN=C:\\Users\\Yarin\\Desktop\\Nexus-Orchestrator
 """
 
 from __future__ import annotations
 
 import asyncio
+import errno
 import io
 import json
 import os
+import socket
 import sys
 import zipfile
 from datetime import datetime, timezone
@@ -60,8 +68,61 @@ from nexus.shared.deploy_preflight import (
     preflight_remote_ssh,
     print_ssh_debug_command,
 )
+from nexus.shared.workers_config import (
+    load_workers_config,
+    worker_entry_by_id,
+)
 
 log = structlog.get_logger(__name__)
+
+
+def _ssh_unreachable_exception(exc: BaseException) -> bool:
+    """
+    True when the failure is likely transient reachability (host down, refused, timeout),
+    not bad credentials or config — those should remain hard errors.
+    """
+    if type(exc).__name__ == "AuthenticationException":
+        return False
+    if isinstance(exc, (TimeoutError, socket.timeout, BrokenPipeError, ConnectionResetError)):
+        return True
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) in (
+        errno.ETIMEDOUT,
+        errno.ECONNREFUSED,
+        errno.EHOSTUNREACH,
+        errno.ENETUNREACH,
+    ):
+        return True
+    try:
+        from paramiko.ssh_exception import NoValidConnectionsError  # type: ignore[import-untyped]
+
+        if isinstance(exc, NoValidConnectionsError):
+            return True
+    except ImportError:
+        pass
+    low = str(exc).lower()
+    if any(
+        x in low
+        for x in (
+            "timed out",
+            "timeout",
+            "connection refused",
+            "no route to host",
+            "network is unreachable",
+            "errno 113",
+            "errno 110",
+            "errno 111",
+        )
+    ):
+        if "authentication" in low or "password" in low:
+            return False
+        return True
+    return False
+
+
+def _print_skip_host(host: str, detail: str) -> None:
+    msg = f"[SKIPPED] Host {host} unreachable — {detail[:280]}"
+    print(msg, file=sys.stderr, flush=True)
+
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -764,21 +825,28 @@ class DeployerService:
 
     async def _build_target_list(self) -> list[str]:
         """
-        Combine Redis-discovered workers with any WORKER_IP static entry.
-        Deduplicates by node_id.
+        Targets = optional ``configs/workers.json`` (or ``NEXUS_WORKERS_CONFIG``),
+        else legacy ``WORKER_IP`` → ``worker_linux``, plus Redis-discovered workers.
         """
         targets: list[str] = []
+        seen: set[str] = set()
+        wf = load_workers_config(NEXUS_ROOT)
 
-        # Static WORKER_IP entry — always included when configured
-        worker_ip = (self._get_setting("worker_ip") or "").strip()
-        if worker_ip:
-            targets.append("worker_linux")  # canonical ID for the static laptop
+        if wf.entries:
+            for e in wf.entries:
+                if e.node_id not in seen:
+                    targets.append(e.node_id)
+                    seen.add(e.node_id)
+        else:
+            worker_ip = (self._get_setting("worker_ip") or "").strip()
+            if worker_ip:
+                targets.append("worker_linux")
+                seen.add("worker_linux")
 
-        # Redis-discovered workers
-        redis_workers = await self._discover_worker_nodes()
-        for nid in redis_workers:
-            if nid not in targets:
+        for nid in await self._discover_worker_nodes():
+            if nid not in seen:
                 targets.append(nid)
+                seen.add(nid)
 
         return targets
 
@@ -806,12 +874,19 @@ class DeployerService:
 
     async def _resolve_ip(self, node_id: str) -> str | None:
         """
-        Resolve the IP for a node.
+        Resolve the SSH host for a node.
 
         Priority:
-        1. If node_id == "worker_linux" and WORKER_IP is set → use it directly.
-        2. Otherwise look up local_ip from the Redis heartbeat.
+        1. ``configs/workers.json`` entry ``host`` for this ``node_id``.
+        2. ``worker_linux`` + ``WORKER_IP`` when set.
+        3. Redis heartbeat ``local_ip``.
+        4. Bare ``WORKER_IP`` as last resort.
         """
+        wf = load_workers_config(NEXUS_ROOT)
+        entry = worker_entry_by_id(wf, node_id)
+        if entry and entry.host.strip():
+            return entry.host.strip()
+
         worker_ip = (self._get_setting("worker_ip") or "").strip()
         if node_id == "worker_linux" and worker_ip:
             return worker_ip
@@ -819,7 +894,6 @@ class DeployerService:
         key = f"nexus:heartbeat:{node_id}"
         raw = await self._redis.get(key)
         if not raw:
-            # Last resort: if only one static IP is configured, use it
             return worker_ip or None
         try:
             hb = json.loads(raw)
@@ -899,10 +973,23 @@ class DeployerService:
                 _ckw3["password"] = ssh_pass
             if ssh_key and os.path.isfile(ssh_key):
                 _ckw3["key_filename"] = ssh_key
-            await _loop_dn.run_in_executor(
-                None,
-                lambda: ssh.connect(**_ckw3),
-            )
+            try:
+                await _loop_dn.run_in_executor(
+                    None,
+                    lambda: ssh.connect(**_ckw3),
+                )
+            except Exception as conn_exc:
+                if _ssh_unreachable_exception(conn_exc):
+                    reason = str(conn_exc).strip() or type(conn_exc).__name__
+                    _print_skip_host(ip, reason)
+                    await self._emit(
+                        node_id,
+                        "skipped",
+                        "done",
+                        f"[SKIPPED] Host {ip} unreachable — {reason[:200]}",
+                    )
+                    return f"skipped: SSH unreachable ({reason[:120]})"
+                raise
             _t3 = ssh.get_transport()
             # Apply KexAlgorithms preference after transport is established
             _harden_ssh_transport(_t3)
@@ -916,6 +1003,10 @@ class DeployerService:
             remote_os, remote_root, venv_python = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self._detect_remote_env(ssh, ssh_user)
             )
+            wf_e = worker_entry_by_id(load_workers_config(NEXUS_ROOT), node_id)
+            if wf_e and wf_e.deploy_root and remote_os == "Linux":
+                remote_root = wf_e.deploy_root.strip()
+                venv_python = f"{remote_root}/.venv/bin/python"
             log.info("deployer_remote_env", node_id=node_id, remote_os=remote_os, remote_root=remote_root)
 
             # ── 3. Stop worker — kill all python3 to prevent file-locking ─────
@@ -964,6 +1055,16 @@ class DeployerService:
 
         except Exception as exc:
             detail = str(exc)
+            if _ssh_unreachable_exception(exc):
+                _print_skip_host(ip, detail)
+                await self._emit(
+                    node_id,
+                    "skipped",
+                    "done",
+                    f"[SKIPPED] Host {ip} unreachable — {detail[:200]}",
+                )
+                log.warning("deployer_node_skipped_network", node_id=node_id, error=detail)
+                return f"skipped: {detail[:200]}"
             log.exception("deployer_node_error", node_id=node_id, error=detail)
             await self._emit(node_id, "error", "error", detail)
             return f"error: {detail}"
@@ -976,25 +1077,49 @@ class DeployerService:
         """
         Returns (remote_os, remote_root, venv_python).
 
-        Uses WORKER_DEPLOY_ROOT_LINUX / WIN from settings when set.
-        Falls back to auto-detection via `find` on Linux.
+        ``remote_os`` is ``Linux`` for both Linux and macOS (POSIX: bash, unzip, venv layout).
+        Windows workers use the Windows branch. macOS uses ``python3`` via the shared venv
+        commands in ``_install_deps``.
         """
         _, stdout, _ = ssh.exec_command("uname -s 2>/dev/null || echo Windows")
         uname = stdout.read().decode().strip()
-        remote_os = "Linux" if "linux" in uname.lower() else "Windows"
+        ul = uname.lower()
+        is_darwin = "darwin" in ul
+        is_linux = "linux" in ul
+        remote_os = "Linux" if (is_linux or is_darwin) else "Windows"
 
         if remote_os == "Linux":
-            # 1. Prefer the explicit config value
-            configured = self._get_setting("worker_deploy_root_linux")
-            if configured:
-                remote_root = configured
-            else:
-                # 2. Auto-detect by finding pyproject.toml
-                _, out, _ = ssh.exec_command(
-                    "find /home -maxdepth 5 -name 'pyproject.toml' 2>/dev/null | head -1"
+            if is_darwin:
+                configured = (
+                    (self._get_setting("worker_deploy_root_darwin") or "").strip()
+                    or (self._get_setting("worker_deploy_root_linux") or "").strip()
                 )
-                found = out.read().decode().strip()
-                remote_root = str(Path(found).parent) if found else f"/home/{ssh_user}/Desktop/Nexus-Orchestrator"
+                if configured:
+                    remote_root = configured
+                else:
+                    _, out, _ = ssh.exec_command(
+                        "find /Users -maxdepth 6 -name 'pyproject.toml' 2>/dev/null | head -1"
+                    )
+                    found = out.read().decode().strip()
+                    remote_root = (
+                        str(Path(found).parent)
+                        if found
+                        else f"/Users/{ssh_user}/Desktop/Nexus-Orchestrator"
+                    )
+            else:
+                configured = (self._get_setting("worker_deploy_root_linux") or "").strip()
+                if configured:
+                    remote_root = configured
+                else:
+                    _, out, _ = ssh.exec_command(
+                        "find /home -maxdepth 5 -name 'pyproject.toml' 2>/dev/null | head -1"
+                    )
+                    found = out.read().decode().strip()
+                    remote_root = (
+                        str(Path(found).parent)
+                        if found
+                        else f"/home/{ssh_user}/Desktop/Nexus-Orchestrator"
+                    )
             venv_python = f"{remote_root}/.venv/bin/python"
         else:
             configured = self._get_setting("worker_deploy_root_win")
@@ -1124,6 +1249,12 @@ class DeployerService:
             raise RuntimeError(
                 f"Remote unzip failed (exit {exit_code}): {(out + err)[-500:]}"
             )
+        if remote_os == "Linux":
+            _, _, _ = ssh.exec_command(
+                f"chmod +x {remote_root}/start_nexus.sh {remote_root}/run_worker.sh "
+                f"2>/dev/null || true",
+                timeout=30,
+            )
         log.info("deployer_zip_extracted", remote_root=remote_root, exit_code=exit_code)
 
     def _install_deps(
@@ -1149,8 +1280,8 @@ class DeployerService:
             venv_dir = f"{remote_root}/.venv"
             scripts_dir = f"{remote_root}/scripts"
             cmd = (
-                # 1. Create venv if absent
-                f"if [ ! -f {venv_dir}/bin/python ]; then "
+                # 1. Create venv if absent (``python3`` is the portable name on Linux + macOS)
+                f"if [ ! -x {venv_dir}/bin/python ] && [ ! -x {venv_dir}/bin/python3 ]; then "
                 f"  python3 -m venv {venv_dir}; "
                 f"fi && "
                 # 2. cd into scripts/, activate, upgrade pip, install deps

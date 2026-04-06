@@ -170,6 +170,8 @@ class Settings(BaseSettings):
     worker_deploy_root_linux: str = Field(
         default="/home/yadmin/Desktop/Nexus-Orchestrator"
     )
+    # macOS workers (e.g. Mac mini). Empty = derive from user home on the remote.
+    worker_deploy_root_darwin: str = Field(default="")
     # Remote project root on Windows workers
     # Defaults to ~/Desktop/Nexus-Orchestrator — override with WORKER_DEPLOY_ROOT_WIN env var.
     worker_deploy_root_win: str = Field(
