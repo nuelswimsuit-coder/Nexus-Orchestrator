@@ -179,6 +179,7 @@ DeployStep = Literal[
     "installing_deps",
     "restarting",
     "done",
+    "skipped",
     "error",
 ]
 
@@ -193,6 +194,7 @@ STEP_LABELS: dict[str, str] = {
     "installing_deps": "Installing deps…",
     "restarting":      "Restarting worker…",
     "done":            "Worker Live ✓",
+    "skipped":         "Skipped (unreachable)",
     "error":           "Error ✗",
 }
 
@@ -1174,8 +1176,18 @@ class DeployerService:
                              f"SSH → {ssh_user}@{ip}")
             pf_err = await self._preflight_remote_ssh_executor(ip)
             if pf_err:
-                await self._emit(node_id, "error", "error", pf_err)
-                return f"error: {pf_err}"
+                await self._emit(
+                    node_id,
+                    "skipped",
+                    "done",
+                    f"[SKIPPED] {pf_err}",
+                )
+                log.warning(
+                    "deployer_project_sync_skipped_preflight",
+                    node_id=node_id,
+                    detail=(pf_err or "")[:500],
+                )
+                return "ok"
             print_ssh_debug_command(ssh_user, ip)
             try:
                 await self._connect_ssh_with_deadline(
@@ -1551,8 +1563,18 @@ class DeployerService:
             )
             pf_err = await self._preflight_remote_ssh_executor(ip)
             if pf_err:
-                await self._emit(node_id, "error", "error", pf_err)
-                return f"error: {pf_err}"
+                await self._emit(
+                    node_id,
+                    "skipped",
+                    "done",
+                    f"[SKIPPED] {pf_err}",
+                )
+                log.warning(
+                    "deployer_linux_zip_push_skipped_preflight",
+                    node_id=node_id,
+                    detail=(pf_err or "")[:500],
+                )
+                return "skipped: worker_linux unreachable"
             print_ssh_debug_command(ssh_user, ip)
             try:
                 await self._connect_ssh_with_deadline(
@@ -1755,8 +1777,9 @@ class DeployerService:
         ``asyncio.gather`` (``sync_worker`` targets: ``worker_linux``,
         ``worker_windows``).
 
-        Returns "ok" or "error: <reason>" (Linux failure is fatal to the return
-        value; Windows errors surface when Linux succeeded).
+        Returns "ok" or "error: <reason>". Linux may return ``skipped:`` when the
+        host is unreachable (ping/TCP :22 preflight); that does not fail the job if
+        the other target succeeds.
         """
         self._early_ahu_dispatched = False
 
@@ -1782,9 +1805,13 @@ class DeployerService:
             self._sync_linux_nexus_zip_push(),
             self._sync_windows_worker_for_sync(),
         )
-        if isinstance(linux_res, str) and linux_res.startswith("error"):
+
+        def _hard_fail(res: object) -> bool:
+            return isinstance(res, str) and res.startswith("error")
+
+        if _hard_fail(linux_res):
             return linux_res
-        if isinstance(win_res, str) and win_res.startswith("error"):
+        if _hard_fail(win_res):
             return f"error: worker_windows: {win_res}"
         return "ok"
 
@@ -2613,8 +2640,18 @@ class DeployerService:
             await self._emit(node_id, "connecting", "running", f"SSH → {ssh_user}@{ip}")
             pf_err = await self._preflight_remote_ssh_executor(ip)
             if pf_err:
-                await self._emit(node_id, "error", "error", pf_err)
-                return f"error: {pf_err}"
+                await self._emit(
+                    node_id,
+                    "skipped",
+                    "done",
+                    f"[SKIPPED] {pf_err}",
+                )
+                log.warning(
+                    "deployer_deploy_node_skipped_preflight",
+                    node_id=node_id,
+                    detail=(pf_err or "")[:500],
+                )
+                return f"skipped: {pf_err}"
             print_ssh_debug_command(ssh_user, ip)
             try:
                 await self._connect_ssh_with_deadline(

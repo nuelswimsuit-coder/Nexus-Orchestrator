@@ -103,6 +103,7 @@ DeployStep = Literal[
     "installing_deps",
     "restarting",
     "done",
+    "skipped",
     "error",
 ]
 
@@ -116,6 +117,7 @@ STEP_LABELS: dict[str, str] = {
     "installing_deps": "Installing deps…",
     "restarting":      "Restarting worker…",
     "done":            "Worker Live ✓",
+    "skipped":         "Skipped (unreachable)",
     "error":           "Error ✗",
 }
 
@@ -329,8 +331,18 @@ class DeployerService:
             _loop_sp = asyncio.get_event_loop()
             _pf_sp = await _loop_sp.run_in_executor(None, preflight_remote_ssh, ip)
             if _pf_sp:
-                await self._emit(node_id, "error", "error", _pf_sp)
-                return f"error: {_pf_sp}"
+                await self._emit(
+                    node_id,
+                    "skipped",
+                    "done",
+                    f"[SKIPPED] {_pf_sp}",
+                )
+                log.warning(
+                    "deployer_project_sync_skipped_preflight",
+                    node_id=node_id,
+                    detail=_pf_sp[:500],
+                )
+                return "ok"
             print_ssh_debug_command(ssh_user, ip)
             _connect_kwargs: dict = dict(hostname=ip, username=ssh_user, timeout=15, banner_timeout=15)
             if ssh_pass:
@@ -552,8 +564,18 @@ class DeployerService:
             )
             # #endregion
             if _pf_sw:
-                await self._emit(node_id, "error", "error", _pf_sw)
-                return f"error: {_pf_sw}"
+                await self._emit(
+                    node_id,
+                    "skipped",
+                    "done",
+                    f"[SKIPPED] {_pf_sw}",
+                )
+                log.warning(
+                    "deployer_sync_skipped_preflight",
+                    node_id=node_id,
+                    detail=_pf_sw[:500],
+                )
+                return "ok"
 
             print_ssh_debug_command(ssh_user, ip)
 
@@ -846,8 +868,18 @@ class DeployerService:
             _loop_dn = asyncio.get_event_loop()
             _pf_dn = await _loop_dn.run_in_executor(None, preflight_remote_ssh, ip)
             if _pf_dn:
-                await self._emit(node_id, "error", "error", _pf_dn)
-                return f"error: {_pf_dn}"
+                await self._emit(
+                    node_id,
+                    "skipped",
+                    "done",
+                    f"[SKIPPED] {_pf_dn}",
+                )
+                log.warning(
+                    "deployer_deploy_node_skipped_preflight",
+                    node_id=node_id,
+                    detail=_pf_dn[:500],
+                )
+                return f"skipped: {_pf_dn}"
             print_ssh_debug_command(ssh_user, ip)
             _ckw3: dict = dict(hostname=ip, username=ssh_user, timeout=15, banner_timeout=15)
             if ssh_pass:

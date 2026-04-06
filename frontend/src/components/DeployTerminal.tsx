@@ -35,6 +35,7 @@ const STEP_CFG: Record<string, { tag: string; color: string }> = {
   bootstrapping:   { tag: "INSTALLING DEPS", color: "#34d399" },
   restarting:      { tag: "RESTARTING",      color: "#f472b6" },
   done:            { tag: "DONE",            color: "#22c55e" },
+  skipped:         { tag: "SKIPPED",         color: "#f59e0b" },
   error:           { tag: "ERROR",           color: "#ef4444" },
 };
 
@@ -165,7 +166,9 @@ export default function DeployTerminal() {
         addLine(evToLine(ev));
 
         const failed = ev.status === "error" || ev.step === "error";
-        const succeeded = ev.step === "done" && ev.status === "done";
+        const succeeded =
+          (ev.step === "done" && ev.status === "done")
+          || (ev.step === "skipped" && ev.status === "done");
         if (failed || succeeded) {
           es.close();
           esRef.current = null;
@@ -219,7 +222,9 @@ export default function DeployTerminal() {
           const ev = st.nodes["worker_linux"];
           if (!ev) return;
           const failed = ev.status === "error" || ev.step === "error";
-          const ok = ev.step === "done" && ev.status === "done";
+          const ok =
+            (ev.step === "done" && ev.status === "done")
+            || (ev.step === "skipped" && ev.status === "done");
           if (!ok && !failed) return;
           if (phaseRef.current !== "running") return;
           if (statusPollRef.current) {
@@ -231,8 +236,14 @@ export default function DeployTerminal() {
           setUploadProg(null);
           setDeployingNode("worker_linux", false);
           if (ok) {
+            const isSkip = ev.step === "skipped";
             addLine(
-              makeLine("DONE", "#22c55e", ev.detail || "Deployment complete ✓"),
+              makeLine(
+                isSkip ? "SKIPPED" : "DONE",
+                isSkip ? "#f59e0b" : "#22c55e",
+                ev.detail
+                  || (isSkip ? "Worker unreachable — sync skipped" : "Deployment complete ✓"),
+              ),
             );
             setPhase("done");
           } else {

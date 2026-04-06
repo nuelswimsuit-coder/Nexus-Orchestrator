@@ -131,6 +131,7 @@ const MODAL_STEP_TAG: Record<string, string> = {
   bootstrapping:   "INSTALLING DEPS",
   restarting:      "RESTARTING",
   done:            "DONE",
+  skipped:         "SKIPPED",
   error:           "ERROR",
 };
 
@@ -142,6 +143,7 @@ const MODAL_STEP_COLOR: Record<string, string> = {
   bootstrapping:   "#34d399",
   restarting:      "#f472b6",
   done:            "#22c55e",
+  skipped:         "#f59e0b",
   error:           "#ef4444",
 };
 
@@ -247,6 +249,7 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
             ev.status === "running"
             || ev.status === "error"
             || ev.step === "done"
+            || ev.step === "skipped"
             || ev.step === "error"
             || ev.status === "done"
           ) {
@@ -255,7 +258,9 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
         }
 
         const failed = ev.status === "error" || ev.step === "error";
-        const succeeded = ev.step === "done" && ev.status === "done";
+        const succeeded =
+          (ev.step === "done" && ev.status === "done")
+          || (ev.step === "skipped" && ev.status === "done");
         if (failed || succeeded) {
           es.close();
           streamsRef.current.delete(node_id);
@@ -278,10 +283,18 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
           const ev = st.nodes[node_id];
           if (!ev || deploySettledRef.current) return;
           const failed = ev.status === "error" || ev.step === "error";
-          const ok = ev.step === "done" && ev.status === "done";
+          const ok =
+            (ev.step === "done" && ev.status === "done")
+            || (ev.step === "skipped" && ev.status === "done");
           if (ok) {
             deploySettledRef.current = true;
-            addLine("DONE", ev.detail || "Deployment complete ✓", "#22c55e");
+            const skip = ev.step === "skipped";
+            addLine(
+              skip ? "SKIPPED" : "DONE",
+              ev.detail
+                || (skip ? "Worker unreachable — sync skipped" : "Deployment complete ✓"),
+              skip ? "#f59e0b" : "#22c55e",
+            );
             setPhase("done");
           } else if (failed) {
             deploySettledRef.current = true;
@@ -341,7 +354,9 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
           const ev = st.nodes["worker_linux"];
           if (!ev) return;
           const failed = ev.status === "error" || ev.step === "error";
-          const ok = ev.step === "done" && ev.status === "done";
+          const ok =
+            (ev.step === "done" && ev.status === "done")
+            || (ev.step === "skipped" && ev.status === "done");
           if (ok || failed) {
             if (deploySettledRef.current) return;
             deploySettledRef.current = true;
@@ -352,7 +367,13 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
               setDeployingNode("worker_linux", false);
             }
             if (ok) {
-              addLine("DONE", ev.detail || "Deployment complete ✓", "#22c55e");
+              const skip = ev.step === "skipped";
+              addLine(
+                skip ? "SKIPPED" : "DONE",
+                ev.detail
+                  || (skip ? "Worker unreachable — sync skipped" : "Deployment complete ✓"),
+                skip ? "#f59e0b" : "#22c55e",
+              );
               setPhase("done");
             } else {
               addLine("ERROR", ev.detail || "Deployment failed", "#ef4444");

@@ -776,6 +776,7 @@ export type DeployStepName =
   | "bootstrapping"      // legacy alias
   | "restarting"
   | "done"
+  | "skipped"
   | "error";
 
 export type DeployStepStatus = "running" | "done" | "error";
