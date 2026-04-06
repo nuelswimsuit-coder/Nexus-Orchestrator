@@ -177,6 +177,17 @@ class Settings(BaseSettings):
     worker_deploy_root_win: str = Field(
         default_factory=lambda: str(Path.home() / "Desktop" / "Nexus-Orchestrator")
     )
+    # macOS workers (Apple Silicon / Intel) — e.g. Mac Mini; ``uname`` returns Darwin.
+    worker_deploy_root_darwin: str = Field(default="")
+    # Optional path to ``workers.json`` (static node_id → IP list). Also: NEXUS_WORKERS_CONFIG, WORKERS_JSON.
+    workers_config_path: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "NEXUS_WORKERS_CONFIG",
+            "WORKERS_JSON",
+            "WORKERS_CONFIG_PATH",
+        ),
+    )
 
 
 def apply_polymarket_wallet_alignment() -> None:

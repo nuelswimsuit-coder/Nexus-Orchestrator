@@ -54,15 +54,6 @@ RECENT_GROUP_MSG_MAX_CHARS = 180
 RECENT_OUTGOING_CAP = 200
 RECENT_OUTGOING_PROMPT_LINES = 40
 
-# Appended to factory LLM user payload — mirrors anti-parrot rules in israeli_swarm Gemini path.
-_SWARM_SYNTHESIS_HARD_RULES_HE = (
-    "\n\nכללים קשיחים לטקסט שיישלח לקבוצה:\n"
-    "- primary_message / message_text / text: בין 2 ל-10 מילים בעברית מדוברת בלבד.\n"
-    "- אסור להדביק כותרות חדשות מילה במילה; אסור סיומות '- ynet', '- מעריב', '[ynet]', שמות אתרים.\n"
-    "- אסור לפתוח ב'שמעתם כבר', 'דיווח:', 'ראיתם מה', 'לפי דיווח'.\n"
-    "- בתור מגיב (replier): אסור לשחזר עובדות מההודעה שאתה משיב לה — רק עמדה/בדיחה/תלונה/חילוקי דעות.\n"
-)
-
 _RICH_ACTION_TYPES = frozenset({"text", "text_with_emoji", "sticker", "gif", "image"})
 _DEFAULT_STICKER_PACKS = ["AnimatedEmojies", "HotCherry"]
 
@@ -74,60 +65,32 @@ REACTION_EMOJIS = ["🔥", "😂", "💀", "🤯", "👀", "😱", "💪", "🤦
 THREAD_REACTION_EMOJIS = ["👍", "🤦‍♂️", "🤬"]
 
 AMCHA_ISRAEL_SYSTEM_PROMPT = (
-    "You are an everyday Israeli ('עמך ישראל') in a Telegram group — impatient thumb-typing, NOT a news anchor.\n"
+    "You are an everyday Israeli ('עמך ישראל') in a local Telegram group — impatient, slangy, not a news reader.\n"
     "RULES:\n"
-    "- Read the last 5 messages and react uniquely (argue, laugh, side-eye, random tangent like selling a bike — still 2–10 words).\n"
-    "- INTERACTION MATRIX: In most turns you MUST pick one specific person from the recent transcript (by the display name next to msg_id) "
-    "and talk TO them, referencing what they just said — not only to the abstract topic.\n"
-    "- DYNAMIC RELATIONSHIPS: If they sound angry — mock them lightly OR agree with them cynically (pick what fits your persona). "
-    "If they asked a question — answer wrong on purpose OR dodge cynically (never a helpful textbook answer).\n"
-    "- NAMES: Explicitly use their name or a direct address in Hebrew (e.g. 'מה אתה רוצה יוסי', 'צודקת הילה', 'נו יוסי תנום').\n"
-    "- Tone: casual, cynical, slang ('אחי', 'וואלה', 'בדוק', 'הזייה').\n"
-    "- LENGTH: primary_message / text MUST be 2–10 Hebrew words only. No headline paste, no '- ynet' / '- מעריב' / outlet names.\n"
-    "- FORBIDDEN openers: 'שמעתם כבר', 'דיווח:', 'ראיתם מה', 'לפי דיווח' — never sound like a broadcast.\n"
-    "- When REPLYING to another message: do NOT repeat their facts or phrasing; only opinion, joke, complaint, or disagreement.\n"
-    "- If a line is tagged [מנהל]: no mockery, no fake facts — short respectful Hebrew only.\n"
-    "- NEVER be polite or formal (except toward [מנהל] lines). Do NOT sound like an AI: messy punctuation OK, textbook Hebrew is wrong."
+    "- LENGTH: Every primary line is 2–10 Hebrew words. Bursts only; no mini-articles.\n"
+    "- NO HEADLINE PARROTING: Never paste or lightly reword RSS/news titles. Internalize, then react in your own words.\n"
+    "- NO OUTLETS: Never output '- Ynet', '- מעריב', '- calcalist', '- N12', site names, or '[source]' tags.\n"
+    "- NO LAZY OPENERS: Forbidden starts include 'שמעתם כבר', 'דיווח:', 'לפי כותרות', 'חדשות:' — jump into the take.\n"
+    "- When your task is to REPLY in-thread: do not restate facts from the quoted message; only opinion, joke, gripe, or disagreement (persona-true).\n"
+    "- Read the last 5 messages and react uniquely. Argue, laugh, or derail (e.g. second-hand sale) without sounding like a bot.\n"
+    "- Tone: casual, cynical, authentic slang ('אחי', 'וואלה', 'בדוק', 'הזייה'). Not formal.\n"
+    "- Do NOT sound like an AI: avoid perfect essay Hebrew and textbook phrasing."
 )
-
-AMCHA_CROSSTALK_USER_RULES_HE = (
-    "\n\nמטריצת אינטראקציה (חובה טכנית + תוכן):\n"
-    "- החזר בשדה JSON את המפתח reply_target_message_id: מספר שלם של msg_id מהרשימה למטה — ההודעה של **אותו אדם** שאליו אתה מדבר.\n"
-    "- בטקסט (primary_message / message_text) חובה לפנות אליו במפורש לפי השם שמופיע ליד אותו msg_id.\n"
-    "- אם בחרת שורה עם [מנהל]: טון מכבד בלבד; בלי לעג, בלי תשובה שקרית.\n"
-    "- אם אין היסטוריה מתאימה או שאתה פותח אירוע חדש לגמרי (פלאש): reply_target_message_id יכול להיות null.\n"
-)
-
-
-def _crosstalk_user_append_he(
-    *, privileged_anchor: bool, news_opener: bool, role: Literal["opener", "replier"]
-) -> str:
-    if privileged_anchor:
-        return (
-            "\n\nJSON: חובה השדה reply_target_message_id — המספר של msg_id של השורה שאליה אתה משיב. "
-            "טון מכבד בלבד בטקסט; בלי לעג ובלי מידע שקרי.\n"
-        )
-    parts = [AMCHA_CROSSTALK_USER_RULES_HE]
-    if news_opener and role == "opener":
-        parts.append(
-            "\nבפלאש/כותרת חדשה ראשונה: reply_target_message_id יכול להיות null (הודעת שורש בלי reply).\n"
-        )
-    return "".join(parts)
 
 # Few-shot alignment block (verbatim requirement for Israeli Swarm prompting).
 AMCHA_FEW_SHOT_BLOCK = """EXAMPLES OF BAD OUTPUTS (DO NOT DO THIS):
+'שמעתם כבר על X - מעריב'
+'דיווח: רה"מ אמר ש... (כותרת מועתקת)'
 'אני חושב שצריך לחכות לעוד פרטים לפני שמספקים.'
-'שמעתם כבר? השרה אמרה שיש רפורמה - ynet'
-'דיווח: הממשלה אישרה את החוק במליאה - מעריב'
-'וואי, אם זה נכון זה משנה את התמונה לגמרי.'
+'וואי, אם זה נכון זה משנה את התמונה לגמרי.'  (as a reply that only repeats the previous message)
 
 EXAMPLES OF GOOD, AUTHENTIC OUTPUTS (DO THIS):
 'חארטה רצח'
 'אמאלה איזה פחד'
-'תכלס וואלה'
+'תכלס נו'
 'בדוק עובדים עלינו חחח'
-'נו באמת עכשיו'
-'הזייה מה שהולך פה'"""
+'הזייה מה שהולך פה'
+'אין מצב אחי'"""
 
 # Twelve fixed archetypes — index chosen deterministically from MD5(session path).
 PERSONA_ARCHETYPES: list[str] = [
@@ -206,12 +169,10 @@ AMCHA_STANCES_PRIVILEGED_HE = [
 AMCHA_PRIVILEGED_SYSTEM_PROMPT = (
     "You are a casual Israeli Telegram group member. The line you reply to is from a group OWNER or ADMIN.\n"
     "RULES:\n"
-    "- 2–10 words in Hebrew. Brief, friendly, respectful — no arguing, insults, profanity, or slurs.\n"
-    "- Address them by the display name from the transcript when natural; still reply_target_message_id must point at their msg_id.\n"
-    "- Do not repeat their facts; light agreement, thanks, or a gentle reaction only.\n"
-    "- No headline/newsreader tone; no 'שמעתם כבר' / 'דיווח:'; no outlet names or '- ynet' style suffixes.\n"
-    "- Informal Hebrew is OK ('וואלה', 'אחי') but never confrontational.\n"
-    "- Do NOT sound like an AI."
+    "- 2–10 words. Brief, friendly, respectful. No arguing, insults, profanity, or slurs.\n"
+    "- Do not repeat their facts; short agreement, thanks, or gentle follow-up only.\n"
+    "- No headline paste, no outlet names ('ynet', 'N12', etc.).\n"
+    "- Informal Hebrew OK ('וואלה', 'אחי'); never confrontational. Do NOT sound like an AI."
 )
 
 FACTORY_TOPICS = [
@@ -334,60 +295,6 @@ def _invite_hash(link_or_hash: str) -> str:
 def _strip_hashtags_and_cleanup(text: str) -> str:
     s = re.sub(r"#\S+", "", text or "")
     s = re.sub(r"\s{2,}", " ", s).strip()
-    return s
-
-
-_LAZY_NEWS_PREFIXES_HE: tuple[str, ...] = (
-    "שמעתם כבר על ",
-    "שמעתם כבר ",
-    "שמעת על ",
-    "שמעת ",
-    "דיווח: ",
-    "דיווח ",
-    "לפי דיווח ",
-    "לפי הדיווח ",
-    "ראיתם מה ",
-    "ראית ",
-    "חדשות: ",
-    "פלאש: ",
-    "עכשיו ב",
-    "מתפרסם ש",
-    "פורסם ש",
-)
-_FACTORY_OUTLET_TAIL_RE = re.compile(
-    r"\s*[-–—]\s*("
-    r"\[[^\]]+\]"
-    r"|(?i)ynet|n12|n13|mako|calcalist|walla|themarker|timesofisrael|times\s+of\s+israel|haaretz|kan\s*11|google[\s-]*news"
-    r"|מעריב|הארץ|גלובס|כלכליסט|וואלה|חדשות\s*13|ני12|מאקו|גלי\s*צהל"
-    r")\s*$",
-    re.UNICODE,
-)
-
-
-def _strip_lazy_news_openers_he(text: str) -> str:
-    s = (text or "").strip()
-    if not s:
-        return s
-    t = s
-    for _ in range(6):
-        hit = False
-        for p in _LAZY_NEWS_PREFIXES_HE:
-            if t.startswith(p):
-                t = t[len(p) :].lstrip(" -–—:?!")
-                hit = True
-                break
-        if not hit:
-            break
-    return (t.strip() or s).strip()
-
-
-def _strip_trailing_news_attribution(text: str) -> str:
-    s = (text or "").rstrip()
-    for _ in range(5):
-        m = _FACTORY_OUTLET_TAIL_RE.search(s)
-        if not m:
-            break
-        s = s[: m.start()].rstrip()
     return s
 
 
@@ -699,30 +606,41 @@ def _consecutive_pool_message_tail(messages_newest_first: list[Any], pool_ids: s
     return n
 
 
-def _last_five_prompt_block(refs_newest_first: list[tuple[int, str, str]]) -> str:
+def _message_refs_newest_first(messages_oldest_first: list[Any]) -> list[tuple[int, str]]:
+    """Telethon history reversed to chronological oldest-first; collect newest text messages first."""
+    out: list[tuple[int, str]] = []
+    for m in reversed(messages_oldest_first):
+        if m is None:
+            continue
+        mid = getattr(m, "id", None)
+        if mid is None:
+            continue
+        t = _message_text_for_factory_prompt(m)
+        if not t:
+            continue
+        out.append((int(mid), t))
+        if len(out) >= RECENT_GROUP_MSG_CAP:
+            break
+    return out
+
+
+def _last_five_prompt_block(refs_newest_first: list[tuple[int, str]]) -> str:
     block = refs_newest_first[:5]
     if not block:
         return "אין הודעות אחרונות בקבוצה — תאלתר טבעי."
     chronological = list(reversed(block))
-    lines = "\n".join(
-        f"{i + 1}. [msg_id={mid}] {name}: {txt}" for i, (mid, name, txt) in enumerate(chronological)
-    )
-    return (
-        "5 ההודעות האחרונות בקבוצה (כרונולוגי מהישנה לחדשה). "
-        "כל שורה: msg_id מספרי של טלגרם, שם תצוגה, תוכן — השתמש ב-msg_id בדיוק בשדה reply_target_message_id.\n"
-        f"{lines}"
-    )
+    lines = "\n".join(f"{i + 1}. {txt}" for i, (_, txt) in enumerate(chronological))
+    return f"5 ההודעות האחרונות בקבוצה (לפי סדר כרונולוגי, מהישנה לחדשה):\n{lines}"
 
 
 def _finalize_primary_message(text: str) -> str:
     s = _strip_hashtags_and_cleanup(text)
-    s = _strip_lazy_news_openers_he(s)
-    s = _strip_trailing_news_attribution(s)
-    s = _cap_hebrew_words(s, 10)
     parts = s.split()
+    if len(parts) > 10:
+        parts = parts[:10]
     if len(parts) == 1 and parts[0]:
-        s = f"{parts[0]} אחי"
-        parts = s.split()
+        parts.append(random.choice(["אחי", "תכלס", "וואלה", "נו"]))
+    s = " ".join(parts)
     if (len(parts) <= 8 or len(s) <= 40) and any(_is_hebrew_char(c) for c in s):
         s = re.sub(r"[.!?]+\s*$", "", s).strip()
     return _strip_trailing_periods_hebrew(s)
@@ -780,89 +698,6 @@ def _coerce_bool(v: Any) -> bool:
     return s in ("true", "1", "yes", "on")
 
 
-def _coerce_reply_target_message_id(v: Any) -> int | None:
-    if v is None:
-        return None
-    if isinstance(v, bool):
-        return None
-    if isinstance(v, int):
-        return v if v > 0 else None
-    s = str(v).strip().lower()
-    if not s or s in ("null", "none", "nil"):
-        return None
-    try:
-        i = int(float(s)) if "." in s else int(s)
-    except (TypeError, ValueError):
-        return None
-    return i if i > 0 else None
-
-
-def _label_from_telethon_user(u: Any) -> str:
-    if u is None:
-        return ""
-    fn = (getattr(u, "first_name", None) or "").strip()
-    ln = (getattr(u, "last_name", None) or "").strip()
-    if fn and ln:
-        initial = ln[0] + "." if ln else ""
-        return f"{fn} {initial}".strip()
-    if fn:
-        return fn
-    un = (getattr(u, "username", None) or "").strip()
-    if un:
-        return f"@{un}"
-    uid = getattr(u, "id", None)
-    return f"User{uid}" if uid is not None else "אנונימי"
-
-
-async def _sender_display_label_for_message(m: Any) -> str:
-    u = getattr(m, "sender", None)
-    if u is None:
-        try:
-            u = await m.get_sender()
-        except Exception:
-            u = None
-    lab = _label_from_telethon_user(u)
-    if lab:
-        return lab
-    sid = getattr(m, "sender_id", None)
-    return f"User{sid}" if sid is not None else "אנונימי"
-
-
-async def _message_refs_newest_first_async(messages_oldest_first: list[Any]) -> list[tuple[int, str, str]]:
-    """Newest first: (message_id, sender_display_label, text_for_prompt)."""
-    out: list[tuple[int, str, str]] = []
-    for m in reversed(messages_oldest_first or []):
-        if m is None:
-            continue
-        mid = getattr(m, "id", None)
-        if mid is None:
-            continue
-        t = _message_text_for_factory_prompt(m)
-        if not t:
-            continue
-        label = await _sender_display_label_for_message(m)
-        out.append((int(mid), label, t))
-        if len(out) >= RECENT_GROUP_MSG_CAP:
-            break
-    return out
-
-
-async def _refs_tag_admins(
-    client: Any, entity: Any, triples: list[tuple[int, str, str]]
-) -> list[tuple[int, str, str]]:
-    tagged: list[tuple[int, str, str]] = []
-    for mid, lab, txt in triples:
-        is_admin = False
-        try:
-            is_admin = await sender_of_message_is_owner_or_admin(client, entity, mid)
-        except Exception:
-            is_admin = False
-        if is_admin and "[מנהל]" not in lab:
-            lab = f"{lab} [מנהל]"
-        tagged.append((mid, lab, txt))
-    return tagged
-
-
 def _normalize_amcha_dict(obj: dict[str, Any]) -> dict[str, Any]:
     pm = str(obj.get("primary_message") or obj.get("text") or "").strip()
     cm = str(obj.get("correction_message") or obj.get("correction") or "").strip()
@@ -875,7 +710,6 @@ def _normalize_amcha_dict(obj: dict[str, Any]) -> dict[str, Any]:
         "correction_message": cm,
         "article_url": str(obj.get("article_url") or "").strip(),
         "link_label": str(obj.get("link_label") or "").strip(),
-        "reply_target_message_id": _coerce_reply_target_message_id(obj.get("reply_target_message_id")),
     }
 
 
@@ -1011,7 +845,6 @@ async def _generate_amcha_turn(
     rich_media_mode: bool = False,
     global_recent_outgoing: list[str] | None = None,
     privileged_anchor: bool = False,
-    force_reply_target_message_id: int | None = None,
 ) -> dict[str, Any]:
     anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
     anti += _global_outgoing_prompt_suffix(list(global_recent_outgoing or []))
@@ -1022,20 +855,15 @@ async def _generate_amcha_turn(
         random.choice(AMCHA_STANCES_PRIVILEGED_HE) if privileged_anchor else stance_he
     )
 
-    cta = _crosstalk_user_append_he(
-        privileged_anchor=privileged_anchor, news_opener=news_opener, role=role
-    )
     if rich_media_mode:
         json_schema = (
             "החזר אך ורק JSON תקף (בלי טקסט נוסף) עם המפתחות: "
             '"action_type","message_text","image_query",'
-            '"primary_message" או "text","needs_correction","correction_message" או "correction","article_url","link_label",'
-            '"reply_target_message_id". '
-            "reply_target_message_id: מספר שלם — msg_id מהרשימה למעלה — של האדם שאליו ההודעה מכוונת; או null רק כשמותר לפי ההנחיות. "
+            '"primary_message" או "text","needs_correction","correction_message" או "correction","article_url","link_label". '
             "action_type חייב להיות אחד מ: text | text_with_emoji | sticker | gif | image. "
             "בערך לאורך זמן: ~60% text או text_with_emoji, ~15% sticker, ~15% gif, ~10% image. "
             "ב-sticker/gif/image: message_text יכול להיות ריק או כיתוב קצר; image_query — מילת מפתח באנגלית לחיפוש (למשל coffee, traffic, shawarma). "
-            "ב-text/text_with_emoji: מלא message_text (ועדיף גם primary_message באותו תוכן) — 2–10 מילים בלבד, בלי כותרות מועתקות. "
+            "ב-text/text_with_emoji: מלא message_text (ועדיף גם primary_message באותו תוכן). "
             "article_url ו-link_label — מחרוזות; כשאין קישור חדשותי השאר ריק."
         )
         if privileged_anchor:
@@ -1045,9 +873,7 @@ async def _generate_amcha_turn(
     else:
         json_schema = (
             "החזר אך ורק JSON תקף (בלי טקסט נוסף) במבנה: "
-            '{"text":"...","needs_correction":true/false,"correction":"...","reply_target_message_id":123 או null} — מותר גם primary_message/correction_message במקום text/correction. '
-            "reply_target_message_id חייב להתאים ל-msg_id מהרשימה או null כשמותר. "
-            "הטקסט הראשי חייב להיות 2–10 מילים. "
+            '{"text":"...","needs_correction":true/false,"correction":"..."} — מותר גם primary_message/correction_message במקום text/correction. '
             "article_url ו-link_label — מחרוזות; כשאין קישור חדשותי השאר ריק."
         )
     if typo_must_correct:
@@ -1063,10 +889,9 @@ async def _generate_amcha_turn(
     opener_news_clause = ""
     if news_opener:
         opener_news_clause = (
-            "תפקיד: פותח חדשות. primary_message — 2–10 מילים: תגובה קולית בעברית מדוברת, לא העתקת כותרת ולא 'שמעתם כבר' / '- ynet'. "
-            "בלי URL גולמי בגוף משפט ההודעה (הקישור רק ב-article_url). "
-            "חובה למלא article_url עם קישור https plausibly לאתר חדשות ישראלי, "
-            "ול-link_label משפט עברית לכפתור הקישור (למשל: קראו פה את הכתבה המלאה)."
+            "תפקיד: פותח חדשות. primary_message — 2–10 מילים בלבד: תגובה רגשית/צינית, לא כותרת מועתקת ולא שם אתר. "
+            "בלי URL בגוף ההודעה. חובה article_url (https לאתר חדשות). "
+            "link_label: עברית קצרה בלי שם עיתון/אתר (למשל: 'לכתבה המלאה', 'פה הרחבה')."
         )
         if rich_media_mode:
             opener_news_clause += (
@@ -1078,45 +903,28 @@ async def _generate_amcha_turn(
         user_he = (
             f"{last_five_block}\n\n{effective_stance}\n\n"
             f'הקבוצה כבר רותחת סביב: "{ctx}". '
-            "תגובה קצרה (2–10 מילים), זווית אחרת — לא פורמלי; עדיף לתפוס מישהו מהרשימה ולדבר אליו.\n"
-            f"{opener_news_clause}{cta}{_SWARM_SYNTHESIS_HARD_RULES_HE}\n{typo_rule}\n{anti}\n{json_schema}"
+            "עוד משפט או שניים — זווית אחרת, לא פורמלי.\n"
+            f"{opener_news_clause}\n{typo_rule}\n{anti}\n{json_schema}"
         )
     elif role == "opener" and news_opener:
         user_he = (
             f"{last_five_block}\n\n{effective_stance}\n\n"
-            f"הנחיה: פלאש/שמועה — קבוצת חדשות בטלגרם; אל תקריא כותרות, רק תגיב כמו בן אדם.\n"
+            f"הנחיה: שמועה/פלאש/מה זה עכשיו — קבוצת חדשות בטלגרם. "
             f'רקע רחב בלבד: "{topic}".\n'
-            f"{opener_news_clause}{cta}{_SWARM_SYNTHESIS_HARD_RULES_HE}\n{typo_rule}\n{anti}\n{json_schema}"
+            f"{opener_news_clause}\n{typo_rule}\n{anti}\n{json_schema}"
         )
     else:
-        ap = (anchor_preview or "").strip()[:800]
+        ap = (anchor_preview or "").strip()[:800] or "(אין טקסט — תגיב בקצרה)"
         if (active_topic_line or "").strip():
             head = f'הנושא הפעיל בקבוצה: "{(active_topic_line or "").strip()[:400]}". '
         else:
             head = ""
-        if ap:
-            user_he = (
-                f"{last_five_block}\n\n{effective_stance}\n\n"
-                f"{head}"
-                f'אתה משיב במיוחד לשורה/לקונטקסט הזה: "{ap}"\n'
-                "reply_target_message_id חייב להתאים לאותה הודעה (msg_id מהרשימה).\n"
-                "מגיב בשרשור: אסור לשחזר עובדות או ניסוח מהציטוט — רק עמדה/בדיחה/תלונה לפי הדמות.\n"
-                f"{opener_news_clause}{cta}{_SWARM_SYNTHESIS_HARD_RULES_HE}\n{typo_rule}\n{anti}\n{json_schema}"
-            )
-        else:
-            user_he = (
-                f"{last_five_block}\n\n{effective_stance}\n\n"
-                f"{head}"
-                "בחר מי מהרשימה למעלה אתה 'תופס' — reply_target_message_id חייב להיות ה-msg_id של אותה שורה בדיוק. "
-                "הטקסט חייב לפנות אליו בשם כפי שמופיע ליד ה-msg_id.\n"
-                "מגיב בשרשור: אסור לשחזר עובדות מההודעה שלו — רק עמדה/בדיחה/תלונה לפי הדמות.\n"
-                f"{opener_news_clause}{cta}{_SWARM_SYNTHESIS_HARD_RULES_HE}\n{typo_rule}\n{anti}\n{json_schema}"
-            )
-
-    if force_reply_target_message_id is not None:
-        user_he += (
-            f"\n\nחובה קשיחה: reply_target_message_id ב-JSON חייב להיות בדיוק המספר "
-            f"{int(force_reply_target_message_id)}.\n"
+        user_he = (
+            f"{last_five_block}\n\n{effective_stance}\n\n"
+            f"{head}"
+            f'אתה משיב להודעה/שורה הזו (או לקונטקסט שלה): "{ap}"\n'
+            "אסור לחזור על עובדות או ניסוח מהציטוט — רק תגובה אישית קצרה (2–10 מילים).\n"
+            f"{typo_rule}\n{anti}\n{json_schema}"
         )
 
     if rich_media_mode:
@@ -1246,7 +1054,6 @@ async def _generate_amcha_turn(
                 "correction_message": "",
                 "article_url": "",
                 "link_label": "",
-                "reply_target_message_id": None,
             }
         )
     return {
@@ -1255,7 +1062,6 @@ async def _generate_amcha_turn(
         "correction_message": "",
         "article_url": "",
         "link_label": "",
-        "reply_target_message_id": None,
     }
 
 
@@ -2126,8 +1932,7 @@ async def community_factory_join_tick(parameters: dict[str, Any]) -> dict[str, A
 @registry.register("swarm.community_factory.burst_reply_chain")
 async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dict[str, Any]:
     """
-    After a news opener, send N quick replies (2–15s apart) as random pool accounts, usually reply_to the opener
-    or to another msg_id chosen by the LLM (reply_target_message_id) for visible threading.
+    After a news opener, send N quick replies (2–15s apart) as random pool accounts, all reply_to the opener.
     """
     redis = parameters.get("__redis__")
     api_key = _resolve_api_key(parameters)
@@ -2177,11 +1982,9 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                     hist = await client.get_messages(ent, limit=RECENT_GROUP_MSG_CAP)
                     chronological = list(hist)
                     chronological.reverse()
-                    refs = await _message_refs_newest_first_async(chronological)
-                    refs = await _refs_tag_admins(client, ent, refs)
+                    refs = _message_refs_newest_first(chronological)
                     last_five = _last_five_prompt_block(refs)
-                    recent_texts = [t for _, _, t in reversed(refs)] if refs else []
-                    allowed_ids = {mid for mid, _, _ in refs}
+                    recent_texts = [t for _, t in reversed(refs)] if refs else []
                     anchor_preview = ""
                     try:
                         ams = await client.get_messages(ent, ids=reply_mid)
@@ -2197,6 +2000,13 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                     topic = random.choice(FACTORY_TOPICS)
                     stance = random.choice(AMCHA_STANCES_HE)
                     typo_must = random.random() < 0.15
+                    privileged_burst = False
+                    try:
+                        privileged_burst = await sender_of_message_is_owner_or_admin(
+                            client, ent, reply_mid
+                        )
+                    except Exception:
+                        privileged_burst = False
                     turn = await _generate_amcha_turn(
                         api_key,
                         topic,
@@ -2212,45 +2022,8 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         opener_fresh_event=False,
                         news_opener=False,
                         persona_seed=_session_persona_seed(session_base),
-                        privileged_anchor=False,
+                        privileged_anchor=privileged_burst,
                     )
-                    tid = _coerce_reply_target_message_id(turn.get("reply_target_message_id"))
-                    reply_use = tid if tid is not None and tid in allowed_ids else reply_mid
-                    privileged_burst = False
-                    try:
-                        privileged_burst = await sender_of_message_is_owner_or_admin(
-                            client, ent, reply_use
-                        )
-                    except Exception:
-                        privileged_burst = False
-                    if privileged_burst:
-                        ap2 = anchor_preview
-                        if reply_use != reply_mid:
-                            try:
-                                ams2 = await client.get_messages(ent, ids=reply_use)
-                                m2 = ams2[0] if ams2 else None
-                                if m2 is not None:
-                                    ap2 = str(getattr(m2, "message", None) or "")[:800]
-                            except Exception:
-                                ap2 = anchor_preview
-                        turn = await _generate_amcha_turn(
-                            api_key,
-                            topic,
-                            openai_key,
-                            session_base=session_base,
-                            role="replier",
-                            stance_he=stance,
-                            last_five_block=last_five,
-                            typo_must_correct=typo_must,
-                            anchor_preview=ap2 or None,
-                            recent_texts=recent_texts,
-                            active_topic_line=active_topic_line,
-                            opener_fresh_event=False,
-                            news_opener=False,
-                            persona_seed=_session_persona_seed(session_base),
-                            privileged_anchor=True,
-                            force_reply_target_message_id=int(reply_use),
-                        )
                     body = _finalize_primary_message(turn["primary_message"])
                     await asyncio.sleep(
                         _reading_delay_before_typing_seconds(last_five, anchor_preview or "", active_topic_line or "")
@@ -2263,7 +2036,7 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         primary=body,
                         needs_correction=bool(turn.get("needs_correction")),
                         correction=str(turn.get("correction_message") or ""),
-                        reply_to_id=reply_use,
+                        reply_to_id=reply_mid,
                         parse_mode=None,
                     )
                     sent_n += len(msgs)
@@ -2393,7 +2166,7 @@ async def _factory_converse_slot(
                 return {**base_out, "status": "skipped", "reason": "unauthorized"}
             await _ensure_factory_profile(client, redis, session_base)
             ent = await client.get_entity(gid_int)
-            refs_newest_first: list[tuple[int, str, str]] = []
+            refs_newest_first: list[tuple[int, str]] = []
             recent_texts: list[str] = []
             hist: list[Any] = []
             try:
@@ -2401,9 +2174,8 @@ async def _factory_converse_slot(
                 if hist:
                     chronological = list(hist)
                     chronological.reverse()
-                    refs_newest_first = await _message_refs_newest_first_async(chronological)
-                    refs_newest_first = await _refs_tag_admins(client, ent, refs_newest_first)
-                    recent_texts = [t for _, _, t in reversed(refs_newest_first)]
+                    refs_newest_first = _message_refs_newest_first(chronological)
+                    recent_texts = [t for _, t in reversed(refs_newest_first)]
             except Exception as exc:
                 log.debug("factory_recent_messages_failed", group_id=gid_int, error=str(exc))
             max_chain = int(os.getenv("COMMUNITY_FACTORY_BOT_CHAIN_MAX", "4"))
@@ -2425,40 +2197,10 @@ async def _factory_converse_slot(
                 except Exception as exc:
                     log.debug("factory_bot_chain_check_failed", error=str(exc))
             last_five_block = _last_five_prompt_block(refs_newest_first)
-            allowed_reply_ids = {mid for mid, _, _ in refs_newest_first}
-            ref_by_id = {mid: txt for mid, _, txt in refs_newest_first}
             pick_pool = refs_newest_first[:5]
-
-            turn = await _generate_amcha_turn(
-                api_key,
-                topic,
-                openai_key,
-                session_base=session_base,
-                role="opener" if role == "opener" else "replier",
-                stance_he=stance,
-                last_five_block=last_five_block,
-                typo_must_correct=typo_must_correct,
-                anchor_preview=None,
-                recent_texts=recent_texts,
-                active_topic_line=active_topic_line,
-                opener_fresh_event=opener_fresh_event,
-                news_opener=news_opener,
-                persona_seed=persona,
-                rich_media_mode=True,
-                global_recent_outgoing=global_recent,
-                privileged_anchor=False,
-            )
-
-            tid = _coerce_reply_target_message_id(turn.get("reply_target_message_id"))
-            reply_to_id = tid if tid is not None and tid in allowed_reply_ids else None
-            if reply_to_id is None and pick_pool:
-                if news_opener:
-                    pass
-                elif role == "replier" and random.random() < 0.78:
-                    reply_to_id = random.choice(pick_pool)[0]
-                elif role == "opener" and random.random() < 0.65:
-                    reply_to_id = random.choice(pick_pool)[0]
-
+            if pick_pool and random.random() < 0.6:
+                reply_to_id = random.choice(pick_pool)[0]
+            ref_by_id = {mid: txt for mid, txt in refs_newest_first}
             anchor_preview: str | None = ref_by_id.get(reply_to_id) if reply_to_id is not None else None
             if reply_to_id is not None and anchor_preview is None:
                 try:
@@ -2479,27 +2221,25 @@ async def _factory_converse_slot(
                 except Exception:
                     privileged_anchor = False
 
-            if privileged_anchor and reply_to_id is not None:
-                turn = await _generate_amcha_turn(
-                    api_key,
-                    topic,
-                    openai_key,
-                    session_base=session_base,
-                    role="replier",
-                    stance_he=stance,
-                    last_five_block=last_five_block,
-                    typo_must_correct=typo_must_correct,
-                    anchor_preview=anchor_preview,
-                    recent_texts=recent_texts,
-                    active_topic_line=active_topic_line,
-                    opener_fresh_event=opener_fresh_event,
-                    news_opener=False,
-                    persona_seed=persona,
-                    rich_media_mode=True,
-                    global_recent_outgoing=global_recent,
-                    privileged_anchor=True,
-                    force_reply_target_message_id=int(reply_to_id),
-                )
+            turn = await _generate_amcha_turn(
+                api_key,
+                topic,
+                openai_key,
+                session_base=session_base,
+                role="opener" if role == "opener" else "replier",
+                stance_he=stance,
+                last_five_block=last_five_block,
+                typo_must_correct=typo_must_correct,
+                anchor_preview=anchor_preview,
+                recent_texts=recent_texts,
+                active_topic_line=active_topic_line,
+                opener_fresh_event=opener_fresh_event,
+                news_opener=news_opener,
+                persona_seed=persona,
+                rich_media_mode=True,
+                global_recent_outgoing=global_recent,
+                privileged_anchor=privileged_anchor,
+            )
             turn["_persona_seed"] = persona
             turn["_media_salt_seed"] = make_image_upload_salt_seed(session_base)
 

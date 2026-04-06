@@ -1,0 +1,13 @@
+{
+  "workers": [
+    {
+      "node_id": "worker_linux",
+      "ip": "192.168.1.10"
+    },
+    {
+      "node_id": "mac_mini_m2",
+      "ip": "192.168.1.20",
+      "deploy_root": "/Users/yadmin/Desktop/Nexus-Orchestrator"
+    }
+  ]
+}

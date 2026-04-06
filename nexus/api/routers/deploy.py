@@ -91,7 +91,20 @@ async def _run_deploy(redis, node_ids: list[str] | None, job_id: str) -> None:
     deployer = _make_deployer(redis)
     try:
         results = await deployer.deploy_all(node_ids=node_ids)
-        log.info("deploy_job_complete", job_id=job_id, results=results)
+        hard_failures = {k: v for k, v in results.items() if str(v).startswith("error:")}
+        log.info(
+            "deploy_job_complete",
+            job_id=job_id,
+            results=results,
+            overall_pipeline_ok=len(hard_failures) == 0,
+            failed_nodes=list(hard_failures.keys()),
+        )
+        if hard_failures:
+            log.warning(
+                "deploy_job_finished_with_errors",
+                job_id=job_id,
+                failed_nodes=list(hard_failures.keys()),
+            )
     except Exception as exc:
         log.exception("deploy_job_error", job_id=job_id, error=str(exc))
     finally:
@@ -254,7 +267,10 @@ async def _run_sync(redis) -> None:  # type: ignore[type-arg]
     deployer = _make_deployer(redis)
     try:
         result = await deployer.sync_to_worker()
-        log.info("sync_job_complete", result=result)
+        ok = isinstance(result, str) and not result.startswith("error:")
+        log.info("sync_job_complete", result=result, overall_pipeline_ok=ok)
+        if not ok:
+            log.warning("sync_job_failed", result=result)
     except Exception as exc:
         log.exception("sync_job_error", error=str(exc))
     finally:
@@ -284,7 +300,9 @@ async def trigger_sync(
         && pkill -f start_worker.py || true
         && nohup python3 start_worker.py > worker.log 2>&1 &
 
-    Stream live progress via GET /api/deploy/progress/worker_linux (SSE).
+    Stream live progress via GET /api/deploy/progress/{node_id} (SSE) for each
+    target (``worker_linux``, ``worker_windows``). Sync succeeds if at least one
+    target completes successfully.
     """
     # Cancel stale tasks
     stale = [jid for jid, t in _active_deploys.items() if t.done()]
@@ -305,7 +323,10 @@ async def trigger_sync(
 
     return DeployResponse(
         job_id="sync",
-        targets=["worker_linux"],
-        message="Sync started — stream via GET /api/deploy/progress/worker_linux",
+        targets=["worker_linux", "worker_windows"],
+        message=(
+            "Sync started — stream via GET /api/deploy/progress/worker_linux "
+            "and .../worker_windows"
+        ),
         started_at=started,
     )

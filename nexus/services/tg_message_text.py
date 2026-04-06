@@ -6,7 +6,44 @@ Media-only messages get a concrete Hebrew label instead of a generic placeholder
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+# Strip RSS echo / lazy LLM patterns from swarm synthesis (defensive; prompts forbid these too).
+_LAZY_HEBREW_SWARM_PREFIXES: tuple[str, ...] = (
+    "דיווח:",
+    "דיווח ",
+    "שמעתם כבר על",
+    "שמעתם כבר?",
+    "שמעתם כבר ",
+    "ראיתם ש",
+    "כותרת:",
+)
+_OUTLET_TAIL_RE = re.compile(
+    r"\s*[-–—]\s*(?:"
+    r"ynet|n12|mako|calcalist|walla|הארץ|מעריב|ידיעות|channel\s*12|themarker|geektime|google-news"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
+
+def strip_swarm_llm_artifacts(text: str) -> str:
+    """Remove lazy Hebrew openers and trailing '- outlet' credits from synthesized chat lines."""
+    s = (text or "").strip()
+    for _ in range(4):
+        changed = False
+        for p in _LAZY_HEBREW_SWARM_PREFIXES:
+            if s.startswith(p):
+                s = s[len(p) :].strip()
+                changed = True
+                break
+        if not changed:
+            break
+    prev = None
+    while prev != s:
+        prev = s
+        s = _OUTLET_TAIL_RE.sub("", s).strip()
+    return s
 
 
 def telethon_media_kind_and_hint(m: Any) -> tuple[str | None, str]:

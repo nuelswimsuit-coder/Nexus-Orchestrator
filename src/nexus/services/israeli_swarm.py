@@ -405,84 +405,30 @@ _FALLBACK_CHAT_LINES = [
     "זה לא נורמלי",
     "אני בלי מילים",
     "הם באמת רציניים?",
-    "נו באמת עכשיו",
+    "נו באמת",
 ]
 
-# Strip lazy anchor-speak and pasted outlet suffixes (post-LLM safety net).
-_LAZY_NEWS_PREFIXES_HE: tuple[str, ...] = (
-    "שמעתם כבר על ",
-    "שמעתם כבר ",
-    "שמעת על ",
-    "שמעת ",
-    "דיווח: ",
-    "דיווח ",
-    "לפי דיווח ",
-    "לפי הדיווח ",
-    "ראיתם מה ",
-    "ראית ",
-    "חדשות: ",
-    "פלאש: ",
-    "עכשיו ב",
-    "מתפרסם ש",
-    "פורסם ש",
-)
-_OUTLET_TAIL_RE = re.compile(
-    r"\s*[-–—]\s*("
-    r"\[[^\]]+\]"
-    r"|(?i)ynet|n12|n13|mako|calcalist|walla|themarker|timesofisrael|times\s+of\s+israel|haaretz|kan\s*11|google[\s-]*news"
-    r"|מעריב|הארץ|גלובס|כלכליסט|וואלה|חדשות\s*13|ני12|מאקו|גלי\s*צהל"
-    r")\s*$",
-    re.UNICODE,
-)
-
-
-def _strip_lazy_news_openers_he(text: str) -> str:
-    s = (text or "").strip()
-    if not s:
-        return s
-    t = s
-    for _ in range(6):
-        hit = False
-        for p in _LAZY_NEWS_PREFIXES_HE:
-            if t.startswith(p):
-                t = t[len(p) :].lstrip(" -–—:?!")
-                hit = True
-                break
-        if not hit:
-            break
-    return (t.strip() or s).strip()
-
-
-def _strip_trailing_news_attribution(text: str) -> str:
-    s = (text or "").rstrip()
-    for _ in range(5):
-        m = _OUTLET_TAIL_RE.search(s)
-        if not m:
-            break
-        s = s[: m.start()].rstrip()
-    return s
-
-
 ISRAELI_NEWS_SYSTEM_PROMPT = (
-    "You are an impatient Israeli in a Telegram group reacting to the vibe — NOT a news anchor, NOT a reporter.\n"
-    "ANTI-PARROT RULES (violate any → you failed):\n"
-    "1. NEVER output the raw headline or a near-verbatim copy from real_news_last_24h / preferred_anchor_headline. "
-    "Read it internally, then write a totally different casual reaction in your own words (slang, attitude).\n"
-    "2. NEVER print outlet names, [bracket tags], or lines like '- Ynet', '- מעריב', '- calcalist', '- N12'. "
-    "Those strings exist only for your grounding; they must not appear in your output.\n"
-    "3. FORBIDDEN message starters: 'שמעתם כבר', 'דיווח:', 'לפי דיווח', 'ראיתם מה', 'חדשות:', 'פלאש:' — do not open like a broadcast.\n"
-    "4. LENGTH: exactly 2–10 Hebrew words (count them). No lists, no URLs in the text field.\n"
-    "5. If role is replier: do NOT repeat or summarize facts from message_you_reply_to. Only opinion, joke, complaint, "
-    "or disagreement matching your persona — the other person already said the facts.\n"
-    "6. No hashtags (#). Minor typos OK. Sound like a thumb-typing Israeli, not a polished article.\n"
-    "Output only the JSON object requested in the user payload."
+    "You are a restless Israeli in a Telegram news group — impatient, slangy, opinionated. "
+    "You are NOT a journalist, NOT a news anchor, and NOT summarizing articles.\n"
+    "STRICT OUTPUT RULES (Hebrew only in JSON \"text\"):\n"
+    "1. LENGTH: exactly 2–10 words. Not one word; not a sentence; bursts like real chat.\n"
+    "2. NO COPY-PASTE: Never output the raw headline or any long phrase from real_news / preferred_anchor. "
+    "Read internally, then react in your own words (reaction, swear, joke, cynicism).\n"
+    "3. NO SOURCES: Never print outlet names or patterns like \"- Ynet\", \"- מעריב\", \"- calcalist\", \"- N12\", "
+    "or \"[ynet]\". The digest has no outlet labels — do not invent them.\n"
+    "4. NO LAZY OPENERS: Forbidden starts include \"שמעתם כבר\", \"שמעתם על\", \"דיווח:\", \"לפי כותרות\", "
+    "\"ראיתם ש\", \"חדשות:\" — jump straight into the vibe.\n"
+    "5. ROLE=replier: Do NOT repeat or paraphrase facts from message_you_reply_to. "
+    "Only opinion, joke, complaint, or disagreement matching your persona — zero recap.\n"
+    "6. NO hashtags (#). Minor typos OK. Casual slang (אחי, וואלה, תכלס, אמאלה, הזייה).\n"
+    "Grounding: pick ONE event implied by the digest, but your line must sound like a person texting, not citing news."
 )
 
 ISRAELI_NEWS_PRIVILEGED_REPLY_PROMPT = (
-    "You are an Israeli Telegram user. The message you reply to was sent by a group OWNER or ADMIN.\n"
-    "Same anti-parrot rules as the main swarm: 2–10 words, casual Hebrew, respectful and neutral — no arguing, "
-    "insults, or profanity. Do NOT repeat their facts; a brief agree, thanks, or gentle reaction only. "
-    "No outlet names, no headline paste, no 'שמעתם כבר' / 'דיווח:' openers. No hashtags."
+    "You are a casual Israeli Telegram user. The message you reply to was sent by a group OWNER or ADMIN.\n"
+    "Write 2–10 words in polite casual Hebrew. Do not repeat what they said; brief agreement, thanks, or light follow-up only.\n"
+    "No arguing, insults, or profanity. No hashtags. Never paste headlines or outlet names."
 )
 
 _REDIS_SWARM_PROFILE_GATE = "nexus:swarm:israeli:profile_gate"
@@ -563,24 +509,14 @@ def _redis_thread_key(group_link: str) -> str:
     return f"nexus:swarm:israeli:thread:{d}"
 
 
-def _cap_hebrew_words(text: str, max_words: int = 10) -> str:
-    parts = (text or "").split()
-    if len(parts) <= max_words:
-        return (text or "").strip()
-    return " ".join(parts[:max_words])
-
-
 def _finalize_swarm_llm_line(text: str) -> str:
     s = _strip_hashtags_and_cleanup(text)
-    s = _strip_lazy_news_openers_he(s)
-    s = _strip_trailing_news_attribution(s)
-    s = _cap_hebrew_words(s, 10)
     parts = s.split()
+    if len(parts) > 10:
+        parts = parts[:10]
     if len(parts) == 1 and parts[0]:
-        s = f"{parts[0]} אחי"
-    elif not s.strip():
-        s = random.choice(_FALLBACK_CHAT_LINES)
-    return s.strip()
+        parts.append(random.choice(["אחי", "תכלס", "וואלה", "נו"]))
+    return " ".join(parts).strip()
 
 
 def _display_name_is_non_israeli(first: str, last: str) -> bool:
@@ -865,10 +801,7 @@ async def _generate_community_message(
             "recent_chat_chronological": (
                 transcript or "(אין הודעות אחרונות — תפתח בניחוש חדשותי קצר)"
             )[-5500:],
-            "task": (
-                "תגובה קולית קצרה (2–10 מילים) כמו גבר/אשה בקבוצה — לא קריינות. "
-                "אסור להעתיק כותרת ואסור לפתוח ב'שמעתם'/'דיווח'/'ראיתם מה'."
-            ),
+            "task": "פותח: תגובה רגשית קצרה (2–10 מילים) לאירוע אחד מהדיגסט — בלי לצטט כותרת, בלי מקור, בלי קידומת חדשות.",
             "output_contract": 'החזר אך ורק JSON: {"text":"..."}',
         }
     else:
@@ -879,18 +812,14 @@ async def _generate_community_message(
             "your_display_name": display,
             "message_you_reply_to": ap,
             "recent_chat_chronological": (transcript or "")[-5500:],
-            "task": (
-                "אתה משיב בשרשור: 2–10 מילים — רק עמדה, בדיחה, תלונה או חילוקי דעות לפי הדמות. "
-                "אסור לחזור על עובדות או ניסוח מההודעה שאתה משיב לה (הם כבר אמרו). "
-                "אסור להעתיק כותרות או לציין שם אתר/עיתון."
-            ),
+            "task": "משיב בשרשור: רק עמדה/בדיחה/תלונה/התנגדות — 2–10 מילים. אסור לחזור על עובדות מההודעה שאתה משיב לה.",
             "output_contract": 'החזר אך ורק JSON: {"text":"..."}',
         }
     if nd:
         user_obj["real_news_last_24h"] = nd[:6000]
         user_obj["news_grounding_rule"] = (
-            "מותר להתבסס רק על אירוע שמופיע ברשימה, אבל בפלט: אסור להדביק את ניסוח הכותרת, "
-            "אסור לצטט [תגיות מקור] או '- ynet' וכו'. כתוב תגובה חדשה לגמרי בעברית מדוברת."
+            "בחר אירוע אחד מהרשימה כבסיס פנימי בלבד; בטקסט החוצה רק תגובה אנושית קצרה — "
+            "לא להעתיק ניסוח מהכותרות ולא לציין אתר/עיתון."
         )
     if ah:
         user_obj["preferred_anchor_headline"] = ah[:400]
@@ -917,7 +846,7 @@ async def _generate_community_message(
         body = json.dumps(
             {
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"maxOutputTokens": 64, "temperature": 0.9},
+                "generationConfig": {"maxOutputTokens": 120, "temperature": 0.9},
             }
         ).encode("utf-8")
         req = urllib.request.Request(

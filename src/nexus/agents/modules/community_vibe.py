@@ -276,6 +276,7 @@ async def compose_chatter_line(
     ``message_index_map``: [{\"id\": telegram int, \"sender\": str}, ...] newest first.
     """
     sys_prompt = (
+<<<<<<< Current (Your changes)
         "You write one authentic Telegram group line as an impatient Israeli — NOT a newsreader.\n"
         "Rules: 2–10 words only (count them). Natural emoji/slang matching the speaker. "
         "@mention from the list when it fits (with @).\n"
@@ -283,6 +284,15 @@ async def compose_chatter_line(
         "in your own words — NEVER copy/paste the headline, NEVER print [source] tags or '- ynet' / '- מעריב' / outlet names.\n"
         "FORBIDDEN openers: 'שמעתם כבר', 'דיווח:', 'ראיתם מה', 'לפי דיווח'.\n"
         "If you reply to another message (reply_to_id set): do NOT repeat their facts — only opinion, joke, complaint, or disagreement.\n"
+=======
+        "You write one authentic Telegram group message — impatient Israeli group chat, not a news ticker. "
+        "Use natural emoji and slang matching the speaker's voice. "
+        "@mention from the list (with @) only when it fits. "
+        "If news_from_last_24h is non-empty: ground in one real item internally, but NEVER paste or echo the headline; "
+        "2–10 words of reaction in your own words. No outlet names ('- ynet', '- מעריב', calcalist, N12). "
+        "No lazy openers ('שמעתם כבר', 'דיווח:'). "
+        "If reply_to_id is set: do not repeat facts from that message — opinion/joke/gripe only. "
+>>>>>>> Incoming (Background Agent changes)
         "Do not invent stories not implied by the digest. "
         "Output ONLY JSON: {\"text\":\"message\",\"reply_to_id\":null or integer,"
         "\"mention_usernames\":[\"without@\"]}"

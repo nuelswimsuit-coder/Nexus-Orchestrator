@@ -35,9 +35,22 @@ const STEP_CFG: Record<string, { tag: string; color: string }> = {
   bootstrapping:   { tag: "INSTALLING DEPS", color: "#34d399" },
   restarting:      { tag: "RESTARTING",      color: "#f472b6" },
   done:            { tag: "DONE",            color: "#22c55e" },
-  skipped:         { tag: "SKIPPED",         color: "#f59e0b" },
   error:           { tag: "ERROR",           color: "#ef4444" },
 };
+
+const NEXUS_PUSH_SYNC_NODE_IDS = ["worker_linux", "worker_windows"] as const;
+
+function deployEventTerminal(ev: DeployProgressEvent): boolean {
+  return (
+    ev.status === "error" ||
+    ev.step === "error" ||
+    (ev.step === "done" && ev.status === "done")
+  );
+}
+
+function deployEventOk(ev: DeployProgressEvent): boolean {
+  return ev.step === "done" && ev.status === "done";
+}
 
 // ── Upload progress extraction ────────────────────────────────────────────────
 
@@ -120,9 +133,10 @@ export default function DeployTerminal() {
   const [errMsg, setErrMsg]         = useState("");
 
   const termRef  = useRef<HTMLDivElement>(null);
-  const esRef    = useRef<EventSource | null>(null);
+  const streamsRef = useRef<Map<string, EventSource>>(new Map());
   const phaseRef = useRef<DeployPhase>("idle");
   const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const deploySettledRef = useRef(false);
 
   // Keep context + local ref in sync
   const setPhase = useCallback((p: DeployPhase) => {
@@ -144,51 +158,48 @@ export default function DeployTerminal() {
   // Cleanup on unmount
   useEffect(
     () => () => {
-      esRef.current?.close();
+      streamsRef.current.forEach(es => es.close());
+      streamsRef.current.clear();
       if (statusPollRef.current) clearInterval(statusPollRef.current);
     },
     [],
   );
 
-  const openSSEStream = useCallback(() => {
-    // Close any existing stream first
-    esRef.current?.close();
+  const openDeployStream = useCallback(
+    (nodeId: string) => {
+      if (streamsRef.current.has(nodeId)) return;
+      setDeployingNode(nodeId, true);
+      const es = new EventSource(
+        `${apiSseBase()}/api/deploy/progress/${encodeURIComponent(nodeId)}`,
+      );
+      streamsRef.current.set(nodeId, es);
 
-    const es = new EventSource(`${apiSseBase()}/api/deploy/progress/worker_linux`);
-    esRef.current = es;
-    setDeployingNode("worker_linux", true);
+      es.onmessage = (e) => {
+        try {
+          const ev = JSON.parse(e.data) as DeployProgressEvent;
+          addLine(evToLine(ev));
 
-    es.onmessage = (e) => {
-      try {
-        const ev = JSON.parse(e.data) as DeployProgressEvent;
+          const failed = ev.status === "error" || ev.step === "error";
+          const succeeded = ev.step === "done" && ev.status === "done";
+          if (failed || succeeded) {
+            es.close();
+            streamsRef.current.delete(nodeId);
+            setUploadProg(null);
+            setTimeout(() => setDeployingNode(nodeId, false), 4000);
+          }
+        } catch {}
+      };
 
-        // Always add a line for every event (both running and terminal)
-        addLine(evToLine(ev));
-
-        const failed = ev.status === "error" || ev.step === "error";
-        const succeeded =
-          (ev.step === "done" && ev.status === "done")
-          || (ev.step === "skipped" && ev.status === "done");
-        if (failed || succeeded) {
+      es.onerror = () => {
+        if (phaseRef.current === "running") {
           es.close();
-          esRef.current = null;
-          setUploadProg(null);
-          setTimeout(() => setDeployingNode("worker_linux", false), 4000);
-          setPhase(failed ? "error" : "done");
+          streamsRef.current.delete(nodeId);
+          setDeployingNode(nodeId, false);
         }
-      } catch {}
-    };
-
-    es.onerror = () => {
-      // Only treat as error if we're still in running state
-      if (phaseRef.current === "running") {
-        es.close();
-        esRef.current = null;
-        setDeployingNode("worker_linux", false);
-        // Don't flip to error — the stream closing after "done" also fires onerror
-      }
-    };
-  }, [addLine, setDeployingNode, setPhase]);
+      };
+    },
+    [addLine, setDeployingNode],
+  );
 
   const handleSync = useCallback(async () => {
     if (phaseRef.current === "running") return;
@@ -203,12 +214,21 @@ export default function DeployTerminal() {
     setLines([]);
     setUploadProg(null);
     setErrMsg("");
+    deploySettledRef.current = false;
 
-    addLine(makeLine("NEXUS-PUSH", "#a855f7",
-      `Triggered — ${API_BASE.replace("http://", "")}`));
+    streamsRef.current.forEach(es => es.close());
+    streamsRef.current.clear();
 
-    // Open SSE stream BEFORE the API call so we catch the first events
-    openSSEStream();
+    addLine(
+      makeLine(
+        "NEXUS-PUSH",
+        "#a855f7",
+        `Triggered — ${API_BASE.replace("http://", "")} (worker_linux + worker_windows)`,
+      ),
+    );
+
+    openDeployStream("worker_linux");
+    setTimeout(() => openDeployStream("worker_windows"), 1400);
 
     try {
       const res = await triggerSync();
@@ -219,37 +239,49 @@ export default function DeployTerminal() {
         pollCount++;
         try {
           const st = await getDeployStatus();
-          const ev = st.nodes["worker_linux"];
-          if (!ev) return;
-          const failed = ev.status === "error" || ev.step === "error";
-          const ok =
-            (ev.step === "done" && ev.status === "done")
-            || (ev.step === "skipped" && ev.status === "done");
-          if (!ok && !failed) return;
+          const { nodes } = st;
+          for (const id of NEXUS_PUSH_SYNC_NODE_IDS) {
+            const ev = nodes[id];
+            if (!ev || !deployEventTerminal(ev)) return;
+          }
+          if (deploySettledRef.current) return;
           if (phaseRef.current !== "running") return;
+          deploySettledRef.current = true;
           if (statusPollRef.current) {
             clearInterval(statusPollRef.current);
             statusPollRef.current = null;
           }
-          esRef.current?.close();
-          esRef.current = null;
+          streamsRef.current.forEach(es => es.close());
+          streamsRef.current.clear();
           setUploadProg(null);
-          setDeployingNode("worker_linux", false);
-          if (ok) {
-            const isSkip = ev.step === "skipped";
+          for (const id of NEXUS_PUSH_SYNC_NODE_IDS) {
+            setDeployingNode(id, false);
+          }
+          const anyOk = NEXUS_PUSH_SYNC_NODE_IDS.some(
+            id => nodes[id] && deployEventOk(nodes[id]!),
+          );
+          if (anyOk) {
+            const failed = NEXUS_PUSH_SYNC_NODE_IDS.filter(
+              id => nodes[id] && !deployEventOk(nodes[id]!),
+            );
+            const hint =
+              failed.length > 0
+                ? ` — ${failed.join(", ")} failed or skipped`
+                : "";
             addLine(
               makeLine(
-                isSkip ? "SKIPPED" : "DONE",
-                isSkip ? "#f59e0b" : "#22c55e",
-                ev.detail
-                  || (isSkip ? "Worker unreachable — sync skipped" : "Deployment complete ✓"),
+                "DONE",
+                "#22c55e",
+                `Deployment complete (at least one worker) ✓${hint}`,
               ),
             );
             setPhase("done");
           } else {
-            addLine(
-              makeLine("ERROR", "#ef4444", ev.detail || "Deployment failed"),
-            );
+            const parts = NEXUS_PUSH_SYNC_NODE_IDS.map(id => {
+              const ev = nodes[id];
+              return ev ? `${id}: ${ev.detail || "failed"}` : `${id}: (no status)`;
+            });
+            addLine(makeLine("ERROR", "#ef4444", parts.join(" | ")));
             setPhase("error");
           }
         } catch {
@@ -265,10 +297,10 @@ export default function DeployTerminal() {
       setErrMsg(msg);
       setPhase("error");
       addLine(makeLine("ERROR", "#ef4444", msg));
-      esRef.current?.close();
-      esRef.current = null;
+      streamsRef.current.forEach(es => es.close());
+      streamsRef.current.clear();
     }
-  }, [addLine, openSSEStream, setPhase]);
+  }, [addLine, openDeployStream, setPhase]);
 
   const isRunning = phaseLocal === "running";
   const isDone    = phaseLocal === "done";

@@ -19,6 +19,21 @@ import type {
   PanicStateResponse,
 } from "@/lib/api";
 
+/** POST /api/deploy/sync — wait for both legs before settling the modal. */
+const NEXUS_PUSH_SYNC_NODE_IDS = ["worker_linux", "worker_windows"] as const;
+
+function deployEventTerminal(ev: DeployProgressEvent): boolean {
+  return (
+    ev.status === "error" ||
+    ev.step === "error" ||
+    (ev.step === "done" && ev.status === "done")
+  );
+}
+
+function deployEventOk(ev: DeployProgressEvent): boolean {
+  return ev.step === "done" && ev.status === "done";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ChatOps status dot
 // ─────────────────────────────────────────────────────────────────────────────
@@ -131,7 +146,6 @@ const MODAL_STEP_TAG: Record<string, string> = {
   bootstrapping:   "INSTALLING DEPS",
   restarting:      "RESTARTING",
   done:            "DONE",
-  skipped:         "SKIPPED",
   error:           "ERROR",
 };
 
@@ -143,7 +157,6 @@ const MODAL_STEP_COLOR: Record<string, string> = {
   bootstrapping:   "#34d399",
   restarting:      "#f472b6",
   done:            "#22c55e",
-  skipped:         "#f59e0b",
   error:           "#ef4444",
 };
 
@@ -249,7 +262,6 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
             ev.status === "running"
             || ev.status === "error"
             || ev.step === "done"
-            || ev.step === "skipped"
             || ev.step === "error"
             || ev.status === "done"
           ) {
@@ -258,18 +270,12 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
         }
 
         const failed = ev.status === "error" || ev.step === "error";
-        const succeeded =
-          (ev.step === "done" && ev.status === "done")
-          || (ev.step === "skipped" && ev.status === "done");
+        const succeeded = ev.step === "done" && ev.status === "done";
         if (failed || succeeded) {
           es.close();
           streamsRef.current.delete(node_id);
-          if (deploySettledRef.current) return;
-          deploySettledRef.current = true;
           setTimeout(() => setDeployingNode(node_id, false), 4000);
-          if (streamsRef.current.size === 0) {
-            setPhase(failed ? "error" : "done");
-          }
+          // Final success/error comes from the multi-node status poll (Nexus-Push).
         }
       } catch {}
     };
@@ -277,34 +283,8 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
       es.close();
       streamsRef.current.delete(node_id);
       setDeployingNode(node_id, false);
-      // SSE closed without a terminal event — poll status to get final phase
-      if (streamsRef.current.size === 0) {
-        getDeployStatus().then(st => {
-          const ev = st.nodes[node_id];
-          if (!ev || deploySettledRef.current) return;
-          const failed = ev.status === "error" || ev.step === "error";
-          const ok =
-            (ev.step === "done" && ev.status === "done")
-            || (ev.step === "skipped" && ev.status === "done");
-          if (ok) {
-            deploySettledRef.current = true;
-            const skip = ev.step === "skipped";
-            addLine(
-              skip ? "SKIPPED" : "DONE",
-              ev.detail
-                || (skip ? "Worker unreachable — sync skipped" : "Deployment complete ✓"),
-              skip ? "#f59e0b" : "#22c55e",
-            );
-            setPhase("done");
-          } else if (failed) {
-            deploySettledRef.current = true;
-            addLine("ERROR", ev.detail || "Deployment failed", "#ef4444");
-            setPhase("error");
-          }
-        }).catch(() => {});
-      }
     };
-  }, [addLine, setDeployingNode, setPhase]);
+  }, [addLine, setDeployingNode]);
 
   const handleSync = useCallback(async () => {
     if (phase === "running") return;
@@ -317,7 +297,11 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
     streamsRef.current.forEach(es => es.close());
     streamsRef.current.clear();
 
-    addLine("NEXUS-PUSH", `Targeting ${API_BASE} → worker_linux`, "#a855f7");
+    addLine(
+      "NEXUS-PUSH",
+      `Targeting ${API_BASE} → worker_linux + worker_windows (continues if one is down)`,
+      "#a855f7",
+    );
 
     try {
       // Call the new /api/deploy/sync endpoint (Phase 18)
@@ -342,43 +326,55 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
       }, 800);
       setTimeout(() => clearInterval(poll), 15_000);
 
-      // Also open worker_linux stream directly (it's always the target)
+      // Open SSE for both Nexus-Push targets (Linux may fail fast while Windows continues)
       setTimeout(() => openStream("worker_linux"), 1200);
+      setTimeout(() => openStream("worker_windows"), 1400);
 
-      // Poll /api/deploy/status every 2s — catches SSE failures (proxy/CORS) and missed terminals
+      // Poll /api/deploy/status every 2s — settle only when every target has a terminal event
       let _pollCount = 0;
       const statusPoll = setInterval(async () => {
         _pollCount++;
         try {
           const st = await getDeployStatus();
-          const ev = st.nodes["worker_linux"];
-          if (!ev) return;
-          const failed = ev.status === "error" || ev.step === "error";
-          const ok =
-            (ev.step === "done" && ev.status === "done")
-            || (ev.step === "skipped" && ev.status === "done");
-          if (ok || failed) {
-            if (deploySettledRef.current) return;
-            deploySettledRef.current = true;
-            clearInterval(statusPoll);
-            if (streamsRef.current.size > 0) {
-              streamsRef.current.forEach(s => s.close());
-              streamsRef.current.clear();
-              setDeployingNode("worker_linux", false);
-            }
-            if (ok) {
-              const skip = ev.step === "skipped";
-              addLine(
-                skip ? "SKIPPED" : "DONE",
-                ev.detail
-                  || (skip ? "Worker unreachable — sync skipped" : "Deployment complete ✓"),
-                skip ? "#f59e0b" : "#22c55e",
-              );
-              setPhase("done");
-            } else {
-              addLine("ERROR", ev.detail || "Deployment failed", "#ef4444");
-              setPhase("error");
-            }
+          const { nodes } = st;
+          for (const id of NEXUS_PUSH_SYNC_NODE_IDS) {
+            const ev = nodes[id];
+            if (!ev || !deployEventTerminal(ev)) return;
+          }
+          if (deploySettledRef.current) return;
+          deploySettledRef.current = true;
+          clearInterval(statusPoll);
+          if (streamsRef.current.size > 0) {
+            streamsRef.current.forEach(s => s.close());
+            streamsRef.current.clear();
+          }
+          for (const id of NEXUS_PUSH_SYNC_NODE_IDS) {
+            setDeployingNode(id, false);
+          }
+          const anyOk = NEXUS_PUSH_SYNC_NODE_IDS.some(
+            id => nodes[id] && deployEventOk(nodes[id]!),
+          );
+          if (anyOk) {
+            const failed = NEXUS_PUSH_SYNC_NODE_IDS.filter(
+              id => nodes[id] && !deployEventOk(nodes[id]!),
+            );
+            const hint =
+              failed.length > 0
+                ? ` — ${failed.join(", ")} failed or skipped (see log above)`
+                : "";
+            addLine(
+              "DONE",
+              `Deployment complete (at least one worker) ✓${hint}`,
+              "#22c55e",
+            );
+            setPhase("done");
+          } else {
+            const parts = NEXUS_PUSH_SYNC_NODE_IDS.map(id => {
+              const ev = nodes[id];
+              return ev ? `${id}: ${ev.detail || "failed"}` : `${id}: (no status)`;
+            });
+            addLine("ERROR", parts.join(" | "), "#ef4444");
+            setPhase("error");
           }
         } catch {}
         if (_pollCount >= 360) clearInterval(statusPoll); // ~12 min at 2s

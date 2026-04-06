@@ -1,355 +1,224 @@
 """
-swarm.onboarding_mass_join — Mass join + triage for Telethon sessions (isolated from
-the community_factory chat loop).
+swarm.onboarding.mass_join — isolated mass join + triage for Telethon vault sessions.
 
-Uses telefix.db ``sessions`` rows (with optional ``session_stem`` / ``is_active`` /
-``is_banned`` columns added on first run) plus the vault session files under
-``vault/sessions``. Dead sessions are flagged in SQLite and in Redis
-``nexus:swarm:factory:banned`` so ``swarm.community_factory`` skips them.
+Separate from ``swarm.community_factory`` chat/join ticks: one-shot join of a target
+group/link across all vault sessions that look active in Redis (``nexus:session_vault:meta:*``),
+with low concurrency to reduce FloodWait risk.
+
+Parameters
+----------
+target_link : str   — public t.me link / @username, or private ``joinchat`` / ``/+`` invite.
+session_stems : list[str] | None — optional allow-list of vault stems; default = all eligible.
+
+Task type
+---------
+swarm.onboarding.mass_join
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import structlog
 
-from nexus.shared.db_util import get_telefix_db
-from nexus.worker.services.tg_session import (
-    async_telegram_client,
-    flood_wait_seconds,
-    resolve_telethon_creds,
+from nexus.services.session_vault import (
+    SessionHealth,
+    SessionStatus,
+    discover_all_meta_json_files,
+    merge_meta_row,
+    meta_key,
 )
+from nexus.worker.services.tg_session import async_telegram_client, flood_wait_seconds
 from nexus.worker.task_registry import registry
-from nexus.worker.tasks.swarm import (
-    _discover_session_bases,
-    _is_session_banned,
-    _mark_banned,
-    _resolve_sessions_dir,
-    _set_cooldown,
-)
 
 log = structlog.get_logger(__name__)
 
 _JOIN_SEM = asyncio.Semaphore(10)
 
 
-def _ensure_session_triage_columns(conn: sqlite3.Connection) -> None:
-    rows = conn.execute("PRAGMA table_info(sessions)").fetchall()
-    colnames = {str(r[1]) for r in rows}
-    for stmt in (
-        "ALTER TABLE sessions ADD COLUMN session_stem TEXT",
-        "ALTER TABLE sessions ADD COLUMN is_active INTEGER DEFAULT 1",
-        "ALTER TABLE sessions ADD COLUMN is_banned INTEGER DEFAULT 0",
-    ):
-        col = stmt.split("COLUMN ")[1].split(" ")[0].lower()
-        if col not in colnames:
-            try:
-                conn.execute(stmt)
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass
-
-
-def _read_meta_phone(session_base: str) -> str | None:
-    meta = Path(session_base).with_suffix(".json")
-    if not meta.is_file():
-        return None
-    try:
-        data = json.loads(meta.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    raw = data.get("phone")
-    if raw is None:
-        return None
-    s = str(raw).strip()
-    return s or None
-
-
-def _db_allows_session(conn: sqlite3.Connection, session_base: str) -> bool:
-    stem = Path(session_base).name
-    phone = _read_meta_phone(session_base)
-    try:
-        _ensure_session_triage_columns(conn)
-        row = conn.execute(
-            """
-            SELECT is_active, is_banned FROM sessions
-            WHERE (session_stem IS NOT NULL AND session_stem = ?)
-               OR (? IS NOT NULL AND phone IS NOT NULL AND phone = ?)
-            ORDER BY id DESC LIMIT 1
-            """,
-            (stem, phone, phone),
-        ).fetchone()
-    except sqlite3.Error as exc:
-        log.warning("swarm_onboarding_db_query_failed", error=str(exc))
-        return True
-    if row is None:
-        return True
-    ia, ib = row[0], row[1]
-    if ib is not None and int(ib) == 1:
-        return False
-    if ia is not None and int(ia) == 0:
-        return False
-    return True
-
-
-def _persist_session_flags(
-    conn: sqlite3.Connection,
-    session_base: str,
-    *,
-    is_active: bool,
-    is_banned: bool,
-) -> None:
-    stem = Path(session_base).name
-    phone = _read_meta_phone(session_base)
-    now = datetime.now(timezone.utc).isoformat()
-    _ensure_session_triage_columns(conn)
-    try:
-        row = conn.execute(
-            """
-            SELECT id FROM sessions
-            WHERE (session_stem IS NOT NULL AND session_stem = ?)
-               OR (? IS NOT NULL AND phone IS NOT NULL AND phone = ?)
-            ORDER BY id DESC LIMIT 1
-            """,
-            (stem, phone, phone),
-        ).fetchone()
-        if row:
-            conn.execute(
-                """
-                UPDATE sessions SET
-                    is_active = ?, is_banned = ?, last_active = ?,
-                    session_stem = COALESCE(session_stem, ?)
-                WHERE id = ?
-                """,
-                (1 if is_active else 0, 1 if is_banned else 0, now, stem, row[0]),
-            )
-        else:
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO sessions (
-                        phone, machine_id, status, last_active,
-                        session_stem, is_active, is_banned
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        phone,
-                        None,
-                        "banned" if is_banned else "disabled",
-                        now,
-                        stem,
-                        1 if is_active else 0,
-                        1 if is_banned else 0,
-                    ),
-                )
-            except sqlite3.IntegrityError:
-                conn.execute(
-                    """
-                    UPDATE sessions SET
-                        is_active = ?, is_banned = ?, last_active = ?,
-                        session_stem = COALESCE(session_stem, ?), status = ?
-                    WHERE phone IS NOT NULL AND phone = ?
-                    """,
-                    (
-                        1 if is_active else 0,
-                        1 if is_banned else 0,
-                        now,
-                        stem,
-                        "banned" if is_banned else "disabled",
-                        phone,
-                    ),
-                )
-        conn.commit()
-    except sqlite3.Error as exc:
-        log.error("swarm_onboarding_persist_failed", stem=stem, error=str(exc))
-
-
-def _private_invite_hash(link: str) -> str | None:
-    """Hash for ``t.me/+…`` / ``joinchat/…`` / leading ``+`` only (not public @usernames)."""
-    s = (link or "").strip()
+def _invite_hash(link_or_hash: str) -> str:
+    s = (link_or_hash or "").strip()
     if "/+" in s:
-        h = s.split("/+")[-1].split("?")[0].strip()
-        return h or None
-    low = s.lower()
-    if "joinchat/" in low:
-        h = s.split("joinchat/")[-1].split("?")[0].strip()
-        return h or None
-    if s.startswith("+"):
-        h = s[1:].strip()
-        return h or None
-    return None
+        return s.split("/+")[-1].split("?")[0].strip()
+    if "joinchat/" in s.lower():
+        return s.split("joinchat/")[-1].split("?")[0].strip()
+    return s.lstrip("+")
 
 
-def _public_username_from_link(link: str) -> str | None:
-    s = link.strip()
-    for prefix in (
-        "https://t.me/",
-        "http://t.me/",
-        "https://telegram.me/",
-        "http://telegram.me/",
-    ):
-        if len(s) >= len(prefix) and s[: len(prefix)].lower() == prefix.lower():
-            rest = s[len(prefix) :].split("/")[0].split("?")[0].strip()
-            if not rest or rest.startswith("+"):
-                return None
-            return rest.lstrip("@") or None
-    if s.startswith("@"):
-        tail = s[1:].split("/")[0].split("?")[0].strip()
-        if tail.startswith("+") or not tail:
-            return None
-        return tail
-    if s and "/" not in s and not s.lower().startswith("http"):
-        return s.lstrip("@") or None
-    return None
+def _is_invite_link(target: str) -> bool:
+    t = (target or "").strip().lower()
+    return "/+" in t or "joinchat/" in t
 
 
-async def _join_target(client: Any, group_link: str) -> None:
-    from telethon import errors  # type: ignore[import-untyped]
-    from telethon.tl.functions.channels import JoinChannelRequest  # type: ignore
-    from telethon.tl.functions.messages import ImportChatInviteRequest  # type: ignore
-    from telethon.tl.types import Channel  # type: ignore
-
-    t = (group_link or "").strip()
-    if not t:
-        raise ValueError("empty group_link")
-
-    priv = _private_invite_hash(t)
-    if priv:
-        try:
-            await client(ImportChatInviteRequest(priv))
-            return
-        except errors.UserAlreadyParticipantError:
-            return
-
-    uname = _public_username_from_link(t)
-    if uname:
-        ent = await client.get_entity(uname)
-        if isinstance(ent, Channel):
-            try:
-                await client(JoinChannelRequest(await client.get_input_entity(ent)))
-            except errors.UserAlreadyParticipantError:
-                pass
-        return
-
-    ent = await client.get_entity(t)
-    if isinstance(ent, Channel) and (
-        getattr(ent, "megagroup", False) or not getattr(ent, "broadcast", False)
-    ):
-        try:
-            await client(JoinChannelRequest(await client.get_input_entity(ent)))
-        except errors.UserAlreadyParticipantError:
-            pass
+async def _redis_meta(redis: Any, stem: str) -> dict[str, Any]:
+    raw = await redis.get(meta_key(stem))
+    if not raw:
+        return {}
+    try:
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
 
 
-async def _one_session_join(
+def _eligible_for_onboarding(meta: dict[str, Any], path: Path) -> bool:
+    if meta.get("is_banned") is True:
+        return False
+    if meta.get("is_active") is False:
+        return False
+    st = str(meta.get("status") or "").strip().lower()
+    if st in ("banned", "offline"):
+        return False
+    sess_file = path.with_suffix(".session")
+    return sess_file.is_file()
+
+
+async def _iter_onboarding_targets(
+    redis: Any,
+    allow_stems: set[str] | None,
+) -> list[Path]:
+    out: list[Path] = []
+    for meta_json in discover_all_meta_json_files():
+        stem = meta_json.stem
+        if allow_stems is not None and stem not in allow_stems:
+            continue
+        row = await _redis_meta(redis, stem)
+        if not row:
+            row = {}
+        if _eligible_for_onboarding(row, meta_json):
+            out.append(meta_json)
+    return out
+
+
+async def _mark_dead_session(
+    redis: Any,
+    meta_json: Path,
     *,
-    session_base: str,
+    banned: bool,
+    detail: str,
+) -> None:
+    row = {
+        "is_active": False,
+        "is_banned": banned,
+        "status": SessionStatus.BANNED.value if banned else SessionStatus.OFFLINE.value,
+        "health": SessionHealth.RED.value,
+        "detail": detail,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await merge_meta_row(redis, meta_json, row)
+    log.warning(
+        "swarm_onboarding_session_deactivated",
+        stem=meta_json.stem,
+        is_banned=banned,
+        detail=detail[:200],
+    )
+
+
+async def _do_join(client: Any, target: str) -> None:
+    from telethon.tl.functions.channels import JoinChannelRequest  # type: ignore[import-untyped]
+    from telethon.tl.functions.messages import ImportChatInviteRequest  # type: ignore[import-untyped]
+
+    t = (target or "").strip()
+    if _is_invite_link(t):
+        h = _invite_hash(t)
+        if not h:
+            raise ValueError("could not parse invite hash from link")
+        await client(ImportChatInviteRequest(h))
+        return
+    ent = await client.get_entity(t)
+    await client(JoinChannelRequest(ent))
+
+
+async def _join_one_session(
+    meta_json: Path,
+    target_link: str,
     parameters: dict[str, Any],
-    group_link: str,
     redis: Any,
 ) -> dict[str, Any]:
     from telethon.errors import (  # type: ignore[import-untyped]
         AuthKeyUnregisteredError,
         FloodWaitError,
-        PhoneNumberBannedError,
         UserDeactivatedBanError,
         UserDeactivatedError,
     )
 
-    stem = Path(session_base).name
+    session_base = str(meta_json.parent / meta_json.stem)
+    stem = meta_json.stem
+    flood_sleep: int | None = None
     async with _JOIN_SEM:
         try:
-            api_id, api_hash = resolve_telethon_creds(session_base, parameters)
-            if not api_id or not api_hash:
-                return {"session": stem, "ok": False, "error": "missing api_id/api_hash"}
-
             async with async_telegram_client(session_base, parameters) as client:
                 if not await client.is_user_authorized():
-                    conn = get_telefix_db()
-                    _persist_session_flags(conn, session_base, is_active=False, is_banned=True)
-                    await _mark_banned(redis, session_base)
-                    return {"session": stem, "ok": False, "error": "not_authorized"}
+                    await _mark_dead_session(
+                        redis,
+                        meta_json,
+                        banned=False,
+                        detail="swarm_onboarding: not authorized",
+                    )
+                    return {"stem": stem, "ok": False, "reason": "not_authorized"}
 
-                await _join_target(client, group_link)
+                await _do_join(client, target_link)
 
-            return {"session": stem, "ok": True}
+            return {"stem": stem, "ok": True}
+
+        except (UserDeactivatedError, UserDeactivatedBanError) as exc:
+            await _mark_dead_session(redis, meta_json, banned=True, detail=type(exc).__name__)
+            return {"stem": stem, "ok": False, "reason": type(exc).__name__}
+
+        except AuthKeyUnregisteredError as exc:
+            await _mark_dead_session(redis, meta_json, banned=False, detail=type(exc).__name__)
+            return {"stem": stem, "ok": False, "reason": type(exc).__name__}
 
         except FloodWaitError as exc:
-            sec = flood_wait_seconds(exc)
-            await _set_cooldown(redis, session_base, sec)
-            log.warning("swarm_onboarding_flood_wait", session=stem, seconds=sec)
-            return {"session": stem, "ok": False, "error": f"flood_wait:{sec}"}
-
-        except (UserDeactivatedError, UserDeactivatedBanError, PhoneNumberBannedError) as exc:
-            conn = get_telefix_db()
-            _persist_session_flags(conn, session_base, is_active=False, is_banned=True)
-            await _mark_banned(redis, session_base)
-            log.warning("swarm_onboarding_user_banned_or_deactivated", session=stem, kind=type(exc).__name__)
-            return {"session": stem, "ok": False, "error": type(exc).__name__}
-
-        except AuthKeyUnregisteredError:
-            conn = get_telefix_db()
-            _persist_session_flags(conn, session_base, is_active=False, is_banned=False)
-            await _mark_banned(redis, session_base)
-            log.warning("swarm_onboarding_auth_key_dead", session=stem)
-            return {"session": stem, "ok": False, "error": "auth_key_unregistered"}
+            flood_sleep = min(int(flood_wait_seconds(exc)), 3600)
+            log.warning("swarm_onboarding_flood_wait", stem=stem, seconds=flood_sleep)
 
         except Exception as exc:
-            log.warning("swarm_onboarding_join_failed", session=stem, error=str(exc))
-            return {"session": stem, "ok": False, "error": str(exc)[:200]}
+            log.warning("swarm_onboarding_join_failed", stem=stem, error=str(exc))
+            return {"stem": stem, "ok": False, "reason": str(exc)}
+
+    if flood_sleep is None:
+        log.error("swarm_onboarding_flood_wait_missing", stem=stem)
+        return {"stem": stem, "ok": False, "reason": "internal_error"}
+    await asyncio.sleep(flood_sleep)
+    return {"stem": stem, "ok": False, "reason": "flood_wait", "seconds": flood_sleep}
 
 
-@registry.register("swarm.onboarding_mass_join")
+@registry.register("swarm.onboarding.mass_join")
 async def swarm_onboarding_mass_join(parameters: dict[str, Any]) -> dict[str, Any]:
-    """
-    Join ``target_group`` (username, t.me link, or invite) with all active vault
-    sessions, triaging Telethon errors into SQLite + Redis.
-    """
     redis = parameters.get("__redis__")
-    group_link = (
-        str(parameters.get("target_group") or parameters.get("group_link") or "").strip()
-        or str(parameters.get("invite_link") or "").strip()
-    )
-    if not group_link:
-        return {"status": "failed", "error": "target_group / group_link / invite_link required"}
+    target = str(
+        parameters.get("target_link")
+        or parameters.get("group_link")
+        or parameters.get("invite_link")
+        or ""
+    ).strip()
+    if not target:
+        return {"status": "failed", "error": "target_link (or group_link) is required"}
+    if redis is None:
+        return {"status": "failed", "error": "Redis not available (__redis__ missing)"}
 
-    sessions_dir = _resolve_sessions_dir(str(parameters.get("sessions_dir", "") or ""))
-    conn = get_telefix_db()
-    bases_all = _discover_session_bases(sessions_dir)
-    bases: list[str] = []
-    for b in bases_all:
-        if redis and await _is_session_banned(redis, b):
-            continue
-        if not _db_allows_session(conn, b):
-            continue
-        bases.append(b)
+    raw_stems = parameters.get("session_stems")
+    allow: set[str] | None = None
+    if isinstance(raw_stems, list) and raw_stems:
+        allow = {str(s).strip() for s in raw_stems if str(s).strip()}
 
-    if not bases:
-        return {"status": "failed", "error": "no active sessions after DB/redis filter"}
+    paths = await _iter_onboarding_targets(redis, allow)
+    if not paths:
+        return {"status": "completed", "joined": 0, "detail": "no eligible sessions"}
 
-    tasks = [
-        _one_session_join(
-            session_base=b,
-            parameters=parameters,
-            group_link=group_link,
-            redis=redis,
-        )
-        for b in bases
-    ]
-    rows = await asyncio.gather(*tasks)
-    ok_n = sum(1 for r in rows if r.get("ok"))
+    tasks = [_join_one_session(p, target, parameters, redis) for p in paths]
+    results = await asyncio.gather(*tasks)
+
+    ok_n = sum(1 for r in results if r.get("ok"))
     return {
         "status": "completed",
-        "target": group_link,
-        "sessions_attempted": len(bases),
-        "sessions_joined": ok_n,
-        "results": rows,
+        "target_link": target,
+        "sessions_attempted": len(paths),
+        "joins_ok": ok_n,
+        "results": results,
     }

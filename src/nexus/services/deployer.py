@@ -1805,6 +1805,7 @@ class DeployerService:
             self._sync_linux_nexus_zip_push(),
             self._sync_windows_worker_for_sync(),
         )
+<<<<<<< Current (Your changes)
 
         def _hard_fail(res: object) -> bool:
             return isinstance(res, str) and res.startswith("error")
@@ -1814,6 +1815,22 @@ class DeployerService:
         if _hard_fail(win_res):
             return f"error: worker_windows: {win_res}"
         return "ok"
+=======
+        linux_ok = linux_res == "ok"
+        win_ok = win_res == "ok"
+        if linux_ok and win_ok:
+            return "ok"
+        if linux_ok or win_ok:
+            if not linux_ok:
+                log.warning("nexus_push_partial_linux_failed", result=linux_res)
+            if not win_ok:
+                log.warning("nexus_push_partial_windows_failed", result=win_res)
+            return "ok"
+        return (
+            "error: all targets failed — "
+            f"worker_linux: {linux_res}; worker_windows: {win_res}"
+        )
+>>>>>>> Incoming (Background Agent changes)
 
     def _pre_sync_purge_linux_remote(
         self, ssh: object, remote_root: str, ssh_user: str
