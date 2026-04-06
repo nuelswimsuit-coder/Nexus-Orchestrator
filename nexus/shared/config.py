@@ -91,8 +91,13 @@ class Settings(BaseSettings):
     telegram_api_id: int = Field(default=0)
     telegram_api_hash: str = Field(default="")
     # Cap concurrent Telethon MTProto connections / network slots (swarm + vault probes).
+    # Default is conservative to avoid mass FloodWait / account bans when many sessions run at once.
     telegram_network_concurrency: int = Field(
-        default=30,
+<<<<<<< Current (Your changes)
+        default=5,
+=======
+        default=4,
+>>>>>>> Incoming (Background Agent changes)
         ge=1,
         le=500,
         validation_alias=AliasChoices(

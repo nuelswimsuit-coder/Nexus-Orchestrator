@@ -32,6 +32,10 @@ from nexus.worker.tasks.account_mapper import (
 log = structlog.get_logger(__name__)
 
 _DEFAULT_STAGED = staged_accounts_root()
+# Pause between managed supergroups (sync worker thread — yields GIL / other threads).
+_HEALTH_GROUP_PAUSE_S = float(
+    (os.getenv("NEXUS_HEALTH_MANAGED_PAUSE_S") or "1.0").strip() or 1.0
+)
 
 
 def _invite_link_from_export(client: Any, entity: Any) -> str | None:
@@ -121,6 +125,8 @@ def _participant_breakdown(
     try:
         for u in client.iter_participants(entity):
             scanned += 1
+            if scanned % 120 == 0:
+                time.sleep(0.05)
             if limit is not None and scanned > limit:
                 partial = True
                 break
@@ -146,7 +152,9 @@ def _scan_one_session(
     meta_json: Path,
     participant_limit: int | None,
 ) -> dict[str, Any]:
+    from telethon.errors import FloodWaitError  # type: ignore
     from telethon.sync import TelegramClient  # type: ignore
+    from telethon.tl.types import Channel  # type: ignore
 
     with open(meta_json, encoding="utf-8") as f:
         meta = json.load(f)
@@ -164,12 +172,15 @@ def _scan_one_session(
 
     written = 0
     errors: list[str] = []
+    group_pause = max(0.0, _HEALTH_GROUP_PAUSE_S)
 
     try:
         for dialog in client.iter_dialogs():
             entity = dialog.entity
             if not _is_managed(client, entity):
                 continue
+            if group_pause:
+                time.sleep(group_pause)
             kind = _asset_kind(entity)
             if kind not in ("group", "supergroup"):
                 continue
@@ -225,6 +236,20 @@ def _scan_one_session(
             "status": "ok",
             "groups_written": written,
             "errors": errors,
+        }
+    except FloodWaitError as exc:
+        wait_s = min(max(1, int(getattr(exc, "seconds", 60) or 60)), 3600)
+        log.warning(
+            "health_check_flood_wait",
+            session=session_label,
+            seconds=wait_s,
+        )
+        time.sleep(wait_s)
+        return {
+            "session_file": session_label,
+            "status": "degraded",
+            "groups_written": written,
+            "errors": errors + [f"FloodWaitError:{wait_s}"],
         }
     finally:
         try:

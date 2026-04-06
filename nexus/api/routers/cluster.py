@@ -430,7 +430,7 @@ async def get_fleet_scan_status(redis: RedisDep) -> dict | JSONResponse:
     summary="SSE: real-time fleet mapper / scraper scan phase updates",
     response_class=StreamingResponse,
 )
-async def stream_fleet_scan(request: Request) -> StreamingResponse:
+async def stream_fleet_scan(request: Request) -> StreamingResponse | JSONResponse:
     """
     Subscribes to Redis ``nexus:fleet:scan`` and streams JSON events (started /
     progress / ended) for dashboard progress UI.
@@ -443,9 +443,10 @@ async def stream_fleet_scan(request: Request) -> StreamingResponse:
     redis_url = settings.redis_url
 
     async def _generator() -> AsyncGenerator[str, None]:
-        client = from_url(redis_url, decode_responses=True)
+        client = None
         pubsub = None
         try:
+            client = from_url(redis_url, decode_responses=True)
             snap = await client.get(FLEET_SCAN_STATUS_KEY)
             if snap:
                 if isinstance(snap, bytes):
@@ -473,22 +474,36 @@ async def stream_fleet_scan(request: Request) -> StreamingResponse:
                         pass
                 else:
                     yield ": keep-alive\n\n"
+        except Exception as e:
+            traceback.print_exc()
+            log.exception("cluster_fleet_scan_sse_failed", error=str(e))
+            err = json.dumps({"status": "error", "message": str(e)})
+            yield f"data: {err}\n\n"
         finally:
             if pubsub is not None:
                 try:
                     await pubsub.unsubscribe(FLEET_SCAN_CHANNEL)
                 except Exception:
                     pass
-            await client.aclose()
+            if client is not None:
+                await client.aclose()
 
-    return StreamingResponse(
-        _generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    try:
+        return StreamingResponse(
+            _generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    except Exception as e:
+        traceback.print_exc()
+        log.exception("cluster_fleet_scan_route_failed", error=str(e))
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": str(e)},
+        )
 
 
 # ── Sentinel pulse test ────────────────────────────────────────────────────────
@@ -502,25 +517,33 @@ class SentinelTestRequest(BaseModel):
     summary="Dispatch a sentinel pulse to verify Master-Worker communication",
     tags=["cluster"],
 )
-async def test_sentinel(body: SentinelTestRequest, redis: RedisDep) -> dict:
+async def test_sentinel(body: SentinelTestRequest, redis: RedisDep) -> dict | JSONResponse:
     """
     Enqueue a lightweight sentinel report for *target_id* and confirm that the
     Master can reach the Worker layer via the ARQ task queue.
 
     Returns a success payload once the pulse has been dispatched.
     """
-    log.info(
-        "SENTINEL_PULSE: Dispatching report for target_id to Workers",
-        target_id=body.target_id,
-    )
+    try:
+        log.info(
+            "SENTINEL_PULSE: Dispatching report for target_id to Workers",
+            target_id=body.target_id,
+        )
 
-    await redis.rpush(
-        "nexus:sentinel:pulses",
-        f'{{"target_id": "{body.target_id}", "timestamp": "{datetime.now(timezone.utc).isoformat()}"}}',
-    )
+        await redis.rpush(
+            "nexus:sentinel:pulses",
+            f'{{"target_id": "{body.target_id}", "timestamp": "{datetime.now(timezone.utc).isoformat()}"}}',
+        )
 
-    return {
-        "status": "ok",
-        "message": "Sentinel pulse dispatched",
-        "target_id": body.target_id,
-    }
+        return {
+            "status": "ok",
+            "message": "Sentinel pulse dispatched",
+            "target_id": body.target_id,
+        }
+    except Exception as e:
+        traceback.print_exc()
+        log.exception("cluster_test_sentinel_route_failed", error=str(e))
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": str(e)},
+        )

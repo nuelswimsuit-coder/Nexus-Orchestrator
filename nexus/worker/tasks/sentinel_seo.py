@@ -2,6 +2,9 @@
 management.sentinel_seo — Global search rank + shadowban heuristic + optional title rename.
 
 Uses a dedicated "clean" Telethon session (NEXUS_SEO_PROBE_SESSION) for SearchRequest.
+Runs on the asyncio event loop (async Telethon) so scans yield between iterations and the
+bot / other coroutines stay responsive when sharing a process.
+
 Auto-rename requires NEXUS_SEO_AUTO_RENAME=1 and an admin session stem in task params.
 """
 
@@ -23,9 +26,16 @@ from nexus.shared.management_store import (
     sync_upsert_rank_tracker_row,
 )
 from nexus.shared.staged_accounts import discover_session_meta_json_files, staged_accounts_root
+from nexus.shared.tg_connection import telethon_connect_kwargs_for_meta_json, telegram_network_slot
 from nexus.worker.task_registry import registry
 
 log = structlog.get_logger(__name__)
+
+# Yield between group/keyword RPCs so aiogram and other tasks get CPU on a shared loop.
+_TELETHON_ITER_PAUSE_S = float(
+    (os.getenv("NEXUS_SENTINEL_SEO_ITER_PAUSE_S") or "1.0").strip() or 1.0
+)
+_SEARCH_RPC_ATTEMPTS = 8
 
 
 def _resolve_probe_meta(staged_dir: Path, probe_stem: str) -> Path | None:
@@ -46,30 +56,23 @@ def _resolve_probe_meta(staged_dir: Path, probe_stem: str) -> Path | None:
     return None
 
 
-def _connect_stem(meta_json: Path) -> Any:
-    from telethon.sync import TelegramClient  # type: ignore
-
-    with open(meta_json, encoding="utf-8") as f:
-        meta = json.load(f)
-    api_id = int(meta["api_id"])
-    api_hash = str(meta["api_hash"])
-    session_file = str(meta_json.with_suffix(""))
-    client = TelegramClient(session_file, api_id, api_hash)
-    client.connect()
-    if not client.is_user_authorized():
-        client.disconnect()
-        raise PermissionError(f"Session not authorized: {meta_json.stem}")
-    return client
+async def _ensure_connected(client: Any) -> None:
+    if client.is_connected():
+        return
+    await client.connect()
 
 
-def _entity_reachable(client: Any, username: str | None, invite_link: str | None) -> bool:
+async def _entity_reachable_async(
+    client: Any, username: str | None, invite_link: str | None
+) -> bool:
     from telethon.errors import RPCError  # type: ignore
 
     for raw in (invite_link, f"@{username}" if username else None, username):
         if not raw:
             continue
         try:
-            client.get_entity(raw)
+            await _ensure_connected(client)
+            await client.get_entity(raw)
             return True
         except RPCError:
             continue
@@ -78,21 +81,51 @@ def _entity_reachable(client: Any, username: str | None, invite_link: str | None
     return False
 
 
-def _search_rank_and_presence(
+async def _search_rank_and_presence_async(
     client: Any,
     query: str,
     target_username: str | None,
     target_id: int,
 ) -> tuple[int | None, bool]:
+    from telethon.errors import FloodWaitError  # type: ignore
     from telethon.tl.functions.contacts import SearchRequest  # type: ignore
 
     q = query.strip().lstrip("@")
     if not q:
         return None, False
-    try:
-        res = client(SearchRequest(q=q, limit=50))
-    except Exception as exc:
-        log.warning("sentinel_seo_search_failed", query=q, error=str(exc))
+
+    res = None
+    for attempt in range(_SEARCH_RPC_ATTEMPTS):
+        try:
+            await _ensure_connected(client)
+            res = await client(SearchRequest(q=q, limit=50))
+            break
+        except FloodWaitError as fw:
+            wait_s = min(max(1, int(getattr(fw, "seconds", 60) or 60)), 3600)
+            log.warning(
+                "sentinel_seo_flood_wait",
+                query=q,
+                seconds=wait_s,
+                attempt=attempt + 1,
+            )
+            await asyncio.sleep(wait_s)
+        except (ConnectionError, OSError) as exc:
+            log.warning(
+                "sentinel_seo_connection_error",
+                query=q,
+                error=str(exc),
+                attempt=attempt + 1,
+            )
+            try:
+                await client.connect()
+            except Exception as e2:
+                log.warning("sentinel_seo_reconnect_failed", error=str(e2))
+            await asyncio.sleep(0.75)
+        except Exception as exc:
+            log.warning("sentinel_seo_search_failed", query=q, error=str(exc))
+            return None, False
+
+    if res is None:
         return None, False
 
     chats = list(getattr(res, "chats", []) or [])
@@ -105,7 +138,7 @@ def _search_rank_and_presence(
     return None, False
 
 
-def _maybe_rename(
+async def _maybe_rename_async(
     admin_client: Any,
     entity: Any,
     target_title: str,
@@ -115,9 +148,11 @@ def _maybe_rename(
     from telethon.tl.functions.channels import EditTitleRequest  # type: ignore
     from telethon.tl.types import Channel  # type: ignore
 
+    title = target_title[:128]
     if not isinstance(entity, Channel) or not entity.megagroup:
         try:
-            admin_client(EditTitleRequest(channel=entity, title=target_title[:128]))
+            await _ensure_connected(admin_client)
+            await admin_client(EditTitleRequest(channel=entity, title=title))
             return True
         except Exception as exc:
             log.warning("sentinel_seo_rename_failed", error=str(exc))
@@ -125,7 +160,8 @@ def _maybe_rename(
 
     for attempt in range(max(1, max_attempts)):
         try:
-            admin_client(EditTitleRequest(channel=entity, title=target_title[:128]))
+            await _ensure_connected(admin_client)
+            await admin_client(EditTitleRequest(channel=entity, title=title))
             return True
         except Exception as exc:
             log.warning(
@@ -133,11 +169,13 @@ def _maybe_rename(
                 attempt=attempt + 1,
                 error=str(exc),
             )
-        time.sleep(cooldown_s)
+        await asyncio.sleep(cooldown_s)
     return False
 
 
-def _run_sentinel_job(parameters: dict[str, Any]) -> dict[str, Any]:
+async def _run_sentinel_job_async(parameters: dict[str, Any]) -> dict[str, Any]:
+    from telethon import TelegramClient  # type: ignore
+
     staged_dir = Path(parameters.get("staged_dir", str(staged_accounts_root())))
     probe_stem = (
         parameters.get("probe_session_stem")
@@ -189,20 +227,45 @@ def _run_sentinel_job(parameters: dict[str, Any]) -> dict[str, Any]:
     admin_stem = (parameters.get("admin_session_stem") or "").strip()
     admin_meta = _resolve_probe_meta(staged_dir, admin_stem) if admin_stem else None
 
-    probe = _connect_stem(meta)
-    admin_client = None
+    with open(meta, encoding="utf-8") as f:
+        meta_probe = json.load(f)
+    api_id = int(meta_probe["api_id"])
+    api_hash = str(meta_probe["api_hash"])
+    session_file = str(meta.with_suffix(""))
+    t_kw = telethon_connect_kwargs_for_meta_json(meta)
+
+    probe = TelegramClient(session_file, api_id, api_hash, **t_kw)
+    admin_client: Any | None = None
+    pause = max(0.05, _TELETHON_ITER_PAUSE_S)
+
     try:
+        await probe.connect()
+        if not probe.is_user_authorized():
+            await probe.disconnect()
+            raise PermissionError(f"Session not authorized: {meta.stem}")
+
         if auto_rename and admin_meta and target_title:
-            admin_client = _connect_stem(admin_meta)
+            with open(admin_meta, encoding="utf-8") as f:
+                meta_admin = json.load(f)
+            api_id_a = int(meta_admin["api_id"])
+            api_hash_a = str(meta_admin["api_hash"])
+            session_file_a = str(admin_meta.with_suffix(""))
+            t_kw_a = telethon_connect_kwargs_for_meta_json(admin_meta)
+            admin_client = TelegramClient(session_file_a, api_id_a, api_hash_a, **t_kw_a)
+            await admin_client.connect()
+            if not admin_client.is_user_authorized():
+                await admin_client.disconnect()
+                raise PermissionError(f"Session not authorized: {admin_meta.stem}")
 
         updated = 0
         for g in groups:
+            await asyncio.sleep(pause)
             gid_row = g["id"]
             tg_id = int(g["group_id"])
             uname = g.get("username")
             invite = g.get("invite_link")
 
-            reachable = _entity_reachable(probe, uname, invite)
+            reachable = await _entity_reachable_async(probe, uname, invite)
             queries: list[str] = []
             for p in extra_phrases:
                 if len(p.split()) >= 2:
@@ -217,7 +280,8 @@ def _run_sentinel_job(parameters: dict[str, Any]) -> dict[str, Any]:
 
             any_shadow = False
             for phrase in queries:
-                rank, in_search = _search_rank_and_presence(
+                await asyncio.sleep(pause)
+                rank, in_search = await _search_rank_and_presence_async(
                     probe, phrase, uname, tg_id
                 )
                 shadow = reachable and not in_search
@@ -235,11 +299,13 @@ def _run_sentinel_job(parameters: dict[str, Any]) -> dict[str, Any]:
                 try:
                     ent = None
                     if invite:
-                        ent = admin_client.get_entity(invite)
+                        await _ensure_connected(admin_client)
+                        ent = await admin_client.get_entity(invite)
                     elif uname:
-                        ent = admin_client.get_entity(uname)
+                        await _ensure_connected(admin_client)
+                        ent = await admin_client.get_entity(uname)
                     if ent is not None and int(getattr(ent, "id", 0)) == tg_id:
-                        _maybe_rename(
+                        await _maybe_rename_async(
                             admin_client,
                             ent,
                             target_title,
@@ -257,12 +323,12 @@ def _run_sentinel_job(parameters: dict[str, Any]) -> dict[str, Any]:
         }
     finally:
         try:
-            probe.disconnect()
+            await probe.disconnect()
         except Exception:
             pass
-        if admin_client:
+        if admin_client is not None:
             try:
-                admin_client.disconnect()
+                await admin_client.disconnect()
             except Exception:
                 pass
 
@@ -271,10 +337,8 @@ def _run_sentinel_job(parameters: dict[str, Any]) -> dict[str, Any]:
 async def sentinel_seo(parameters: dict[str, Any]) -> dict[str, Any]:
     t0 = time.monotonic()
     try:
-        result = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: _run_sentinel_job(parameters),
-        )
+        async with telegram_network_slot(task_name="management.sentinel_seo"):
+            result = await _run_sentinel_job_async(parameters)
     except Exception as exc:
         log.exception("management_sentinel_seo_failed", error=str(exc))
         return {"status": "failed", "error": str(exc), "duration_s": round(time.monotonic() - t0, 2)}

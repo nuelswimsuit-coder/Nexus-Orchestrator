@@ -59,6 +59,7 @@ async def _search(
 
         from app.utils.paths import SESSIONS_DIR  # type: ignore[import]
         from telethon import TelegramClient, functions, types  # type: ignore[import]
+        from telethon.errors import FloodWaitError  # type: ignore[import]
 
         # Resolve API credentials
         resolved_api_id = int(api_id) if api_id else 0
@@ -89,44 +90,73 @@ async def _search(
         session_path = str(session_files[0].with_suffix(""))
 
         async with TelegramClient(session_path, resolved_api_id, resolved_api_hash) as client:
+            import logging
+
+            log_discovery = logging.getLogger("discovery")
+
             for keyword in keywords:
-                try:
-                    result = await client(functions.contacts.SearchRequest(
-                        q=keyword,
-                        limit=max_per_kw * 2,  # fetch extra, then filter
-                    ))
-                    for chat in result.chats:
-                        if not isinstance(chat, (types.Channel, types.Chat)):
-                            continue
-                        member_count = getattr(chat, "participants_count", 0) or 0
-                        if member_count < min_members:
-                            continue
+                await asyncio.sleep(1.0)
+                for attempt in range(8):
+                    try:
+                        if not client.is_connected():
+                            await client.connect()
+                        result = await client(functions.contacts.SearchRequest(
+                            q=keyword,
+                            limit=max_per_kw * 2,  # fetch extra, then filter
+                        ))
+                        for chat in result.chats:
+                            if not isinstance(chat, (types.Channel, types.Chat)):
+                                continue
+                            member_count = getattr(chat, "participants_count", 0) or 0
+                            if member_count < min_members:
+                                continue
 
-                        username = getattr(chat, "username", None)
-                        if not username:
-                            continue
+                            username = getattr(chat, "username", None)
+                            if not username:
+                                continue
 
-                        link = f"https://t.me/{username}"
-                        if link in seen_links:
-                            continue
-                        seen_links.add(link)
+                            link = f"https://t.me/{username}"
+                            if link in seen_links:
+                                continue
+                            seen_links.add(link)
 
-                        results.append({
-                            "title":        getattr(chat, "title", username),
-                            "link":         link,
-                            "member_count": member_count,
-                            "niche":        keyword,
-                        })
+                            results.append({
+                                "title":        getattr(chat, "title", username),
+                                "link":         link,
+                                "member_count": member_count,
+                                "niche":        keyword,
+                            })
 
-                        if len([r for r in results if r["niche"] == keyword]) >= max_per_kw:
-                            break
-
-                except Exception as exc:
-                    # Log but continue with next keyword
-                    import logging
-                    logging.getLogger("discovery").warning(
-                        f"Search failed for '{keyword}': {exc}"
-                    )
+                            if len([r for r in results if r["niche"] == keyword]) >= max_per_kw:
+                                break
+                        break
+                    except FloodWaitError as exc:
+                        wait_s = min(
+                            max(1, int(getattr(exc, "seconds", 60) or 60)),
+                            3600,
+                        )
+                        log_discovery.warning(
+                            "FloodWait on SearchRequest for %r — sleeping %ss (attempt %s)",
+                            keyword,
+                            wait_s,
+                            attempt + 1,
+                        )
+                        await asyncio.sleep(wait_s)
+                    except (ConnectionError, OSError) as exc:
+                        log_discovery.warning(
+                            "Connection lost during search for %r: %s — reconnecting (attempt %s)",
+                            keyword,
+                            exc,
+                            attempt + 1,
+                        )
+                        try:
+                            await client.connect()
+                        except Exception:
+                            pass
+                        await asyncio.sleep(0.75)
+                    except Exception as exc:
+                        log_discovery.warning("Search failed for %r: %s", keyword, exc)
+                        break
 
     except ImportError as exc:
         import logging

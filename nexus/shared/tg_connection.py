@@ -51,11 +51,19 @@ def _network_concurrency_limit() -> int:
                     return max(1, min(500, int(raw)))
                 except ValueError:
                     break
-        return 30
+<<<<<<< Current (Your changes)
+        return 5
 
 
 def get_telegram_network_sem() -> asyncio.Semaphore:
-    """Shared semaphore — one pool for Telegram-class network I/O (default 30)."""
+    """Shared semaphore — one pool for Telegram-class network I/O (default 5)."""
+=======
+        return 4
+
+
+def get_telegram_network_sem() -> asyncio.Semaphore:
+    """Shared semaphore — one pool for Telegram-class network I/O (default from settings, typically low)."""
+>>>>>>> Incoming (Background Agent changes)
     global _telegram_network_sem
     if _telegram_network_sem is None:
         n = _network_concurrency_limit()

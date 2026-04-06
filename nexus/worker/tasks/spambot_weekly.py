@@ -23,6 +23,7 @@ from nexus.services.session_vault import (
     merge_meta_row,
 )
 from nexus.shared.management_store import upsert_vault_session_spambot_health
+from nexus.shared.config import settings
 from nexus.shared.tg_connection import (
     telethon_connect_kwargs_for_meta_json,
     telegram_network_slot,
@@ -116,8 +117,9 @@ async def _probe_one_spambot(meta_json: Path, redis: Any) -> dict[str, Any]:
             "scan_class": "user_deactivated_ban",
         }
     except FloodWaitError as exc:
-        wait_s = int(getattr(exc, "seconds", 60) or 60)
+        wait_s = min(max(1, int(getattr(exc, "seconds", 60) or 60)), 3600)
         log.warning("spambot_flood_wait", stem=stem, seconds=wait_s)
+        await asyncio.sleep(wait_s)
         return {
             "stem": stem,
             "error": f"FloodWaitError:{wait_s}",
@@ -230,7 +232,15 @@ async def vault_spambot_weekly(parameters: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             pass
 
-    results = await asyncio.gather(*(_probe_one_spambot(p, redis) for p in paths))
+    # Bound in-process concurrency: asyncio.gather on hundreds of paths hammers Telegram.
+    max_parallel = max(1, int(settings.telegram_network_concurrency))
+    sem = asyncio.Semaphore(max_parallel)
+
+    async def _one_bounded(meta_path: Path) -> dict[str, Any]:
+        async with sem:
+            return await _probe_one_spambot(meta_path, redis)
+
+    results = await asyncio.gather(*(_one_bounded(p) for p in paths))
     now_iso = datetime.now(timezone.utc).isoformat()
     try:
         await redis.set(_SPAMBOT_LAST_KEY, now_iso)

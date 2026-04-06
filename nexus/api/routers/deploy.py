@@ -259,7 +259,8 @@ async def get_deploy_status(redis: RedisDep) -> DeployStatusResponse | JSONRespo
         while True:
             cursor, keys = await redis.scan(cursor=cursor, match=pattern, count=100)
             for key in keys:
-                node_id = key.split("nexus:deploy:progress:")[-1]
+                kstr = key.decode() if isinstance(key, (bytes, bytearray)) else str(key)
+                node_id = kstr.split("nexus:deploy:progress:")[-1]
                 raw = await redis.lindex(key, -1)  # last event
                 if raw:
                     try:
