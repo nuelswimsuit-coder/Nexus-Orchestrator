@@ -11,11 +11,11 @@ import asyncio
 import hashlib
 import json
 import os
-from io import BytesIO
 import random
 import re
 import uuid
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
@@ -478,6 +478,8 @@ def _normalize_amcha_dict(obj: dict[str, Any]) -> dict[str, Any]:
 def _normalize_rich_turn(obj: dict[str, Any]) -> dict[str, Any]:
     n = _normalize_amcha_dict(obj)
     raw_at = str(obj.get("action_type") or "text").strip().strip('"').strip("'")
+    if "|" in raw_at:
+        raw_at = raw_at.split("|")[0].strip()
     at = raw_at.lower().replace(" ", "_").replace("-", "_")
     if at not in _RICH_ACTION_TYPES:
         at = "text"
@@ -1028,6 +1030,7 @@ async def _send_rich_factory_messages(
         elif action == "gif":
             gif_url = await _resolve_gif_media_url(iq or "funny")
             msg_obj = None
+            used_url_send = False
             if gif_url:
                 try:
                     msg_obj = await client.send_file(
@@ -1036,17 +1039,22 @@ async def _send_rich_factory_messages(
                         caption=mt[:1024] if mt else None,
                         reply_to=reply_to_id,
                     )
+                    used_url_send = True
                 except Exception:
                     msg_obj = None
             if msg_obj is None:
                 msg_obj = await _try_send_inline_gif(client, entity, iq or "funny")
-                if msg_obj is not None and mt:
-                    try:
-                        await client.send_message(entity, mt[:4096], reply_to=reply_to_id, parse_mode=None)
-                    except Exception as exc:
-                        log.debug("factory_gif_caption_failed", error=str(exc))
             if msg_obj is not None:
                 sent.append(msg_obj)
+                if mt and not used_url_send:
+                    try:
+                        sent.append(
+                            await client.send_message(
+                                entity, mt[:4096], reply_to=reply_to_id, parse_mode=None
+                            )
+                        )
+                    except Exception as exc:
+                        log.debug("factory_gif_caption_failed", error=str(exc))
             else:
                 fb_msg = await _try_send_random_sticker_from_packs(client, entity, reply_to=reply_to_id)
                 if fb_msg is not None:
@@ -1839,6 +1847,7 @@ async def _factory_converse_slot(
                 rich_media_mode=True,
                 global_recent_outgoing=global_recent,
             )
+            turn["_persona_seed"] = persona
 
             use_md = False
             summary_line = _finalize_primary_message(
@@ -1858,7 +1867,7 @@ async def _factory_converse_slot(
                 )
 
             async with client.action(ent, "typing"):
-                await asyncio.sleep(random.uniform(2.0, 8.0))
+                await asyncio.sleep(random.uniform(0.3, 1.5))
 
             sent_list = await _send_rich_factory_messages(
                 client,
@@ -1944,33 +1953,18 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
     carry.pop("__redis__", None)
 
     remaining = stop_after - cidx
-    desired = int(
-        parameters.get("converse_batch_size") or os.getenv("COMMUNITY_FACTORY_CONVERSE_BATCH", "15")
-    )
-    desired = max(1, min(20, desired))
-    if remaining >= 10:
-        batch_size = min(20, remaining, max(10, desired))
-    else:
-        batch_size = min(20, remaining)
-
-    any_missing_group = False
-    for k in range(batch_size):
-        gi = (cidx + k) % len(groups)
-        if groups[gi].get("group_id") is None:
-            any_missing_group = True
-            break
+    batch_size = min(_converse_batch_size(), remaining)
+    if parameters.get("converse_batch_size") is not None:
+        try:
+            batch_size = min(max(1, min(20, int(parameters.get("converse_batch_size")))), remaining)
+        except (TypeError, ValueError):
+            batch_size = min(_converse_batch_size(), remaining)
 
     state["converse_idx"] = cidx + batch_size
     await _redis_json_set(redis, KEY_STATE, state)
 
     async def _enqueue_next() -> None:
         await _enqueue_task("swarm.community_factory.converse_tick", carry)
-
-    if any_missing_group:
-        await _enqueue_next()
-        return {"status": "failed", "error": "group_id missing", "batch_size": batch_size}
-
-    await asyncio.sleep(random.uniform(900.0, 2700.0))
 
     async def _safe_slot(k: int) -> None:
         try:
@@ -1987,6 +1981,7 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
         except Exception as exc:
             log.warning("factory_converse_slot_failed", slot=cidx + k, error=str(exc))
 
+    # Slots may share a group_id; Redis thread/active_topic updates are best-effort under concurrency.
     await asyncio.gather(*[_safe_slot(k) for k in range(batch_size)])
     await _enqueue_next()
     return {"status": "completed", "batch_size": batch_size, "parallel_slots": batch_size}
