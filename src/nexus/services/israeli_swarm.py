@@ -402,26 +402,87 @@ _FALLBACK_CHAT_LINES = [
     "פיגוע פלילי",
     "מטורף מה שקורה",
     "תכלס וואלה",
-    "שמעתם כבר?",
     "זה לא נורמלי",
     "אני בלי מילים",
     "הם באמת רציניים?",
+    "נו באמת עכשיו",
 ]
 
+# Strip lazy anchor-speak and pasted outlet suffixes (post-LLM safety net).
+_LAZY_NEWS_PREFIXES_HE: tuple[str, ...] = (
+    "שמעתם כבר על ",
+    "שמעתם כבר ",
+    "שמעת על ",
+    "שמעת ",
+    "דיווח: ",
+    "דיווח ",
+    "לפי דיווח ",
+    "לפי הדיווח ",
+    "ראיתם מה ",
+    "ראית ",
+    "חדשות: ",
+    "פלאש: ",
+    "עכשיו ב",
+    "מתפרסם ש",
+    "פורסם ש",
+)
+_OUTLET_TAIL_RE = re.compile(
+    r"\s*[-–—]\s*("
+    r"\[[^\]]+\]"
+    r"|(?i)ynet|n12|n13|mako|calcalist|walla|themarker|timesofisrael|times\s+of\s+israel|haaretz|kan\s*11|google[\s-]*news"
+    r"|מעריב|הארץ|גלובס|כלכליסט|וואלה|חדשות\s*13|ני12|מאקו|גלי\s*צהל"
+    r")\s*$",
+    re.UNICODE,
+)
+
+
+def _strip_lazy_news_openers_he(text: str) -> str:
+    s = (text or "").strip()
+    if not s:
+        return s
+    t = s
+    for _ in range(6):
+        hit = False
+        for p in _LAZY_NEWS_PREFIXES_HE:
+            if t.startswith(p):
+                t = t[len(p) :].lstrip(" -–—:?!")
+                hit = True
+                break
+        if not hit:
+            break
+    return (t.strip() or s).strip()
+
+
+def _strip_trailing_news_attribution(text: str) -> str:
+    s = (text or "").rstrip()
+    for _ in range(5):
+        m = _OUTLET_TAIL_RE.search(s)
+        if not m:
+            break
+        s = s[: m.start()].rstrip()
+    return s
+
+
 ISRAELI_NEWS_SYSTEM_PROMPT = (
-    "You are an Israeli Telegram user in a local news/politics group. \n"
-    "RULES:\n"
-    "1. Write in extremely casual, modern colloquial Hebrew slang (e.g., 'אמאלה', 'הזייה', 'אין מצב', 'אחי', 'וואלה', 'פיגוע פלילי'). \n"
-    "2. NEVER use hashtags (#). Real people don't use them in chats.\n"
-    "3. Keep it short (1-10 words). People type fast on phones.\n"
-    "4. Occasional minor Hebrew typos are encouraged to simulate human typing.\n"
-    "5. Do not sound poetic, formal, or like a translated article. Express cynical, stressed, or typical Israeli attitudes towards news."
+    "You are an impatient Israeli in a Telegram group reacting to the vibe — NOT a news anchor, NOT a reporter.\n"
+    "ANTI-PARROT RULES (violate any → you failed):\n"
+    "1. NEVER output the raw headline or a near-verbatim copy from real_news_last_24h / preferred_anchor_headline. "
+    "Read it internally, then write a totally different casual reaction in your own words (slang, attitude).\n"
+    "2. NEVER print outlet names, [bracket tags], or lines like '- Ynet', '- מעריב', '- calcalist', '- N12'. "
+    "Those strings exist only for your grounding; they must not appear in your output.\n"
+    "3. FORBIDDEN message starters: 'שמעתם כבר', 'דיווח:', 'לפי דיווח', 'ראיתם מה', 'חדשות:', 'פלאש:' — do not open like a broadcast.\n"
+    "4. LENGTH: exactly 2–10 Hebrew words (count them). No lists, no URLs in the text field.\n"
+    "5. If role is replier: do NOT repeat or summarize facts from message_you_reply_to. Only opinion, joke, complaint, "
+    "or disagreement matching your persona — the other person already said the facts.\n"
+    "6. No hashtags (#). Minor typos OK. Sound like a thumb-typing Israeli, not a polished article.\n"
+    "Output only the JSON object requested in the user payload."
 )
 
 ISRAELI_NEWS_PRIVILEGED_REPLY_PROMPT = (
     "You are an Israeli Telegram user. The message you reply to was sent by a group OWNER or ADMIN.\n"
-    "Write 1-10 words in casual Hebrew. Be respectful and neutral — no arguing, insults, or profanity.\n"
-    "Sound human; minor typos OK; no hashtags."
+    "Same anti-parrot rules as the main swarm: 2–10 words, casual Hebrew, respectful and neutral — no arguing, "
+    "insults, or profanity. Do NOT repeat their facts; a brief agree, thanks, or gentle reaction only. "
+    "No outlet names, no headline paste, no 'שמעתם כבר' / 'דיווח:' openers. No hashtags."
 )
 
 _REDIS_SWARM_PROFILE_GATE = "nexus:swarm:israeli:profile_gate"
@@ -510,7 +571,16 @@ def _cap_hebrew_words(text: str, max_words: int = 10) -> str:
 
 
 def _finalize_swarm_llm_line(text: str) -> str:
-    return _cap_hebrew_words(_strip_hashtags_and_cleanup(text), 10)
+    s = _strip_hashtags_and_cleanup(text)
+    s = _strip_lazy_news_openers_he(s)
+    s = _strip_trailing_news_attribution(s)
+    s = _cap_hebrew_words(s, 10)
+    parts = s.split()
+    if len(parts) == 1 and parts[0]:
+        s = f"{parts[0]} אחי"
+    elif not s.strip():
+        s = random.choice(_FALLBACK_CHAT_LINES)
+    return s.strip()
 
 
 def _display_name_is_non_israeli(first: str, last: str) -> bool:
@@ -795,7 +865,10 @@ async def _generate_community_message(
             "recent_chat_chronological": (
                 transcript or "(אין הודעות אחרונות — תפתח בניחוש חדשותי קצר)"
             )[-5500:],
-            "task": 'פתיח קצר בסגנון פלאש חדשות / "ראיתם מה...?" — עברית מדוברת בלבד.',
+            "task": (
+                "תגובה קולית קצרה (2–10 מילים) כמו גבר/אשה בקבוצה — לא קריינות. "
+                "אסור להעתיק כותרת ואסור לפתוח ב'שמעתם'/'דיווח'/'ראיתם מה'."
+            ),
             "output_contract": 'החזר אך ורק JSON: {"text":"..."}',
         }
     else:
@@ -806,14 +879,18 @@ async def _generate_community_message(
             "your_display_name": display,
             "message_you_reply_to": ap,
             "recent_chat_chronological": (transcript or "")[-5500:],
-            "task": "תגובה קצרצרה בשרשור למה שכתוב למעלה.",
+            "task": (
+                "אתה משיב בשרשור: 2–10 מילים — רק עמדה, בדיחה, תלונה או חילוקי דעות לפי הדמות. "
+                "אסור לחזור על עובדות או ניסוח מההודעה שאתה משיב לה (הם כבר אמרו). "
+                "אסור להעתיק כותרות או לציין שם אתר/עיתון."
+            ),
             "output_contract": 'החזר אך ורק JSON: {"text":"..."}',
         }
     if nd:
         user_obj["real_news_last_24h"] = nd[:6000]
         user_obj["news_grounding_rule"] = (
-            "חובה להתייחס לכותרת אמיתית אחת מהרשימה (פרפרזה בסדר). "
-            "אל תמציא אירוע שלא מופיע שם."
+            "מותר להתבסס רק על אירוע שמופיע ברשימה, אבל בפלט: אסור להדביק את ניסוח הכותרת, "
+            "אסור לצטט [תגיות מקור] או '- ynet' וכו'. כתוב תגובה חדשה לגמרי בעברית מדוברת."
         )
     if ah:
         user_obj["preferred_anchor_headline"] = ah[:400]
@@ -840,7 +917,7 @@ async def _generate_community_message(
         body = json.dumps(
             {
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"maxOutputTokens": 120, "temperature": 0.9},
+                "generationConfig": {"maxOutputTokens": 64, "temperature": 0.9},
             }
         ).encode("utf-8")
         req = urllib.request.Request(

@@ -21,6 +21,83 @@ GEMINI_URL = (
     f"{GEMINI_MODEL}:generateContent"
 )
 
+_LAZY_NEWS_PREFIXES_HE: tuple[str, ...] = (
+    "שמעתם כבר על ",
+    "שמעתם כבר ",
+    "שמעת על ",
+    "שמעת ",
+    "דיווח: ",
+    "דיווח ",
+    "לפי דיווח ",
+    "לפי הדיווח ",
+    "ראיתם מה ",
+    "ראית ",
+    "חדשות: ",
+    "פלאש: ",
+    "עכשיו ב",
+    "מתפרסם ש",
+    "פורסם ש",
+)
+_CHATTER_OUTLET_TAIL_RE = re.compile(
+    r"\s*[-–—]\s*("
+    r"\[[^\]]+\]"
+    r"|(?i)ynet|n12|n13|mako|calcalist|walla|themarker|timesofisrael|times\s+of\s+israel|haaretz|kan\s*11|google[\s-]*news"
+    r"|מעריב|הארץ|גלובס|כלכליסט|וואלה|חדשות\s*13|ני12|מאקו|גלי\s*צהל"
+    r")\s*$",
+    re.UNICODE,
+)
+
+
+def _strip_hashtags_and_cleanup(text: str) -> str:
+    s = re.sub(r"#\S+", "", text or "")
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+
+def _strip_lazy_news_openers_he(text: str) -> str:
+    s = (text or "").strip()
+    if not s:
+        return s
+    t = s
+    for _ in range(6):
+        hit = False
+        for p in _LAZY_NEWS_PREFIXES_HE:
+            if t.startswith(p):
+                t = t[len(p) :].lstrip(" -–—:?!")
+                hit = True
+                break
+        if not hit:
+            break
+    return (t.strip() or s).strip()
+
+
+def _strip_trailing_news_attribution(text: str) -> str:
+    s = (text or "").rstrip()
+    for _ in range(5):
+        m = _CHATTER_OUTLET_TAIL_RE.search(s)
+        if not m:
+            break
+        s = s[: m.start()].rstrip()
+    return s
+
+
+def _cap_words(text: str, max_words: int = 10) -> str:
+    parts = (text or "").split()
+    if len(parts) <= max_words:
+        return (text or "").strip()
+    return " ".join(parts[:max_words])
+
+
+def _finalize_chatter_line(text: str) -> str:
+    s = _strip_hashtags_and_cleanup(text)
+    s = _strip_lazy_news_openers_he(s)
+    s = _strip_trailing_news_attribution(s)
+    s = _cap_words(s, 10)
+    parts = s.split()
+    if len(parts) == 1 and parts[0]:
+        s = f"{parts[0]} אחי"
+    return s.strip()
+
 
 def parse_json_object(raw: str) -> dict[str, Any]:
     """Strip optional markdown fences and parse a single JSON object."""
@@ -199,13 +276,14 @@ async def compose_chatter_line(
     ``message_index_map``: [{\"id\": telegram int, \"sender\": str}, ...] newest first.
     """
     sys_prompt = (
-        "You write one authentic Telegram group message. "
-        "Use natural emoji and slang matching the speaker's voice. "
-        "Respond to others when it fits; @mention usernames from the list (with @). "
-        "If news_from_last_24h is non-empty, you MUST react to one specific real headline "
-        "from that list (paraphrase OK, stay grounded in what is written there). "
-        "Do not invent fake breaking stories that are not implied by the digest. "
-        "Keep it short like a real chat line (often <= 280 chars). "
+        "You write one authentic Telegram group line as an impatient Israeli — NOT a newsreader.\n"
+        "Rules: 2–10 words only (count them). Natural emoji/slang matching the speaker. "
+        "@mention from the list when it fits (with @).\n"
+        "If news_from_last_24h is non-empty, internalize ONE real item and output a fresh casual reaction "
+        "in your own words — NEVER copy/paste the headline, NEVER print [source] tags or '- ynet' / '- מעריב' / outlet names.\n"
+        "FORBIDDEN openers: 'שמעתם כבר', 'דיווח:', 'ראיתם מה', 'לפי דיווח'.\n"
+        "If you reply to another message (reply_to_id set): do NOT repeat their facts — only opinion, joke, complaint, or disagreement.\n"
+        "Do not invent stories not implied by the digest. "
         "Output ONLY JSON: {\"text\":\"message\",\"reply_to_id\":null or integer,"
         "\"mention_usernames\":[\"without@\"]}"
     )
@@ -229,6 +307,9 @@ async def compose_chatter_line(
     }
     if forced_reply_to_id is not None:
         user_obj["required_reply_to_id"] = int(forced_reply_to_id)
+        user_obj["forced_reply_rule"] = (
+            "You MUST reply to that message: 2–10 words, do NOT restate their facts or wording — reaction only."
+        )
     nd = (news_digest or "").strip()
     if nd:
         user_obj["news_from_last_24h"] = nd[:8000]
@@ -237,7 +318,10 @@ async def compose_chatter_line(
         user_obj["preferred_anchor_headline"] = ah[:500]
     user = json.dumps(user_obj, ensure_ascii=False)
     try:
-        return await _gemini_json(api_key, sys_prompt, user, temperature=0.92, max_tokens=256)
+        out = await _gemini_json(api_key, sys_prompt, user, temperature=0.92, max_tokens=96)
+        if isinstance(out, dict):
+            out["text"] = _finalize_chatter_line(str(out.get("text") or ""))
+        return out
     except Exception as exc:
         log.warning("compose_chatter_failed", error=str(exc))
         return {"text": "", "reply_to_id": None, "mention_usernames": []}

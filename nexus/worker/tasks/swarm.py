@@ -54,6 +54,15 @@ RECENT_GROUP_MSG_MAX_CHARS = 180
 RECENT_OUTGOING_CAP = 200
 RECENT_OUTGOING_PROMPT_LINES = 40
 
+# Appended to factory LLM user payload — mirrors anti-parrot rules in israeli_swarm Gemini path.
+_SWARM_SYNTHESIS_HARD_RULES_HE = (
+    "\n\nכללים קשיחים לטקסט שיישלח לקבוצה:\n"
+    "- primary_message / message_text / text: בין 2 ל-10 מילים בעברית מדוברת בלבד.\n"
+    "- אסור להדביק כותרות חדשות מילה במילה; אסור סיומות '- ynet', '- מעריב', '[ynet]', שמות אתרים.\n"
+    "- אסור לפתוח ב'שמעתם כבר', 'דיווח:', 'ראיתם מה', 'לפי דיווח'.\n"
+    "- בתור מגיב (replier): אסור לשחזר עובדות מההודעה שאתה משיב לה — רק עמדה/בדיחה/תלונה/חילוקי דעות.\n"
+)
+
 _RICH_ACTION_TYPES = frozenset({"text", "text_with_emoji", "sticker", "gif", "image"})
 _DEFAULT_STICKER_PACKS = ["AnimatedEmojies", "HotCherry"]
 
@@ -65,27 +74,29 @@ REACTION_EMOJIS = ["🔥", "😂", "💀", "🤯", "👀", "😱", "💪", "🤦
 THREAD_REACTION_EMOJIS = ["👍", "🤦‍♂️", "🤬"]
 
 AMCHA_ISRAEL_SYSTEM_PROMPT = (
-    "You are an everyday Israeli ('עמך ישראל') in a local Telegram group. \n"
+    "You are an everyday Israeli ('עמך ישראל') in a Telegram group — impatient thumb-typing, NOT a news anchor.\n"
     "RULES:\n"
-    "- Read the last 5 messages and react to them uniquely. Argue, laugh, teach, or suddenly try to sell a second-hand item (e.g., 'מישהו פה מוכר אופניים?').\n"
-    "- Tone: Casual, slightly cynical, authentic. Use slang ('אחי', 'וואלה', 'בדוק', 'הזייה').\n"
-    "- Length: Variable. Sometimes 2 words, sometimes a 15-word rant.\n"
-    "- NEVER be polite or formal. Act like you are chatting with friends on WhatsApp.\n"
-    "- Do NOT sound like an AI: avoid perfect punctuation, formal structure, and textbook Hebrew."
+    "- Read the last 5 messages and react uniquely (argue, laugh, side-eye, random tangent like selling a bike — still 2–10 words).\n"
+    "- Tone: casual, cynical, slang ('אחי', 'וואלה', 'בדוק', 'הזייה').\n"
+    "- LENGTH: primary_message / text MUST be 2–10 Hebrew words only. No headline paste, no '- ynet' / '- מעריב' / outlet names.\n"
+    "- FORBIDDEN openers: 'שמעתם כבר', 'דיווח:', 'ראיתם מה', 'לפי דיווח' — never sound like a broadcast.\n"
+    "- When REPLYING to another message: do NOT repeat their facts or phrasing; only opinion, joke, complaint, or disagreement.\n"
+    "- NEVER be polite or formal. Do NOT sound like an AI: messy punctuation OK, textbook Hebrew is wrong."
 )
 
 # Few-shot alignment block (verbatim requirement for Israeli Swarm prompting).
 AMCHA_FEW_SHOT_BLOCK = """EXAMPLES OF BAD OUTPUTS (DO NOT DO THIS):
 'אני חושב שצריך לחכות לעוד פרטים לפני שמספקים.'
+'שמעתם כבר? השרה אמרה שיש רפורמה - ynet'
+'דיווח: הממשלה אישרה את החוק במליאה - מעריב'
 'וואי, אם זה נכון זה משנה את התמונה לגמרי.'
-'אחי שמעת על זה??'
 
 EXAMPLES OF GOOD, AUTHENTIC OUTPUTS (DO THIS):
 'חארטה רצח'
-'אמאלה איזה פחד...'
-'תכלס'
+'אמאלה איזה פחד'
+'תכלס וואלה'
 'בדוק עובדים עלינו חחח'
-'מישהו ראה את זה בעוד מקום?'
+'נו באמת עכשיו'
 'הזייה מה שהולך פה'"""
 
 # Twelve fixed archetypes — index chosen deterministically from MD5(session path).
@@ -165,8 +176,9 @@ AMCHA_STANCES_PRIVILEGED_HE = [
 AMCHA_PRIVILEGED_SYSTEM_PROMPT = (
     "You are a casual Israeli Telegram group member. The line you reply to is from a group OWNER or ADMIN.\n"
     "RULES:\n"
-    "- Be brief, friendly, and respectful. No arguing, no insults, no profanity or slurs.\n"
-    "- Do not disagree aggressively; stay neutral, lightly agree, or ask a gentle follow-up.\n"
+    "- 2–10 words in Hebrew. Brief, friendly, respectful — no arguing, insults, profanity, or slurs.\n"
+    "- Do not repeat their facts; light agreement, thanks, or a gentle reaction only.\n"
+    "- No headline/newsreader tone; no 'שמעתם כבר' / 'דיווח:'; no outlet names or '- ynet' style suffixes.\n"
     "- Informal Hebrew is OK ('וואלה', 'אחי') but never confrontational.\n"
     "- Do NOT sound like an AI."
 )
@@ -291,6 +303,60 @@ def _invite_hash(link_or_hash: str) -> str:
 def _strip_hashtags_and_cleanup(text: str) -> str:
     s = re.sub(r"#\S+", "", text or "")
     s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+
+_LAZY_NEWS_PREFIXES_HE: tuple[str, ...] = (
+    "שמעתם כבר על ",
+    "שמעתם כבר ",
+    "שמעת על ",
+    "שמעת ",
+    "דיווח: ",
+    "דיווח ",
+    "לפי דיווח ",
+    "לפי הדיווח ",
+    "ראיתם מה ",
+    "ראית ",
+    "חדשות: ",
+    "פלאש: ",
+    "עכשיו ב",
+    "מתפרסם ש",
+    "פורסם ש",
+)
+_FACTORY_OUTLET_TAIL_RE = re.compile(
+    r"\s*[-–—]\s*("
+    r"\[[^\]]+\]"
+    r"|(?i)ynet|n12|n13|mako|calcalist|walla|themarker|timesofisrael|times\s+of\s+israel|haaretz|kan\s*11|google[\s-]*news"
+    r"|מעריב|הארץ|גלובס|כלכליסט|וואלה|חדשות\s*13|ני12|מאקו|גלי\s*צהל"
+    r")\s*$",
+    re.UNICODE,
+)
+
+
+def _strip_lazy_news_openers_he(text: str) -> str:
+    s = (text or "").strip()
+    if not s:
+        return s
+    t = s
+    for _ in range(6):
+        hit = False
+        for p in _LAZY_NEWS_PREFIXES_HE:
+            if t.startswith(p):
+                t = t[len(p) :].lstrip(" -–—:?!")
+                hit = True
+                break
+        if not hit:
+            break
+    return (t.strip() or s).strip()
+
+
+def _strip_trailing_news_attribution(text: str) -> str:
+    s = (text or "").rstrip()
+    for _ in range(5):
+        m = _FACTORY_OUTLET_TAIL_RE.search(s)
+        if not m:
+            break
+        s = s[: m.start()].rstrip()
     return s
 
 
@@ -631,8 +697,13 @@ def _last_five_prompt_block(refs_newest_first: list[tuple[int, str]]) -> str:
 
 def _finalize_primary_message(text: str) -> str:
     s = _strip_hashtags_and_cleanup(text)
-    s = _cap_hebrew_words(s, 25)
+    s = _strip_lazy_news_openers_he(s)
+    s = _strip_trailing_news_attribution(s)
+    s = _cap_hebrew_words(s, 10)
     parts = s.split()
+    if len(parts) == 1 and parts[0]:
+        s = f"{parts[0]} אחי"
+        parts = s.split()
     if (len(parts) <= 8 or len(s) <= 40) and any(_is_hebrew_char(c) for c in s):
         s = re.sub(r"[.!?]+\s*$", "", s).strip()
     return _strip_trailing_periods_hebrew(s)
@@ -855,7 +926,7 @@ async def _generate_amcha_turn(
             "action_type חייב להיות אחד מ: text | text_with_emoji | sticker | gif | image. "
             "בערך לאורך זמן: ~60% text או text_with_emoji, ~15% sticker, ~15% gif, ~10% image. "
             "ב-sticker/gif/image: message_text יכול להיות ריק או כיתוב קצר; image_query — מילת מפתח באנגלית לחיפוש (למשל coffee, traffic, shawarma). "
-            "ב-text/text_with_emoji: מלא message_text (ועדיף גם primary_message באותו תוכן). "
+            "ב-text/text_with_emoji: מלא message_text (ועדיף גם primary_message באותו תוכן) — 2–10 מילים בלבד, בלי כותרות מועתקות. "
             "article_url ו-link_label — מחרוזות; כשאין קישור חדשותי השאר ריק."
         )
         if privileged_anchor:
@@ -866,6 +937,7 @@ async def _generate_amcha_turn(
         json_schema = (
             "החזר אך ורק JSON תקף (בלי טקסט נוסף) במבנה: "
             '{"text":"...","needs_correction":true/false,"correction":"..."} — מותר גם primary_message/correction_message במקום text/correction. '
+            "הטקסט הראשי חייב להיות 2–10 מילים. "
             "article_url ו-link_label — מחרוזות; כשאין קישור חדשותי השאר ריק."
         )
     if typo_must_correct:
@@ -881,7 +953,8 @@ async def _generate_amcha_turn(
     opener_news_clause = ""
     if news_opener:
         opener_news_clause = (
-            "תפקיד: פותח חדשות. primary_message — שורות קצרות כמו בווטסאפ על הכתבה/פלאש (בלי URL גולמי בגוף ההודעה). "
+            "תפקיד: פותח חדשות. primary_message — 2–10 מילים: תגובה קולית בעברית מדוברת, לא העתקת כותרת ולא 'שמעתם כבר' / '- ynet'. "
+            "בלי URL גולמי בגוף משפט ההודעה (הקישור רק ב-article_url). "
             "חובה למלא article_url עם קישור https plausibly לאתר חדשות ישראלי, "
             "ול-link_label משפט עברית לכפתור הקישור (למשל: קראו פה את הכתבה המלאה)."
         )
@@ -895,15 +968,15 @@ async def _generate_amcha_turn(
         user_he = (
             f"{last_five_block}\n\n{effective_stance}\n\n"
             f'הקבוצה כבר רותחת סביב: "{ctx}". '
-            "עוד משפט או שניים — זווית אחרת, לא פורמלי.\n"
-            f"{opener_news_clause}\n{typo_rule}\n{anti}\n{json_schema}"
+            "תגובה קצרה (2–10 מילים), זווית אחרת — לא פורמלי.\n"
+            f"{opener_news_clause}{_SWARM_SYNTHESIS_HARD_RULES_HE}\n{typo_rule}\n{anti}\n{json_schema}"
         )
     elif role == "opener" and news_opener:
         user_he = (
             f"{last_five_block}\n\n{effective_stance}\n\n"
-            f"הנחיה: שמועה/פלאש/מה זה עכשיו — קבוצת חדשות בטלגרם. "
+            f"הנחיה: פלאש/שמועה — קבוצת חדשות בטלגרם; אל תקריא כותרות, רק תגיב כמו בן אדם.\n"
             f'רקע רחב בלבד: "{topic}".\n'
-            f"{opener_news_clause}\n{typo_rule}\n{anti}\n{json_schema}"
+            f"{opener_news_clause}{_SWARM_SYNTHESIS_HARD_RULES_HE}\n{typo_rule}\n{anti}\n{json_schema}"
         )
     else:
         ap = (anchor_preview or "").strip()[:800] or "(אין טקסט — תגיב בקצרה)"
@@ -915,7 +988,8 @@ async def _generate_amcha_turn(
             f"{last_five_block}\n\n{effective_stance}\n\n"
             f"{head}"
             f'אתה משיב להודעה/שורה הזו (או לקונטקסט שלה): "{ap}"\n'
-            f"{typo_rule}\n{anti}\n{json_schema}"
+            "מגיב בשרשור: אסור לשחזר עובדות או ניסוח מהציטוט למעלה — רק עמדה/בדיחה/תלונה לפי הדמות.\n"
+            f"{opener_news_clause}{_SWARM_SYNTHESIS_HARD_RULES_HE}\n{typo_rule}\n{anti}\n{json_schema}"
         )
 
     if rich_media_mode:
