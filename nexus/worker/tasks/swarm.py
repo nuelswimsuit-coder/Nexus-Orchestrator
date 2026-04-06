@@ -477,7 +477,8 @@ def _normalize_amcha_dict(obj: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_rich_turn(obj: dict[str, Any]) -> dict[str, Any]:
     n = _normalize_amcha_dict(obj)
-    at = str(obj.get("action_type") or "text").strip().lower().replace(" ", "_").replace("-", "_")
+    raw_at = str(obj.get("action_type") or "text").strip().strip('"').strip("'")
+    at = raw_at.lower().replace(" ", "_").replace("-", "_")
     if at not in _RICH_ACTION_TYPES:
         at = "text"
     mt = str(obj.get("message_text") or n["primary_message"] or "").strip()
@@ -573,8 +574,9 @@ async def _generate_amcha_turn(
             "article_url ו-link_label — מחרוזות; כשאין קישור חדשותי השאר ריק."
         )
     if typo_must_correct:
+        typo_field = "message_text ו-primary_message" if rich_media_mode else "primary_message"
         typo_rule = (
-            "חובה: needs_correction=true — שים ב-primary_message טעות הקלדה עברית נפוצה "
+            f"חובה: needs_correction=true — שים ב-{typo_field} טעות הקלדה עברית נפוצה "
             "(למשל בוט במקום טוב, או ניראה לי במקום נראה לי), "
             "וב-correction_message תיקון אותנטי קצר כמו 'טוב*' או 'סליחה טוב*' או 'איזה אהבל אני, טוב*'."
         )
@@ -636,12 +638,10 @@ async def _generate_amcha_turn(
         if not isinstance(out, dict):
             return None
         if rich_media_mode:
-            if (
-                out.get("action_type")
-                or out.get("primary_message")
-                or out.get("text")
-                or out.get("message_text") is not None
-            ):
+            at = str(out.get("action_type") or "").strip().lower().strip('"').strip("'")
+            if at in ("sticker", "gif", "image"):
+                return _normalize_rich_turn(out)
+            if out.get("primary_message") or out.get("text") or str(out.get("message_text") or "").strip():
                 return _normalize_rich_turn(out)
             return None
         if out.get("primary_message") or out.get("text"):
@@ -727,163 +727,6 @@ def _converse_batch_size() -> int:
     except ValueError:
         n = 15
     return max(1, min(20, n))
-
-
-async def _generate_amcha_turn_media(
-    api_key: str,
-    topic: str,
-    openai_key: str,
-    *,
-    persona_seed: str,
-    role: Literal["opener", "replier"],
-    stance_he: str,
-    last_five_block: str,
-    typo_must_correct: bool,
-    anchor_preview: str | None = None,
-    recent_texts: list[str] | None = None,
-    active_topic_line: str | None = None,
-    opener_fresh_event: bool = False,
-    news_opener: bool = False,
-    global_outgoing_lines: list[str] | None = None,
-) -> dict[str, Any]:
-    anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
-    go = _global_outgoing_prompt_suffix(list(global_outgoing_lines or []))
-    rich_json = (
-        "החזר אך ורק JSON תקף (בלי טקסט נוסף) עם המפתחות: "
-        '"action_type","message_text","image_query","primary_message",'
-        '"needs_correction","correction_message","article_url","link_label". '
-        'action_type חייב להיות בדיוק אחד מ: "text", "text_with_emoji", "sticker", "gif", "image". '
-        "message_text — טקסט סלנג עברי (אפשר ריק אם שליחת מדיה בלבד). "
-        "image_query — מילת מפתח קצרה לתמונה או ל-GIF (מומלץ באנגלית). "
-        "primary_message — אותו תוכן כמו message_text לתאימות. "
-        "יעדי תדירות משוערים: ~60% text או text_with_emoji, ~15% sticker, ~15% gif, ~10% image."
-    )
-    if typo_must_correct:
-        typo_rule = (
-            "חובה: needs_correction=true — שים ב-message_text טעות הקלדה עברית נפוצה "
-            "(למשל בוט במקום טוב), "
-            "וב-correction_message תיקון אותנטי קצר כמו 'טוב*' או 'סליחה טוב*'."
-        )
-    else:
-        typo_rule = "needs_correction חייב להיות false; correction_message יכול להיות מחרוזת ריקה."
-
-    opener_news_clause = ""
-    if news_opener:
-        opener_news_clause = (
-            'תפקיד: פותח חדשות. action_type חייב להיות "text" או "text_with_emoji" בלבד (בלי sticker/gif/image). '
-            "message_text — שורות קצרות כמו בווטסאפ על הכתבה/פלאש (בלי URL גולמי בגוף ההודעה). "
-            "חובה למלא article_url עם קישור https plausibly לאתר חדשות ישראלי, "
-            "ול-link_label משפט עברית לכפתור הקישור."
-        )
-
-    if role == "opener" and not news_opener:
-        ctx = (active_topic_line or "").strip()[:400] or topic
-        user_he = (
-            f"{last_five_block}\n\n{stance_he}\n\n"
-            f'הקבוצה כבר רותחת סביב: "{ctx}". '
-            "עוד משפט או שניים — זווית אחרת, לא פורמלי.\n"
-            f"{opener_news_clause}\n{typo_rule}\n{anti}\n{go}\n{rich_json}"
-        )
-    elif role == "opener" and news_opener:
-        user_he = (
-            f"{last_five_block}\n\n{stance_he}\n\n"
-            f"הנחיה: שמועה/פלאש/מה זה עכשיו — קבוצת חדשות בטלגרם. "
-            f'רקע רחב בלבד: "{topic}".\n'
-            f"{opener_news_clause}\n{typo_rule}\n{anti}\n{go}\n{rich_json}"
-        )
-    else:
-        ap = (anchor_preview or "").strip()[:800] or "(אין טקסט — תגיב בקצרה)"
-        if (active_topic_line or "").strip():
-            head = f'הנושא הפעיל בקבוצה: "{(active_topic_line or "").strip()[:400]}". '
-        else:
-            head = ""
-        user_he = (
-            f"{last_five_block}\n\n{stance_he}\n\n"
-            f"{head}"
-            f'אתה משיב להודעה/שורה הזו (או לקונטקסט שלה): "{ap}"\n'
-            f"{typo_rule}\n{anti}\n{go}\n{rich_json}"
-        )
-
-    temperature = 0.95
-    frequency_penalty = 0.8
-    presence_penalty = 0.5
-    sys_prompt = _amcha_system_prompt_with_persona(persona_seed)
-
-    def _rich_ok(d: dict[str, Any]) -> bool:
-        if d.get("action_type") in ("sticker", "gif", "image"):
-            return True
-        return bool(d.get("message_text") or d.get("primary_message") or d.get("text"))
-
-    if api_key:
-        try:
-            from nexus.modules.community_vibe import _gemini_json  # type: ignore[attr-defined]
-
-            out = await _gemini_json(
-                api_key,
-                sys_prompt,
-                user_he,
-                temperature=temperature,
-                max_tokens=400,
-                frequency_penalty=frequency_penalty,
-                presence_penalty=presence_penalty,
-            )
-            if isinstance(out, dict) and _rich_ok(out):
-                return _normalize_rich_turn(out)
-        except Exception as exc:
-            log.warning("factory_gemini_media_failed", error=str(exc))
-
-    if openai_key:
-        try:
-            import httpx
-
-            url = "https://api.openai.com/v1/chat/completions"
-            headers = {"Authorization": f"Bearer {openai_key}"}
-            payload = {
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": user_he},
-                ],
-                "temperature": temperature,
-                "max_tokens": 400,
-                "frequency_penalty": frequency_penalty,
-                "presence_penalty": presence_penalty,
-            }
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                r = await client.post(url, json=payload, headers=headers)
-                r.raise_for_status()
-                data = r.json()
-                choice = (data.get("choices") or [{}])[0]
-                raw_msg = (choice.get("message") or {}).get("content") or ""
-                obj = _parse_llm_json_object(raw_msg) if raw_msg.strip() else None
-                if obj and _rich_ok(obj):
-                    return _normalize_rich_turn(obj)
-        except Exception as exc:
-            log.warning("factory_openai_media_failed", error=str(exc))
-
-    fb_pm = "וואלה הזייה אחי" if role == "opener" else "אין מצב"
-    return _normalize_rich_turn(
-        {
-            "action_type": "text",
-            "message_text": fb_pm,
-            "primary_message": fb_pm,
-            "needs_correction": False,
-            "correction_message": "",
-            "article_url": "",
-            "link_label": "",
-            "image_query": "",
-        }
-    )
-
-
-def _sticker_set_short_names() -> list[str]:
-    packs_env = (os.getenv("COMMUNITY_FACTORY_STICKER_SETS") or "").strip()
-    if packs_env:
-        return [p.strip() for p in packs_env.split(",") if p.strip()]
-    single = (os.getenv("COMMUNITY_FACTORY_STICKER_SET") or "").strip()
-    if single:
-        return [single]
-    return list(_DEFAULT_STICKER_PACKS)
 
 
 async def _http_get_bytes(url: str) -> bytes | None:
@@ -985,129 +828,6 @@ async def _fetch_image_bytes_for_query(image_query: str, persona_seed: str) -> t
     return b, "photo.jpg"
 
 
-async def _send_rich_turn_telethon(
-    client: Any,
-    entity: Any,
-    turn: dict[str, Any],
-    *,
-    reply_to_id: int | None,
-    news_opener: bool,
-) -> list[Any]:
-    await asyncio.sleep(random.uniform(0.5, 4.0))
-    sent: list[Any] = []
-
-    async def _append_correction() -> None:
-        if not turn.get("needs_correction"):
-            return
-        cm = str(turn.get("correction_message") or "").strip()
-        if not cm:
-            return
-        await asyncio.sleep(random.uniform(2.0, 4.0))
-        fix = _finalize_correction_message(cm)[:4096]
-        if fix:
-            msg2 = await client.send_message(entity, fix, reply_to=None, parse_mode=None)
-            sent.append(msg2)
-
-    if news_opener:
-        url = await _maybe_tinyurl_shorten(str(turn.get("article_url") or ""))
-        primary_out, use_md = _format_opener_with_md_link(
-            str(turn.get("primary_message") or turn.get("message_text") or ""),
-            url,
-            str(turn.get("link_label") or ""),
-        )
-        out = await _send_amcha_messages(
-            client,
-            entity,
-            primary=primary_out,
-            needs_correction=bool(turn.get("needs_correction")),
-            correction=str(turn.get("correction_message") or ""),
-            reply_to_id=reply_to_id,
-            parse_mode="md" if use_md else None,
-        )
-        return out
-
-    at = str(turn.get("action_type") or "text").strip().lower()
-    mt = _finalize_primary_message(str(turn.get("message_text") or turn.get("primary_message") or ""))
-
-    try:
-        if at in ("text", "text_with_emoji"):
-            text = (mt[:4096] if mt else _finalize_primary_message("וואלה")) or "וואלה"
-            msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
-            sent.append(msg)
-        elif at == "sticker":
-            ok = await _try_send_pack_sticker(client, entity, reply_to=reply_to_id)
-            if not ok:
-                text = (mt[:4096] if mt else "😂") or "😂"
-                msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
-                sent.append(msg)
-        elif at == "gif":
-            q = str(turn.get("image_query") or "funny") or "funny"
-            gif_url = await _resolve_gif_media_url(q)
-            if gif_url:
-                try:
-                    msg = await client.send_file(
-                        entity,
-                        gif_url,
-                        caption=(mt[:1024] if mt else None),
-                        reply_to=reply_to_id,
-                    )
-                    sent.append(msg)
-                except Exception:
-                    ok = await _try_send_pack_sticker(client, entity, reply_to=reply_to_id)
-                    if ok:
-                        pass
-                    else:
-                        text = (mt or "וואלה")[:4096]
-                        msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
-                        sent.append(msg)
-            else:
-                ok = await _try_send_pack_sticker(client, entity, reply_to=reply_to_id)
-                if not ok:
-                    text = (mt or "וואלה")[:4096]
-                    msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
-                    sent.append(msg)
-        elif at == "image":
-            iq = str(turn.get("image_query") or "city") or "city"
-            seed = str(turn.get("_persona_seed") or "")
-            data, fname = await _fetch_image_bytes_for_query(iq, seed)
-            if data:
-                bio = BytesIO(data)
-                try:
-                    msg = await client.send_file(
-                        entity,
-                        file=(fname, bio),
-                        caption=(mt[:1024] if mt else None),
-                        reply_to=reply_to_id,
-                        force_document=False,
-                    )
-                    sent.append(msg)
-                except Exception:
-                    text = (mt or "וואלה")[:4096]
-                    msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
-                    sent.append(msg)
-            else:
-                text = (mt or "וואלה")[:4096]
-                msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
-                sent.append(msg)
-        else:
-            text = (mt[:4096] if mt else "וואלה") or "וואלה"
-            msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
-            sent.append(msg)
-    except Exception as exc:
-        log.debug("factory_rich_send_failed", action=at, error=str(exc))
-        try:
-            text = (mt or "וואלה")[:4096]
-            msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
-            sent.append(msg)
-        except Exception as exc2:
-            log.warning("factory_rich_send_fallback_failed", error=str(exc2))
-            return sent
-
-    if not news_opener:
-        await _append_correction()
-    return sent
-
-
 async def _redis_delete_keys_with_prefix(redis: Any, prefix: str) -> None:
     if redis is None:
         return
@@ -1181,7 +901,9 @@ def _sticker_pack_short_names() -> list[str]:
     return names or list(_DEFAULT_STICKER_PACKS)
 
 
-async def _try_send_random_sticker_from_packs(client: Any, entity: Any) -> Any:
+async def _try_send_random_sticker_from_packs(
+    client: Any, entity: Any, reply_to: int | None = None
+) -> Any:
     from telethon.tl.functions.messages import GetStickerSetRequest  # type: ignore[import-untyped]
     from telethon.tl.types import InputStickerSetShortName  # type: ignore[import-untyped]
 
@@ -1198,7 +920,7 @@ async def _try_send_random_sticker_from_packs(client: Any, entity: Any) -> Any:
             docs = [d for d in (getattr(res, "documents", None) or []) if d]
             if not docs:
                 continue
-            return await client.send_file(entity, random.choice(docs))
+            return await client.send_file(entity, random.choice(docs), reply_to=reply_to)
         except Exception as exc:
             log.debug("factory_sticker_pack_skipped", pack=short, error=str(exc))
             continue
@@ -1240,26 +962,19 @@ async def _try_send_inline_gif(client: Any, entity: Any, query: str) -> Any:
         return None
 
 
-async def _try_send_unsplash_random_image(
-    client: Any, entity: Any, image_query: str, caption: str | None
-) -> Any:
-    q = (image_query or "").strip()[:80] or random.choice(["urban", "food", "sky", "sea"])
-    url = f"https://source.unsplash.com/random/800x600/?{quote(q, safe='')}"
-    cap = (caption or "").strip()[:1024] or None
-    try:
-        return await client.send_file(entity, url, caption=cap)
-    except Exception as exc:
-        log.debug("factory_unsplash_url_send_failed", error=str(exc))
-    try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as h:
-            r = await h.get(url)
-            if r.status_code == 200 and r.content:
-                return await client.send_file(entity, r.content, caption=cap)
-    except Exception as exc:
-        log.debug("factory_unsplash_download_send_failed", error=str(exc))
-    return None
+async def _append_rich_correction_messages(
+    client: Any, entity: Any, turn: dict[str, Any], sent: list[Any]
+) -> None:
+    if not turn.get("needs_correction"):
+        return
+    cm = str(turn.get("correction_message") or "").strip()
+    if not cm:
+        return
+    await asyncio.sleep(random.uniform(2.0, 4.0))
+    fix = _finalize_correction_message(cm)[:4096]
+    if fix:
+        msg2 = await client.send_message(entity, fix, reply_to=None, parse_mode=None)
+        sent.append(msg2)
 
 
 async def _send_rich_factory_messages(
@@ -1269,14 +984,12 @@ async def _send_rich_factory_messages(
     *,
     reply_to_id: int | None,
     news_opener: bool,
-    use_md: bool,
+    use_md: bool = False,
 ) -> list[Any]:
-    """
-    Flood-safe jitter before Telegram sends, then text / sticker / gif / image per LLM action_type.
-    """
+    """Jitter before Telegram, then text / sticker / Tenor·Giphy·inline GIF / image bytes per action_type."""
     await asyncio.sleep(random.uniform(0.5, 4.0))
     sent: list[Any] = []
-    action = str(turn.get("action_type") or "text")
+    action = str(turn.get("action_type") or "text").strip().lower()
 
     if news_opener:
         primary_out = _finalize_primary_message(str(turn.get("primary_message") or turn.get("message_text") or ""))
@@ -1297,51 +1010,97 @@ async def _send_rich_factory_messages(
             parse_mode="md" if use_md else None,
         )
 
-    if action == "sticker":
-        msg = await _try_send_random_sticker_from_packs(client, entity)
-        if msg is not None:
-            return [msg]
-        action = "text"
+    mt = _finalize_primary_message(str(turn.get("message_text") or turn.get("primary_message") or ""))
+    iq = str(turn.get("image_query") or "").strip()
+    persona_seed = str(turn.get("_persona_seed") or "")
 
-    if action == "gif":
-        msg = await _try_send_inline_gif(client, entity, str(turn.get("image_query") or ""))
-        if msg is not None:
-            cap = _finalize_primary_message(str(turn.get("message_text") or ""))
-            if cap:
+    try:
+        if action in ("text", "text_with_emoji"):
+            body = (mt[:4096] if mt else "וואלה") or "וואלה"
+            sent.append(await client.send_message(entity, body, reply_to=reply_to_id, parse_mode=None))
+        elif action == "sticker":
+            msg = await _try_send_random_sticker_from_packs(client, entity, reply_to=reply_to_id)
+            if msg is not None:
+                sent.append(msg)
+            else:
+                fb = (mt[:4096] if mt else "😂") or "😂"
+                sent.append(await client.send_message(entity, fb, reply_to=reply_to_id, parse_mode=None))
+        elif action == "gif":
+            gif_url = await _resolve_gif_media_url(iq or "funny")
+            msg_obj = None
+            if gif_url:
                 try:
-                    await client.send_message(entity, cap, reply_to=reply_to_id, parse_mode=None)
-                except Exception as exc:
-                    log.debug("factory_gif_caption_failed", error=str(exc))
-            return [msg]
-        action = "text"
+                    msg_obj = await client.send_file(
+                        entity,
+                        gif_url,
+                        caption=mt[:1024] if mt else None,
+                        reply_to=reply_to_id,
+                    )
+                except Exception:
+                    msg_obj = None
+            if msg_obj is None:
+                msg_obj = await _try_send_inline_gif(client, entity, iq or "funny")
+                if msg_obj is not None and mt:
+                    try:
+                        await client.send_message(entity, mt[:4096], reply_to=reply_to_id, parse_mode=None)
+                    except Exception as exc:
+                        log.debug("factory_gif_caption_failed", error=str(exc))
+            if msg_obj is not None:
+                sent.append(msg_obj)
+            else:
+                fb_msg = await _try_send_random_sticker_from_packs(client, entity, reply_to=reply_to_id)
+                if fb_msg is not None:
+                    sent.append(fb_msg)
+                else:
+                    sent.append(
+                        await client.send_message(
+                            entity, (mt or "וואלה")[:4096], reply_to=reply_to_id, parse_mode=None
+                        )
+                    )
+        elif action == "image":
+            data, fname = await _fetch_image_bytes_for_query(iq or "city", persona_seed)
+            msg_obj = None
+            if data:
+                try:
+                    bio = BytesIO(data)
+                    msg_obj = await client.send_file(
+                        entity,
+                        file=(fname, bio),
+                        caption=mt[:1024] if mt else None,
+                        reply_to=reply_to_id,
+                        force_document=False,
+                    )
+                except Exception:
+                    msg_obj = None
+            if msg_obj is not None:
+                sent.append(msg_obj)
+            else:
+                sent.append(
+                    await client.send_message(
+                        entity, (mt or "וואלה")[:4096], reply_to=reply_to_id, parse_mode=None
+                    )
+                )
+        else:
+            body = (mt[:4096] if mt else "וואלה") or "וואלה"
+            sent.append(await client.send_message(entity, body, reply_to=reply_to_id, parse_mode=None))
+    except Exception as exc:
+        log.debug("factory_rich_send_failed", action=action, error=str(exc))
+        try:
+            sent.append(
+                await client.send_message(
+                    entity, (mt or "וואלה")[:4096], reply_to=reply_to_id, parse_mode=None
+                )
+            )
+        except Exception as exc2:
+            log.warning("factory_rich_fallback_failed", error=str(exc2))
+            return sent
 
-    if action == "image":
-        msg = await _try_send_unsplash_random_image(
-            client,
-            entity,
-            str(turn.get("image_query") or ""),
-            str(turn.get("message_text") or "").strip() or None,
-        )
-        if msg is not None:
-            return [msg]
-        action = "text"
-
-    body = _finalize_primary_message(str(turn.get("message_text") or turn.get("primary_message") or ""))
-    if not body and action in ("text", "text_with_emoji"):
-        body = "וואלה"
-    return await _send_amcha_messages(
-        client,
-        entity,
-        primary=body,
-        needs_correction=bool(turn.get("needs_correction")),
-        correction=str(turn.get("correction_message") or ""),
-        reply_to_id=reply_to_id,
-        parse_mode=None,
-    )
+    await _append_rich_correction_messages(client, entity, turn, sent)
+    return sent
 
 
-async def _try_send_pack_sticker(client: Any, entity: Any) -> bool:
-    msg = await _try_send_random_sticker_from_packs(client, entity)
+async def _try_send_pack_sticker(client: Any, entity: Any, reply_to: int | None = None) -> bool:
+    msg = await _try_send_random_sticker_from_packs(client, entity, reply_to=reply_to)
     return msg is not None
 
 
