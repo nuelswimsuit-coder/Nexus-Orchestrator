@@ -66,8 +66,46 @@ AMCHA_ISRAEL_SYSTEM_PROMPT = (
     "- Read the last 5 messages and react to them uniquely. Argue, laugh, teach, or suddenly try to sell a second-hand item (e.g., 'מישהו פה מוכר אופניים?').\n"
     "- Tone: Casual, slightly cynical, authentic. Use slang ('אחי', 'וואלה', 'בדוק', 'הזייה').\n"
     "- Length: Variable. Sometimes 2 words, sometimes a 15-word rant.\n"
-    "- NEVER be polite or formal. Act like you are chatting with friends on WhatsApp."
+    "- NEVER be polite or formal. Act like you are chatting with friends on WhatsApp.\n"
+    "- Do NOT sound like an AI: avoid perfect punctuation, formal structure, and textbook Hebrew."
 )
+
+# Few-shot alignment block (verbatim requirement for Israeli Swarm prompting).
+AMCHA_FEW_SHOT_BLOCK = """EXAMPLES OF BAD OUTPUTS (DO NOT DO THIS):
+'אני חושב שצריך לחכות לעוד פרטים לפני שמספקים.'
+'וואי, אם זה נכון זה משנה את התמונה לגמרי.'
+'אחי שמעת על זה??'
+
+EXAMPLES OF GOOD, AUTHENTIC OUTPUTS (DO THIS):
+'חארטה רצח'
+'אמאלה איזה פחד...'
+'תכלס'
+'בדוק עובדים עלינו חחח'
+'מישהו ראה את זה בעוד מקום?'
+'הזייה מה שהולך פה'"""
+
+# Micro-personas: one chosen at random per LLM call and injected into the system prompt.
+ISRAELI_SWARM_MICRO_PERSONAS: list[str] = [
+    (
+        "Persona A (The Cynic): You are extremely cynical. You don't believe the news. "
+        "You answer in 2-4 words. You use words like 'חארטה', 'פייק', 'שוב עובדים עלינו'."
+    ),
+    (
+        "Persona B (The Boomer): You are a 60-year-old Israeli. You use too many dots '...' "
+        "and emojis like 🙏 🌹 🤬. You complain about the government/youth."
+    ),
+    (
+        "Persona C (The Ars/Teen): You use aggressive slang, make spelling mistakes on purpose "
+        "('ניראה' instead of 'נראה', 'אמיתי' without question marks). Use 'אחי', 'נודר', 'בדוק'."
+    ),
+    (
+        "Persona D (The Anxious): You panic easily about news. "
+        "Use 'אמאלה', 'איזה פחד', 'מה נסגר'."
+    ),
+]
+
+# Often-weak final letters in casual Hebrew (for optional typo-like trimming on very short lines).
+_HEBREW_SILENT_FINAL_LETTERS = frozenset("אהי")
 
 AMCHA_STANCES_HE = [
     "עמדה לתגובה שלך: הסכם בעוצמה, ממש תתלהב.",
@@ -197,6 +235,55 @@ def _strip_hashtags_and_cleanup(text: str) -> str:
     s = re.sub(r"#\S+", "", text or "")
     s = re.sub(r"\s{2,}", " ", s).strip()
     return s
+
+
+def _is_hebrew_char(ch: str) -> bool:
+    return len(ch) == 1 and "\u0590" <= ch <= "\u05FF"
+
+
+def _anti_robot_message_text(text: str, *, short_mutations: bool = True) -> str:
+    """
+    Post-LLM anti-formal filter for outgoing chat lines: drop '#', trim trailing '.',
+    and optionally mess with very short messages like fast Telegram typing.
+    """
+    s = (text or "").replace("#", "")
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    while s.endswith("."):
+        s = s[:-1].rstrip()
+    if not short_mutations or not s:
+        return s
+    words = s.split()
+    if len(words) >= 4 or random.random() >= 0.3:
+        return s
+    last = words[-1]
+    if len(last) < 2:
+        return s
+    last_ch = last[-1]
+    if random.random() < 0.5 and last_ch in _HEBREW_SILENT_FINAL_LETTERS and _is_hebrew_char(last_ch):
+        words[-1] = last[:-1]
+        return " ".join(words).strip()
+    words[-1] = last + last_ch + last_ch
+    return " ".join(words).strip()
+
+
+def _apply_anti_robot_to_turn_dict(out: dict[str, Any], *, rich_media_mode: bool) -> dict[str, Any]:
+    """Apply programmatic post-processing to primary / message_text / correction after JSON normalize."""
+    if rich_media_mode:
+        mt = str(out.get("message_text") or "").strip()
+        pm = str(out.get("primary_message") or "").strip()
+        base = mt or pm
+        if base:
+            filtered = _anti_robot_message_text(base, short_mutations=True)
+            out["message_text"] = filtered
+            out["primary_message"] = filtered
+    else:
+        pm = str(out.get("primary_message") or "").strip()
+        if pm:
+            out["primary_message"] = _anti_robot_message_text(pm, short_mutations=True)
+    cm = str(out.get("correction_message") or "").strip()
+    if cm:
+        out["correction_message"] = _anti_robot_message_text(cm, short_mutations=False)
+    return out
 
 
 def _cap_hebrew_words(text: str, max_words: int = 10) -> str:
@@ -360,14 +447,23 @@ async def _redis_recent_outgoing_push(redis: Any, fragment: str) -> None:
         log.debug("factory_recent_outgoing_push_failed", error=str(exc))
 
 
-def _amcha_system_prompt_with_persona(persona_seed: str | None) -> str:
-    if not (persona_seed or "").strip():
-        return AMCHA_ISRAEL_SYSTEM_PROMPT
-    return (
-        f"{AMCHA_ISRAEL_SYSTEM_PROMPT}\n\n"
-        f"Your unique persona seed is {persona_seed.strip()}. You MUST output a completely unique response "
-        "never seen before. NEVER use generic templates."
-    )
+def _build_amcha_system_prompt(persona_seed: str | None) -> str:
+    """
+    System prompt: base Israeli swarm rules, few-shot BAD/GOOD examples, random micro-persona,
+    and optional uniqueness seed.
+    """
+    micro = random.choice(ISRAELI_SWARM_MICRO_PERSONAS)
+    parts = [
+        AMCHA_ISRAEL_SYSTEM_PROMPT,
+        AMCHA_FEW_SHOT_BLOCK,
+        f"MICRO-PERSONA (pick this voice for this reply only):\n{micro}",
+    ]
+    if (persona_seed or "").strip():
+        parts.append(
+            f"Your unique persona seed is {persona_seed.strip()}. You MUST output a completely unique response "
+            "never seen before. NEVER use generic templates."
+        )
+    return "\n\n".join(parts)
 
 
 def _message_refs_newest_first(messages_oldest_first: list[Any]) -> list[tuple[int, str]]:
@@ -498,11 +594,21 @@ def _parse_llm_json_object(raw: str) -> dict[str, Any] | None:
     t = (raw or "").strip()
     if not t:
         return None
-    try:
-        obj = parse_json_object(t)
-        return obj if isinstance(obj, dict) else None
-    except Exception:
-        return None
+    normalized = (
+        t.replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\ufeff", "")
+    )
+    for candidate in (t, normalized):
+        try:
+            obj = parse_json_object(candidate)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            continue
+    return None
 
 
 async def _send_amcha_messages(
@@ -556,7 +662,7 @@ async def _generate_amcha_turn(
 ) -> dict[str, Any]:
     anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
     anti += _global_outgoing_prompt_suffix(list(global_recent_outgoing or []))
-    system_prompt = _amcha_system_prompt_with_persona(persona_seed)
+    system_prompt = _build_amcha_system_prompt(persona_seed)
 
     if rich_media_mode:
         json_schema = (
@@ -642,12 +748,15 @@ async def _generate_amcha_turn(
         if rich_media_mode:
             at = str(out.get("action_type") or "").strip().lower().strip('"').strip("'")
             if at in ("sticker", "gif", "image"):
-                return _normalize_rich_turn(out)
+                normalized = _normalize_rich_turn(out)
+                return _apply_anti_robot_to_turn_dict(normalized, rich_media_mode=True)
             if out.get("primary_message") or out.get("text") or str(out.get("message_text") or "").strip():
-                return _normalize_rich_turn(out)
+                normalized = _normalize_rich_turn(out)
+                return _apply_anti_robot_to_turn_dict(normalized, rich_media_mode=True)
             return None
         if out.get("primary_message") or out.get("text"):
-            return _normalize_amcha_dict(out)
+            normalized = _normalize_amcha_dict(out)
+            return _apply_anti_robot_to_turn_dict(normalized, rich_media_mode=False)
         return None
 
     if api_key:

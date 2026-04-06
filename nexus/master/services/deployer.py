@@ -48,7 +48,6 @@ import asyncio
 import io
 import json
 import os
-import socket
 import sys
 import zipfile
 from datetime import datetime, timezone
@@ -56,6 +55,11 @@ from pathlib import Path
 from typing import Literal
 
 import structlog
+
+from nexus.shared.deploy_preflight import (
+    preflight_remote_ssh,
+    print_ssh_debug_command,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -333,12 +337,18 @@ class DeployerService:
             # ── 1. Connect ────────────────────────────────────────────────────
             await self._emit(node_id, "connecting", "running",
                              f"SSH → {ssh_user}@{ip}")
+            _loop_sp = asyncio.get_event_loop()
+            _pf_sp = await _loop_sp.run_in_executor(None, preflight_remote_ssh, ip)
+            if _pf_sp:
+                await self._emit(node_id, "error", "error", _pf_sp)
+                return f"error: {_pf_sp}"
+            print_ssh_debug_command(ssh_user, ip)
             _connect_kwargs: dict = dict(hostname=ip, username=ssh_user, timeout=15, banner_timeout=15)
             if ssh_pass:
                 _connect_kwargs["password"] = ssh_pass
             if ssh_key and os.path.isfile(ssh_key):
                 _connect_kwargs["key_filename"] = ssh_key
-            await asyncio.get_event_loop().run_in_executor(
+            await _loop_sp.run_in_executor(
                 None,
                 lambda: ssh.connect(**_connect_kwargs),
             )
@@ -536,52 +546,38 @@ class DeployerService:
             if ssh_key and os.path.isfile(ssh_key):
                 _ckw2["key_filename"] = ssh_key
 
-            def _tcp_probe_22() -> dict:
-                try:
-                    s = socket.create_connection((ip, 22), timeout=4.0)
-                    s.close()
-                    return {"tcp_ok": True, "errno": None, "err": None}
-                except OSError as e:
-                    return {"tcp_ok": False, "errno": e.errno, "err": str(e)[:240]}
-                except Exception as e:
-                    return {"tcp_ok": False, "errno": None, "err": str(e)[:240]}
-
-            _probe = await loop.run_in_executor(None, _tcp_probe_22)
+            _pf_sw = await loop.run_in_executor(None, preflight_remote_ssh, ip)
             # #region agent log
             _agent_dbg_deploy(
                 {
-                    "location": "deployer.py:sync_to_worker:post_tcp_probe",
-                    "message": "TCP :22 probe finished",
+                    "location": "deployer.py:sync_to_worker:post_preflight",
+                    "message": "ICMP+TCP preflight finished",
                     "hypothesisId": "H1,H3,H4",
                     "runId": "pre-fix",
                     "data": {
                         "connect_ip": ip,
-                        "tcp_ok": bool(_probe.get("tcp_ok")),
-                        "probe_errno": _probe.get("errno"),
-                        "probe_err": (str(_probe.get("err") or "")[:320]),
+                        "preflight_ok": _pf_sw is None,
+                        "preflight_err": (str(_pf_sw or "")[:320]),
                     },
                 }
             )
             # #endregion
-            if not _probe.get("tcp_ok"):
-                err_tail = str(_probe.get("err") or "connection failed")[:200]
-                detail = (
-                    f"No TCP route to {ip}:22 ({err_tail}). "
-                    "Check VPN, same LAN, firewall, WORKER_IP, and that sshd is running on the worker."
-                )
+            if _pf_sw:
                 # #region agent log
                 _debug_58e788(
                     {
-                        "location": "deployer.py:sync_to_worker:tcp_probe_fail",
-                        "message": "emitting error after TCP probe fail",
+                        "location": "deployer.py:sync_to_worker:preflight_fail",
+                        "message": "emitting error after preflight fail",
                         "hypothesisId": "H4",
                         "runId": "pre-fix",
-                        "data": {"node_id": node_id, "ip": ip, "probe": _probe},
+                        "data": {"node_id": node_id, "ip": ip, "err": _pf_sw},
                     }
                 )
                 # #endregion
-                await self._emit(node_id, "error", "error", detail)
-                return f"error: {detail}"
+                await self._emit(node_id, "error", "error", _pf_sw)
+                return f"error: {_pf_sw}"
+
+            print_ssh_debug_command(ssh_user, ip)
 
             await loop.run_in_executor(
                 None,
@@ -891,12 +887,18 @@ class DeployerService:
         try:
             # ── 1. Connect ────────────────────────────────────────────────────
             await self._emit(node_id, "connecting", "running", f"SSH → {ssh_user}@{ip}")
+            _loop_dn = asyncio.get_event_loop()
+            _pf_dn = await _loop_dn.run_in_executor(None, preflight_remote_ssh, ip)
+            if _pf_dn:
+                await self._emit(node_id, "error", "error", _pf_dn)
+                return f"error: {_pf_dn}"
+            print_ssh_debug_command(ssh_user, ip)
             _ckw3: dict = dict(hostname=ip, username=ssh_user, timeout=15, banner_timeout=15)
             if ssh_pass:
                 _ckw3["password"] = ssh_pass
             if ssh_key and os.path.isfile(ssh_key):
                 _ckw3["key_filename"] = ssh_key
-            await asyncio.get_event_loop().run_in_executor(
+            await _loop_dn.run_in_executor(
                 None,
                 lambda: ssh.connect(**_ckw3),
             )

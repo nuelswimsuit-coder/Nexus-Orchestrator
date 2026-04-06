@@ -75,6 +75,10 @@ from typing import Any, Literal
 
 import structlog
 
+from nexus.shared.deploy_preflight import (
+    preflight_remote_ssh,
+    print_ssh_debug_command,
+)
 from nexus.shared.network.ssh_handler import (
     DEFAULT_WORKER_LAN_HOST,
     clear_known_host,
@@ -146,10 +150,8 @@ def deployer_api_bind() -> tuple[str, int]:
         port = DEPLOYER_API_BIND_PORT
     return host, max(1, min(port, 65535))
 
-# SSH connect + banner (per attempt). Slow WAN/LAN links need headroom; retries
-# below absorb transient failures (Paramiko ``Errno None`` / half-open sockets).
-# Minimum enforced: 15 s (per spec). Current value is 45 s to handle slow LAN paths.
-CONNECT_PHASE_TIMEOUT_SEC = 45.0
+# SSH connect + banner (per attempt). Retries absorb transient failures.
+CONNECT_PHASE_TIMEOUT_SEC = 15.0
 SSH_CONNECT_ATTEMPTS = 3
 SSH_CONNECT_RETRY_DELAY_SEC = 2.0
 
@@ -727,6 +729,10 @@ class DeployerService:
                 candidates.append(p)
         return candidates
 
+    async def _preflight_remote_ssh_executor(self, ip: str) -> str | None:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, preflight_remote_ssh, ip)
+
     async def _connect_ssh_with_deadline(
         self,
         ssh: object,
@@ -1166,6 +1172,11 @@ class DeployerService:
             # ── 1. Connect (timeout + retries) ───────────────────────────────
             await self._emit(node_id, "connecting", "running",
                              f"SSH → {ssh_user}@{ip}")
+            pf_err = await self._preflight_remote_ssh_executor(ip)
+            if pf_err:
+                await self._emit(node_id, "error", "error", pf_err)
+                return f"error: {pf_err}"
+            print_ssh_debug_command(ssh_user, ip)
             try:
                 await self._connect_ssh_with_deadline(
                     ssh_h[0],
@@ -1538,6 +1549,11 @@ class DeployerService:
             await self._emit(
                 node_id, "connecting", "running", f"SSH → {ssh_user}@{ip}"
             )
+            pf_err = await self._preflight_remote_ssh_executor(ip)
+            if pf_err:
+                await self._emit(node_id, "error", "error", pf_err)
+                return f"error: {pf_err}"
+            print_ssh_debug_command(ssh_user, ip)
             try:
                 await self._connect_ssh_with_deadline(
                     ssh_h[0],
@@ -2595,6 +2611,11 @@ class DeployerService:
         try:
             # ── 1. Connect (hard time cap — skip target on expiry) ────────────
             await self._emit(node_id, "connecting", "running", f"SSH → {ssh_user}@{ip}")
+            pf_err = await self._preflight_remote_ssh_executor(ip)
+            if pf_err:
+                await self._emit(node_id, "error", "error", pf_err)
+                return f"error: {pf_err}"
+            print_ssh_debug_command(ssh_user, ip)
             try:
                 await self._connect_ssh_with_deadline(
                     ssh_h[0],
