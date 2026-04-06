@@ -1,8 +1,17 @@
 {
   "workers": [
     {
-      "node_id": "worker_linux",
+      "node_id": "worker_laptop_linux",
       "host": "10.100.102.20",
+      "deploy_root": "/home/yadmin/Desktop/Nexus-Orchestrator"
+    },    {
+      "node_id": "worker_laptop_windows",
+      "host": "10.100.102.28",
+      "deploy_root": "/home/yadmin/Desktop/Nexus-Orchestrator"
+    },
+    {
+      "node_id": "worker_master_windows",
+      "host": "10.100.102.08",
       "deploy_root": "/home/yadmin/Desktop/Nexus-Orchestrator"
     },
     {
