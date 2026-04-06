@@ -248,11 +248,138 @@ async def _fetch_gnews_items(
     return out
 
 
+# Trailing " - outlet" / " | outlet" stripped only when the tail matches a known
+# attribution (avoids eating legitimate hyphenated headlines).
+_DIGEST_OUTLET_TAILS: frozenset[str] = frozenset(
+    {
+        "ynet",
+        "ynet.co.il",
+        "ynetnews",
+        "mako",
+        "n12",
+        "n12 news",
+        "n12news",
+        "channel 12",
+        "calcalist",
+        "globes",
+        "haaretz",
+        "walla",
+        "walla news",
+        "themarker",
+        "the marker",
+        "marker",
+        "reuters",
+        "bbc",
+        "bbc news",
+        "cnn",
+        "cnn news",
+        "bloomberg",
+        "ap",
+        "ap news",
+        "associated press",
+        "google news",
+        "google-news",
+        "googlenews",
+        "gnews",
+        "telegram-news",
+        "telegram news",
+        "israel hayom",
+        "israelhayom",
+        "כלכליסט",
+        "גלובס",
+        "הארץ",
+        "וואלה",
+        "דה מרקר",
+        "ידיעות אחרונות",
+        "ישראל היום",
+        "חדשות 12",
+        "ערוץ 12",
+        "כאן",
+        "כאן 11",
+    }
+)
+
+
+def _normalize_outlet_tail_for_match(tail: str) -> str:
+    t = " ".join((tail or "").split()).strip()
+    if not t:
+        return ""
+    if any("\u0590" <= c <= "\u05FF" for c in t):
+        return t
+    return t.lower()
+
+
+def _tail_looks_like_outlet_attribution(tail: str) -> bool:
+    key = _normalize_outlet_tail_for_match(tail)
+    if not key:
+        return False
+    if key in _DIGEST_OUTLET_TAILS:
+        return True
+    kl = key.lower()
+    if kl in _DIGEST_OUTLET_TAILS:
+        return True
+    if re.fullmatch(r"[a-z0-9][a-z0-9._-]{1,48}", kl) and re.search(
+        r"\.(co\.il|com|net|org)\b", kl
+    ):
+        return True
+    return False
+
+
+_DIGEST_TRAILING_ATTRIB_RE = re.compile(
+    r"\s*[-–—|]\s*(?P<tail>[^\n]+?)\s*$",
+    re.UNICODE,
+)
+
+
+def _sanitize_event_headline(title: str) -> str:
+    """
+    Remove source brackets/tags and common trailing outlet suffixes from a single
+    headline so digest lines read as plain events (no outlet labels).
+    """
+    s = html_module.unescape((title or "").strip())
+    if not s:
+        return ""
+    for _ in range(10):
+        prev = s
+        s = re.sub(r"^\s*[-–—*•]+\s*", "", s)
+        s = re.sub(r"^\s*\[[^\]]{1,120}\]\s*", "", s)
+        s = re.sub(r"^\s*\([^)]{1,120}\)\s*", "", s)
+        if s == prev:
+            break
+    for _ in range(4):
+        m = _DIGEST_TRAILING_ATTRIB_RE.search(s)
+        if not m:
+            break
+        tail = (m.group("tail") or "").strip()
+        if not tail or len(tail) > 100:
+            break
+        if not _tail_looks_like_outlet_attribution(tail):
+            break
+        s = s[: m.start()].rstrip()
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[:500] if s else ""
+
+
+def _sanitize_digest_text_block(text: str) -> str:
+    """Normalize multi-line digest (including legacy '- [src] title' cache rows)."""
+    out: list[str] = []
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[-–—*•]+\s*", "", line)
+        clean = _sanitize_event_headline(line)
+        if clean:
+            out.append(clean)
+    return "\n".join(out)
+
+
 def _format_digest_lines(items: list[NewsItem], *, max_lines: int = 10) -> str:
     lines: list[str] = []
     for it in items[:max_lines]:
-        src = it.source
-        lines.append(f"- [{src}] {it.title}")
+        clean = _sanitize_event_headline(it.title)
+        if clean:
+            lines.append(clean)
     return "\n".join(lines)
 
 
@@ -313,9 +440,11 @@ async def build_tick_news_bundle(
         except Exception as exc:
             log.debug("og_image_resolve_failed", error=str(exc))
 
+    anchor_headline = _sanitize_event_headline(anchor.title)
+
     return TickNewsBundle(
         digest_text=digest_text,
-        anchor_title=anchor.title,
+        anchor_title=anchor_headline,
         anchor_link=anchor.link,
         image_url=img_url,
     )
@@ -336,9 +465,11 @@ def tick_news_bundle_from_dict(data: dict[str, Any]) -> TickNewsBundle:
     if raw_img is not None:
         s = str(raw_img).strip()
         img = s or None
+    digest_raw = str(data.get("digest_text") or "")
+    anchor_raw = str(data.get("anchor_title") or "")
     return TickNewsBundle(
-        digest_text=str(data.get("digest_text") or ""),
-        anchor_title=str(data.get("anchor_title") or ""),
+        digest_text=_sanitize_digest_text_block(digest_raw),
+        anchor_title=_sanitize_event_headline(anchor_raw),
         anchor_link=str(data.get("anchor_link") or ""),
         image_url=img,
     )
