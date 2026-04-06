@@ -74,6 +74,7 @@ nexus-master = "scripts.start_master:main"
 nexus-worker = "scripts.start_worker:main"
 nexus-api = "scripts.start_api:main"
 nexus-telegram = "scripts.start_telegram_bot:main"
+nexus-push = "scripts.nexus_push:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["nexus", "scripts"]

@@ -252,7 +252,20 @@ class DeployerService:
 
         async def _deploy_one(nid: str) -> None:
             async with sem:
-                results[nid] = await self._deploy_node(nid)
+                try:
+                    results[nid] = await self._deploy_node(nid)
+                except Exception as exc:
+                    log.exception(
+                        "deployer_node_unhandled_exception",
+                        node_id=nid,
+                        error=str(exc),
+                    )
+                    detail = f"SSH/deploy crashed for {nid!r}: {exc}"
+                    try:
+                        await self._emit(nid, "error", "error", detail)
+                    except Exception:
+                        pass
+                    results[nid] = f"error: {exc}"
 
         await asyncio.gather(*[_deploy_one(nid) for nid in targets])
         log.info("deployer_done", results=results)
@@ -342,7 +355,7 @@ class DeployerService:
                     node_id=node_id,
                     detail=_pf_sp[:500],
                 )
-                return "ok"
+                return f"skipped: {_pf_sp}"
             print_ssh_debug_command(ssh_user, ip)
             _connect_kwargs: dict = dict(hostname=ip, username=ssh_user, timeout=15, banner_timeout=15)
             if ssh_pass:
@@ -575,7 +588,7 @@ class DeployerService:
                     node_id=node_id,
                     detail=_pf_sw[:500],
                 )
-                return "ok"
+                return f"skipped: {_pf_sw}"
 
             print_ssh_debug_command(ssh_user, ip)
 

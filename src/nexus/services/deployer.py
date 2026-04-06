@@ -1187,7 +1187,7 @@ class DeployerService:
                     node_id=node_id,
                     detail=(pf_err or "")[:500],
                 )
-                return "ok"
+                return f"skipped: {pf_err}"
             print_ssh_debug_command(ssh_user, ip)
             try:
                 await self._connect_ssh_with_deadline(

@@ -38,6 +38,9 @@ console = Console()
 # ── Config ───────────────────────────────────────────────────────────────────
 
 WORKER_IP: str           = os.getenv("WORKER_IP", "")
+# Comma-separated list of Linux worker IPs. When set, each host is deployed in a
+# loop: SSH failures on one host are logged and the next host is tried.
+WORKER_IPS: str          = os.getenv("WORKER_IPS", "").strip()
 SSH_USER: str            = os.getenv("WORKER_SSH_USER", "")
 SSH_PASSWORD: str        = os.getenv("WORKER_SSH_PASSWORD", "")
 DEPLOY_ROOT_LINUX: str   = os.getenv("WORKER_DEPLOY_ROOT_LINUX", "/home/yadmin/Desktop/Nexus-Orchestrator")
@@ -183,14 +186,22 @@ def step_package(tmp_dir: Path) -> Path:
 
 # ── Step 2: Deploy → Linux ────────────────────────────────────────────────────
 
-def step_deploy_linux(zip_path: Path, skip_install: bool = False) -> bool:
+def step_deploy_linux(
+    zip_path: Path,
+    skip_install: bool = False,
+    *,
+    target_ip: str | None = None,
+) -> bool:
     """Transfer archive to Linux worker and install dependencies."""
+    host = (target_ip or WORKER_IP or "").strip()
     console.print()
-    console.print(Rule(f"[bold cyan]🚀  Step 2 — Deploying to Linux Node ({WORKER_IP})[/bold cyan]"))
+    console.print(Rule(f"[bold cyan]🚀  Step 2 — Deploying to Linux Node ({host})[/bold cyan]"))
 
-    ssh = _open_ssh(WORKER_IP, SSH_USER, SSH_PASSWORD)
+    ssh = _open_ssh(host, SSH_USER, SSH_PASSWORD)
     if ssh is None:
-        console.print("    [bold red]⚠  Linux node is OFFLINE — skipping.[/bold red]")
+        console.print(
+            f"    [bold red]⚠  Linux node {host} — SSH unavailable (offline or port 22 closed) — skipping.[/bold red]"
+        )
         return False
 
     remote_zip = f"{DEPLOY_ROOT_LINUX}/{ARCHIVE_NAME}"
@@ -344,8 +355,8 @@ def step_finalize(linux_ok: bool, windows_ok: bool) -> None:
     if linux_ok or windows_ok:
         console.print(
             Panel(
-                "[bold green]✅  Cluster Sync Complete![/bold green]\n\n"
-                "Worker processes are now running the latest code.\n"
+                "[bold green]✅  Cluster sync finished successfully for at least one node.[/bold green]\n\n"
+                "Worker processes are now running the latest code on the hosts that synced.\n"
                 "[yellow]→ Use the Dashboard's [bold]'Restart Cluster'[/bold] button (or "
                 "re-run the worker scripts) to apply changes.[/yellow]",
                 title="[green]Deployment Successful[/green]",
@@ -409,9 +420,24 @@ def main() -> None:
         # Step 1 — always package
         zip_path = step_package(tmp_dir)
 
-        # Step 2 — Linux
+        # Step 2 — Linux (optional multi-host via WORKER_IPS)
         if deploy_linux:
-            linux_ok = step_deploy_linux(zip_path, skip_install=args.skip_install)
+            if WORKER_IPS:
+                parts = [p.strip() for p in WORKER_IPS.split(",") if p.strip()]
+                console.print(
+                    f"\n    [cyan]WORKER_IPS[/cyan] set — deploying Linux to {len(parts)} host(s) sequentially."
+                )
+                linux_ok = False
+                for idx, ip in enumerate(parts):
+                    console.print(f"\n    [dim]— Linux target {idx + 1}/{len(parts)}: {ip}[/dim]")
+                    if step_deploy_linux(zip_path, skip_install=args.skip_install, target_ip=ip):
+                        linux_ok = True
+                    else:
+                        console.print(
+                            f"    [yellow]↪ Continuing with next worker after failure on {ip}[/yellow]"
+                        )
+            else:
+                linux_ok = step_deploy_linux(zip_path, skip_install=args.skip_install)
         else:
             console.print("\n    [dim]Linux deployment skipped (--windows-only)[/dim]")
 

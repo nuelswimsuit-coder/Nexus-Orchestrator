@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# POSIX wrapper: same behavior as ``pip install`` console script ``nexus-push``.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+exec python3 "$ROOT/scripts/nexus_push.py" "$@"

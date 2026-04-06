@@ -47,6 +47,11 @@ except Exception:
     pass
 
 try:
+    from nexus.worker.tasks import swarm_onboarding as _swarm_onboarding  # noqa: F401
+except Exception:
+    pass
+
+try:
     from nexus.worker.tasks import retention_monitor as _retention_monitor  # noqa: F401
 except Exception:
     pass
