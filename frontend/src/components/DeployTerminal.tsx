@@ -167,9 +167,6 @@ export default function DeployTerminal() {
         const failed = ev.status === "error" || ev.step === "error";
         const succeeded = ev.step === "done" && ev.status === "done";
         if (failed || succeeded) {
-          // #region agent log
-          fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "58e788" }, body: JSON.stringify({ sessionId: "58e788", location: "DeployTerminal.tsx:onmessage:terminal", message: "SSE terminal event", data: { failed, succeeded, step: ev.step, status: ev.status }, timestamp: Date.now(), hypothesisId: "H2", runId: "pre-fix" }) }).catch(() => {});
-          // #endregion
           es.close();
           esRef.current = null;
           setUploadProg(null);
@@ -180,9 +177,6 @@ export default function DeployTerminal() {
     };
 
     es.onerror = () => {
-      // #region agent log
-      fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "58e788" }, body: JSON.stringify({ sessionId: "58e788", location: "DeployTerminal.tsx:onerror", message: "SSE onerror", data: { phase: phaseRef.current }, timestamp: Date.now(), hypothesisId: "H2", runId: "pre-fix" }) }).catch(() => {});
-      // #endregion
       // Only treat as error if we're still in running state
       if (phaseRef.current === "running") {
         es.close();
@@ -232,9 +226,6 @@ export default function DeployTerminal() {
             clearInterval(statusPollRef.current);
             statusPollRef.current = null;
           }
-          // #region agent log
-          fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "58e788" }, body: JSON.stringify({ sessionId: "58e788", location: "DeployTerminal.tsx:poll:settle", message: "status poll terminal", data: { ok, failed, step: ev.step, status: ev.status }, timestamp: Date.now(), hypothesisId: "H1,H2", runId: "pre-fix" }) }).catch(() => {});
-          // #endregion
           esRef.current?.close();
           esRef.current = null;
           setUploadProg(null);

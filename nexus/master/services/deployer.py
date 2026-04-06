@@ -79,17 +79,6 @@ def _agent_dbg_deploy(payload: dict) -> None:
         pass
 
 
-def _debug_58e788(payload: dict) -> None:
-    try:
-        import time as _time
-
-        row = {"sessionId": "58e788", "timestamp": int(_time.time() * 1000), **payload}
-        with open(NEXUS_ROOT / "debug-58e788.log", "a", encoding="utf-8") as _f:
-            _f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-
-
 # #endregion
 
 # Directories to sync (relative to project root)
@@ -563,17 +552,6 @@ class DeployerService:
             )
             # #endregion
             if _pf_sw:
-                # #region agent log
-                _debug_58e788(
-                    {
-                        "location": "deployer.py:sync_to_worker:preflight_fail",
-                        "message": "emitting error after preflight fail",
-                        "hypothesisId": "H4",
-                        "runId": "pre-fix",
-                        "data": {"node_id": node_id, "ip": ip, "err": _pf_sw},
-                    }
-                )
-                # #endregion
                 await self._emit(node_id, "error", "error", _pf_sw)
                 return f"error: {_pf_sw}"
 
@@ -652,34 +630,12 @@ class DeployerService:
                              "start_worker.py launched in background")
             await self._emit(node_id, "done", "done",
                              "Deployment complete — Worker Live ✓")
-            # #region agent log
-            _debug_58e788(
-                {
-                    "location": "deployer.py:sync_to_worker:return_ok",
-                    "message": "sync_to_worker success",
-                    "hypothesisId": "H3,H4",
-                    "runId": "pre-fix",
-                    "data": {"node_id": node_id},
-                }
-            )
-            # #endregion
             return "ok"
 
         except Exception as exc:
             detail = str(exc)
             log.exception("deployer_sync_error", node_id=node_id, error=detail)
             await self._emit(node_id, "error", "error", detail)
-            # #region agent log
-            _debug_58e788(
-                {
-                    "location": "deployer.py:sync_to_worker:except",
-                    "message": "sync_to_worker exception path",
-                    "hypothesisId": "H3,H4",
-                    "runId": "pre-fix",
-                    "data": {"node_id": node_id, "detail": detail[:400]},
-                }
-            )
-            # #endregion
             return f"error: {detail}"
         finally:
             ssh.close()
