@@ -418,6 +418,12 @@ ISRAELI_NEWS_SYSTEM_PROMPT = (
     "5. Do not sound poetic, formal, or like a translated article. Express cynical, stressed, or typical Israeli attitudes towards news."
 )
 
+ISRAELI_NEWS_PRIVILEGED_REPLY_PROMPT = (
+    "You are an Israeli Telegram user. The message you reply to was sent by a group OWNER or ADMIN.\n"
+    "Write 1-10 words in casual Hebrew. Be respectful and neutral — no arguing, insults, or profanity.\n"
+    "Sound human; minor typos OK; no hashtags."
+)
+
 _REDIS_SWARM_PROFILE_GATE = "nexus:swarm:israeli:profile_gate"
 _THREAD_ID_CAP = 5
 _THREAD_REACTION_EMOJIS = ["👍", "🤦‍♂️", "🤬"]
@@ -729,6 +735,33 @@ async def _fetch_group_transcript_and_meta(
         await client.disconnect()
 
 
+async def _anchor_sender_is_privileged(
+    session_file: pathlib.Path,
+    api_id: int,
+    api_hash: str,
+    group_link: str,
+    message_id: int | None,
+) -> bool:
+    if not message_id or not api_id or not (api_hash or "").strip():
+        return False
+    from telethon import TelegramClient  # type: ignore[import-untyped]
+
+    session_path = str(session_file.with_suffix(""))
+    client = TelegramClient(session_path, api_id, api_hash)
+    await client.connect()
+    try:
+        if not await client.is_user_authorized():
+            return False
+        target = await _ensure_swarm_target_entity(client, group_link)
+        from nexus.services.tg_participant_privilege import sender_of_message_is_owner_or_admin
+
+        return await sender_of_message_is_owner_or_admin(client, target, int(message_id))
+    except Exception:
+        return False
+    finally:
+        await client.disconnect()
+
+
 async def _generate_community_message(
     transcript: str,
     meta_newest_first: list[dict[str, Any]],
@@ -740,6 +773,7 @@ async def _generate_community_message(
     forced_reply_to: int | None = None,
     news_digest: str = "",
     anchor_headline: str = "",
+    privileged_reply_target: bool = False,
 ) -> tuple[str, int | None]:
     """Short colloquial Hebrew line; reply_to is forced for replier role (Redis thread)."""
     angle = random.choice(_NEWS_ANGLES)
@@ -783,6 +817,11 @@ async def _generate_community_message(
         )
     if ah:
         user_obj["preferred_anchor_headline"] = ah[:400]
+    if privileged_reply_target and role == "replier":
+        user_obj["admin_reply_constraint"] = (
+            "ההודעה שאתה משיב לה נשלחה על ידי מנהל או בעלים של הקבוצה. "
+            "היה מנומס, קצר, בלי ויכוח, בלי קללות ובלי התנגדות אגרסיבית."
+        )
     user_payload = json.dumps(user_obj, ensure_ascii=False)
 
     try:
@@ -792,7 +831,12 @@ async def _generate_community_message(
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"gemini-pro:generateContent?key={_GEMINI_KEY}"
         )
-        prompt = f"{ISRAELI_NEWS_SYSTEM_PROMPT}\n\nהקשר JSON:\n{user_payload}"
+        base_sys = (
+            ISRAELI_NEWS_PRIVILEGED_REPLY_PROMPT
+            if privileged_reply_target and role == "replier"
+            else ISRAELI_NEWS_SYSTEM_PROMPT
+        )
+        prompt = f"{base_sys}\n\nהקשר JSON:\n{user_payload}"
         body = json.dumps(
             {
                 "contents": [{"parts": [{"text": prompt}]}],
@@ -1122,6 +1166,11 @@ class CommunityEngine:
                 anchor_txt = (
                     _anchor_from_transcript(transcript, forced_reply) if forced_reply else None
                 )
+                privileged_reply = False
+                if forced_reply and api_id and api_hash:
+                    privileged_reply = await _anchor_sender_is_privileged(
+                        session_file, api_id, api_hash, group_link, forced_reply
+                    )
                 message, reply_to = await _generate_community_message(
                     transcript,
                     meta_nf,
@@ -1132,6 +1181,7 @@ class CommunityEngine:
                     forced_reply_to=forced_reply,
                     news_digest=news_digest_str,
                     anchor_headline=news_anchor_str,
+                    privileged_reply_target=privileged_reply,
                 )
                 message, msg_parse_mode = append_article_link_to_text(
                     message,
@@ -1241,8 +1291,17 @@ class CommunityEngine:
                         async with client.action(target, "typing"):
                             await asyncio.sleep(random.uniform(2.0, 8.0))
                         if photo_bytes:
-                            fname = telegram_image_filename_from_bytes(photo_bytes)
-                            bio = BytesIO(photo_bytes)
+                            from nexus.services.media_opsec import (
+                                make_image_upload_salt_seed,
+                                prepare_jpeg_png_for_telegram_upload,
+                            )
+
+                            _salt = make_image_upload_salt_seed(session_file.stem)
+                            _pb, _ = prepare_jpeg_png_for_telegram_upload(
+                                photo_bytes, salt_seed=_salt
+                            )
+                            fname = telegram_image_filename_from_bytes(_pb)
+                            bio = BytesIO(_pb)
                             try:
                                 sent = await client.send_file(
                                     target,

@@ -194,6 +194,8 @@ async def compose_chatter_line(
     message_index_map: list[dict[str, Any]],
     news_digest: str = "",
     anchor_headline: str = "",
+    privileged_reply_target: bool = False,
+    forced_reply_to_id: int | None = None,
 ) -> dict[str, Any]:
     """
     Produce one chat line with optional reply and @mentions.
@@ -211,6 +213,15 @@ async def compose_chatter_line(
         "Output ONLY JSON: {\"text\":\"message\",\"reply_to_id\":null or integer,"
         "\"mention_usernames\":[\"without@\"]}"
     )
+    if privileged_reply_target:
+        sys_prompt += (
+            " The message you reply to is from a group owner or admin: never argue, insult, "
+            "or use profanity; stay neutral, brief, and respectful."
+        )
+    if forced_reply_to_id is not None:
+        sys_prompt += (
+            f" You MUST set reply_to_id in your JSON to exactly {int(forced_reply_to_id)}."
+        )
     user_obj: dict[str, Any] = {
         "emerging_identity": emerging_identity,
         "discussion_topic": topic,
@@ -220,6 +231,8 @@ async def compose_chatter_line(
         "other_participant_handles": other_handles,
         "message_ids_newest_first": message_index_map[:25],
     }
+    if forced_reply_to_id is not None:
+        user_obj["required_reply_to_id"] = int(forced_reply_to_id)
     nd = (news_digest or "").strip()
     if nd:
         user_obj["news_from_last_24h"] = nd[:8000]

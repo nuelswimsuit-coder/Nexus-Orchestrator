@@ -17,6 +17,7 @@ from io import BytesIO
 from typing import Any
 
 import structlog
+from pathlib import Path
 
 from nexus.agents.modules.community_vibe import (
     assign_personas,
@@ -24,6 +25,7 @@ from nexus.agents.modules.community_vibe import (
     compose_chatter_line,
     refresh_emerging_topic,
 )
+from nexus.services.media_opsec import make_image_upload_salt_seed, prepare_jpeg_png_for_telegram_upload
 from nexus.services.recent_news_digest import (
     TickNewsBundle,
     append_article_link_to_text,
@@ -32,6 +34,7 @@ from nexus.services.recent_news_digest import (
     telegram_image_filename_from_bytes,
 )
 from nexus.services.tg_message_text import llm_media_prefix_for_message, telethon_display_text
+from nexus.services.tg_participant_privilege import sender_of_message_is_owner_or_admin
 from nexus.agents.task_registry import registry
 
 log = structlog.get_logger(__name__)
@@ -420,6 +423,37 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                 valid_ids = {m["id"] for m in id_map}
                 if reply_id not in valid_ids:
                     reply_id = None
+                elif reply_id is not None:
+                    try:
+                        if await sender_of_message_is_owner_or_admin(client, entity, reply_id):
+                            line = await compose_chatter_line(
+                                api_key,
+                                emerging_identity=state["emerging_identity"],
+                                topic=topic,
+                                hooks=hooks,
+                                transcript=transcript,
+                                speaker=speaker,
+                                other_handles=[f"@{h}" for h in other_handles],
+                                message_index_map=id_map,
+                                news_digest=nd,
+                                anchor_headline=ah,
+                                privileged_reply_target=True,
+                                forced_reply_to_id=reply_id,
+                            )
+                            text = str(line.get("text", "")).strip()
+                            text, link_parse_mode = append_article_link_to_text(
+                                text,
+                                (news_bundle.anchor_link or "").strip(),
+                                title=(ah or None),
+                            )
+                            new_r = line.get("reply_to_id")
+                            try:
+                                new_r = int(new_r) if new_r is not None else reply_id
+                            except Exception:
+                                new_r = reply_id
+                            reply_id = new_r if new_r in valid_ids else reply_id
+                    except Exception as exc:
+                        log.debug("warmer_privileged_reply_regen_failed", error=str(exc))
 
                 message_id: int | None = None
                 if text and action == "tick":
@@ -435,6 +469,10 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                         post_entity = await poster.get_entity(int(group_id))
                         try:
                             if photo_bytes:
+                                salt = make_image_upload_salt_seed(Path(session_path).stem)
+                                photo_bytes, _ = prepare_jpeg_png_for_telegram_upload(
+                                    photo_bytes, salt_seed=salt
+                                )
                                 fname = telegram_image_filename_from_bytes(photo_bytes)
                                 bio = BytesIO(photo_bytes)
                                 try:

@@ -14,6 +14,18 @@ import asyncio
 import json
 import os
 import sys
+from pathlib import Path
+
+
+def _nexus_repo_root_for_media_opsec() -> Path | None:
+    p = Path(__file__).resolve().parent
+    for _ in range(12):
+        if (p / "nexus" / "services" / "media_opsec.py").is_file():
+            return p
+        if p.parent == p:
+            break
+        p = p.parent
+    return None
 
 
 def main() -> None:
@@ -39,7 +51,7 @@ def main() -> None:
 
 async def _post(group: str, text: str, image: str | None) -> dict:
     try:
-        from pathlib import Path
+        from io import BytesIO
 
         from app.services.telegram.manager import SessionManager  # type: ignore[import]
         from app.utils.paths import SESSIONS_DIR  # type: ignore[import]
@@ -57,7 +69,31 @@ async def _post(group: str, text: str, image: str | None) -> dict:
         entity = await client.get_entity(group)
 
         if image and Path(image).exists():
-            msg = await client.send_file(entity, image, caption=text)
+            img_path = Path(image)
+            root = _nexus_repo_root_for_media_opsec()
+            if root is not None:
+                if str(root) not in sys.path:
+                    sys.path.insert(0, str(root))
+                try:
+                    from nexus.services.media_opsec import (  # type: ignore[import-untyped]
+                        make_image_upload_salt_seed,
+                        prepare_jpeg_png_for_telegram_upload,
+                    )
+                    from nexus.services.recent_news_digest import (  # type: ignore[import-untyped]
+                        telegram_image_filename_from_bytes,
+                    )
+
+                    raw_b = img_path.read_bytes()
+                    salt = make_image_upload_salt_seed(img_path.stem)
+                    raw_b, _ = prepare_jpeg_png_for_telegram_upload(raw_b, salt_seed=salt)
+                    fn = telegram_image_filename_from_bytes(raw_b)
+                    msg = await client.send_file(
+                        entity, file=(fn, BytesIO(raw_b)), caption=text
+                    )
+                except Exception:
+                    msg = await client.send_file(entity, str(img_path), caption=text)
+            else:
+                msg = await client.send_file(entity, str(img_path), caption=text)
         else:
             msg = await client.send_message(entity, text)
 

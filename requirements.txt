@@ -27,6 +27,7 @@ telethon>=1.36
 PySocks>=1.7.1
 cryptography>=42.0
 Pillow>=10.0
+mutagen>=1.47
 
 # ── Telegram Bot API (notification bot) ──────────────────────────────────────
 aiogram>=3.20

@@ -23,7 +23,9 @@ from urllib.parse import quote
 import structlog
 
 from nexus.modules.community_vibe import parse_json_object
+from nexus.services.media_opsec import make_image_upload_salt_seed, prepare_jpeg_png_for_telegram_upload
 from nexus.services.tg_message_text import llm_media_prefix_for_message
+from nexus.services.tg_participant_privilege import sender_of_message_is_owner_or_admin
 from nexus.worker.services.israeli_telegram_profile import ensure_israeli_factory_profile
 from nexus.worker.services.tg_session import (
     async_telegram_client,
@@ -153,6 +155,21 @@ AMCHA_STANCES_HE = [
     "עמדה לתגובה שלך: תעשה בדיחה על זה.",
     "עמדה לתגובה שלך: תשנה נושא בפתאומיות (אבל עדיין טבעי לקבוצה).",
 ]
+
+AMCHA_STANCES_PRIVILEGED_HE = [
+    "עמדה לתגובה שלך: היה מנומס וקצר; אל תתעמת ואל תיכנס לוויכוח.",
+    "עמדה לתגובה שלך: הסכם בעדינות או הוסף הערה חיובית קטנה.",
+    "עמדה לתגובה שלך: שאל שאלה נחמדה או הודה על השיתוף בלי להתנגד.",
+]
+
+AMCHA_PRIVILEGED_SYSTEM_PROMPT = (
+    "You are a casual Israeli Telegram group member. The line you reply to is from a group OWNER or ADMIN.\n"
+    "RULES:\n"
+    "- Be brief, friendly, and respectful. No arguing, no insults, no profanity or slurs.\n"
+    "- Do not disagree aggressively; stay neutral, lightly agree, or ask a gentle follow-up.\n"
+    "- Informal Hebrew is OK ('וואלה', 'אחי') but never confrontational.\n"
+    "- Do NOT sound like an AI."
+)
 
 FACTORY_TOPICS = [
     "קריפטו ומטבעות דיגיטליים — ביטקוין, אלטקוינים, בורסות",
@@ -523,12 +540,24 @@ async def _redis_recent_outgoing_push(redis: Any, fragment: str) -> None:
         log.debug("factory_recent_outgoing_push_failed", error=str(exc))
 
 
-def _build_amcha_system_prompt(session_base: str, persona_seed: str | None) -> str:
+def _build_amcha_system_prompt(
+    session_base: str, persona_seed: str | None, *, privileged_anchor: bool = False
+) -> str:
     """
     System prompt: base Israeli swarm rules, few-shot BAD/GOOD examples,
     deterministic archetype + geo from MD5(session), and optional uniqueness seed.
     """
     arch, geo = _deterministic_persona_axes(session_base)
+    if privileged_anchor:
+        parts = [
+            AMCHA_PRIVILEGED_SYSTEM_PROMPT,
+            f"PERSONA (קבוע לחשבון — קול עקבי, אבל מכבד מול מנהלים):\n{arch}\n{geo}",
+        ]
+        if (persona_seed or "").strip():
+            parts.append(
+                f"Unique seed {persona_seed.strip()}: stay respectful to admins; still vary wording."
+            )
+        return "\n\n".join(parts)
     parts = [
         AMCHA_ISRAEL_SYSTEM_PROMPT,
         AMCHA_FEW_SHOT_BLOCK,
@@ -807,10 +836,16 @@ async def _generate_amcha_turn(
     persona_seed: str | None = None,
     rich_media_mode: bool = False,
     global_recent_outgoing: list[str] | None = None,
+    privileged_anchor: bool = False,
 ) -> dict[str, Any]:
     anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
     anti += _global_outgoing_prompt_suffix(list(global_recent_outgoing or []))
-    system_prompt = _build_amcha_system_prompt(session_base, persona_seed)
+    system_prompt = _build_amcha_system_prompt(
+        session_base, persona_seed, privileged_anchor=privileged_anchor
+    )
+    effective_stance = (
+        random.choice(AMCHA_STANCES_PRIVILEGED_HE) if privileged_anchor else stance_he
+    )
 
     if rich_media_mode:
         json_schema = (
@@ -823,6 +858,10 @@ async def _generate_amcha_turn(
             "ב-text/text_with_emoji: מלא message_text (ועדיף גם primary_message באותו תוכן). "
             "article_url ו-link_label — מחרוזות; כשאין קישור חדשותי השאר ריק."
         )
+        if privileged_anchor:
+            json_schema += (
+                " חובה: action_type חייב להיות text או text_with_emoji בלבד (בלי sticker/gif/image)."
+            )
     else:
         json_schema = (
             "החזר אך ורק JSON תקף (בלי טקסט נוסף) במבנה: "
@@ -854,14 +893,14 @@ async def _generate_amcha_turn(
     if role == "opener" and not news_opener:
         ctx = (active_topic_line or "").strip()[:400] or topic
         user_he = (
-            f"{last_five_block}\n\n{stance_he}\n\n"
+            f"{last_five_block}\n\n{effective_stance}\n\n"
             f'הקבוצה כבר רותחת סביב: "{ctx}". '
             "עוד משפט או שניים — זווית אחרת, לא פורמלי.\n"
             f"{opener_news_clause}\n{typo_rule}\n{anti}\n{json_schema}"
         )
     elif role == "opener" and news_opener:
         user_he = (
-            f"{last_five_block}\n\n{stance_he}\n\n"
+            f"{last_five_block}\n\n{effective_stance}\n\n"
             f"הנחיה: שמועה/פלאש/מה זה עכשיו — קבוצת חדשות בטלגרם. "
             f'רקע רחב בלבד: "{topic}".\n'
             f"{opener_news_clause}\n{typo_rule}\n{anti}\n{json_schema}"
@@ -873,7 +912,7 @@ async def _generate_amcha_turn(
         else:
             head = ""
         user_he = (
-            f"{last_five_block}\n\n{stance_he}\n\n"
+            f"{last_five_block}\n\n{effective_stance}\n\n"
             f"{head}"
             f'אתה משיב להודעה/שורה הזו (או לקונטקסט שלה): "{ap}"\n'
             f"{typo_rule}\n{anti}\n{json_schema}"
@@ -890,6 +929,20 @@ async def _generate_amcha_turn(
         presence_penalty = random.uniform(0.35, 0.5)
         max_tokens = 320
 
+    def _coerce_rich_respectful_media(d: dict[str, Any]) -> dict[str, Any]:
+        if not privileged_anchor:
+            return d
+        at = str(d.get("action_type") or "").strip().lower()
+        if at not in ("sticker", "gif", "image"):
+            return d
+        mt = str(d.get("message_text") or d.get("primary_message") or "וואלה").strip() or "וואלה"
+        return {
+            **d,
+            "action_type": "text",
+            "message_text": mt,
+            "primary_message": mt,
+        }
+
     def _postprocess_llm_dict(out: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(out, dict):
             return None
@@ -897,10 +950,14 @@ async def _generate_amcha_turn(
             at = str(out.get("action_type") or "").strip().lower().strip('"').strip("'")
             if at in ("sticker", "gif", "image"):
                 normalized = _normalize_rich_turn(out)
-                return _apply_anti_robot_to_turn_dict(normalized, rich_media_mode=True)
+                return _coerce_rich_respectful_media(
+                    _apply_anti_robot_to_turn_dict(normalized, rich_media_mode=True)
+                )
             if out.get("primary_message") or out.get("text") or str(out.get("message_text") or "").strip():
                 normalized = _normalize_rich_turn(out)
-                return _apply_anti_robot_to_turn_dict(normalized, rich_media_mode=True)
+                return _coerce_rich_respectful_media(
+                    _apply_anti_robot_to_turn_dict(normalized, rich_media_mode=True)
+                )
             return None
         if out.get("primary_message") or out.get("text"):
             normalized = _normalize_amcha_dict(out)
@@ -976,6 +1033,8 @@ async def _generate_amcha_turn(
             log.warning("factory_openai_failed", error=str(exc))
 
     fb_pm = "וואלה הזייה אחי" if role == "opener" else "אין מצב"
+    if privileged_anchor:
+        fb_pm = "מעניין, תודה על השיתוף" if role == "replier" else "וואלה מעניין"
     if rich_media_mode:
         return _normalize_rich_turn(
             {
@@ -1345,6 +1404,13 @@ async def _send_rich_factory_messages(
             msg_obj = None
             if data:
                 try:
+                    salt_raw = turn.get("_media_salt_seed")
+                    salt_seed = salt_raw if isinstance(salt_raw, (bytes, bytearray)) else None
+                    if salt_seed is None:
+                        salt_seed = make_image_upload_salt_seed(persona_seed or "factory")
+                    data, fname = prepare_jpeg_png_for_telegram_upload(
+                        data, salt_seed=bytes(salt_seed)
+                    )
                     bio = BytesIO(data)
                     msg_obj = await client.send_file(
                         entity,
@@ -1925,6 +1991,13 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                     topic = random.choice(FACTORY_TOPICS)
                     stance = random.choice(AMCHA_STANCES_HE)
                     typo_must = random.random() < 0.15
+                    privileged_burst = False
+                    try:
+                        privileged_burst = await sender_of_message_is_owner_or_admin(
+                            client, ent, reply_mid
+                        )
+                    except Exception:
+                        privileged_burst = False
                     turn = await _generate_amcha_turn(
                         api_key,
                         topic,
@@ -1940,6 +2013,7 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         opener_fresh_event=False,
                         news_opener=False,
                         persona_seed=_session_persona_seed(session_base),
+                        privileged_anchor=privileged_burst,
                     )
                     body = _finalize_primary_message(turn["primary_message"])
                     await asyncio.sleep(
@@ -2129,6 +2203,15 @@ async def _factory_converse_slot(
                 except Exception:
                     anchor_preview = None
 
+            privileged_anchor = False
+            if reply_to_id is not None:
+                try:
+                    privileged_anchor = await sender_of_message_is_owner_or_admin(
+                        client, ent, reply_to_id
+                    )
+                except Exception:
+                    privileged_anchor = False
+
             turn = await _generate_amcha_turn(
                 api_key,
                 topic,
@@ -2146,8 +2229,10 @@ async def _factory_converse_slot(
                 persona_seed=persona,
                 rich_media_mode=True,
                 global_recent_outgoing=global_recent,
+                privileged_anchor=privileged_anchor,
             )
             turn["_persona_seed"] = persona
+            turn["_media_salt_seed"] = make_image_upload_salt_seed(session_base)
 
             use_md = False
             summary_line = _finalize_primary_message(
