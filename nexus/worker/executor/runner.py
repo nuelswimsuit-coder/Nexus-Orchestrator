@@ -66,6 +66,15 @@ _NON_RETRYABLE = (KeyError, ValueError, TypeError, NotImplementedError)
 _BACKOFF_DELAYS = [2.0, 4.0, 8.0]
 MAX_RETRIES = int(os.getenv("TASK_MAX_RETRIES", "3"))
 
+try:
+    from telethon.errors import FloodWaitError as _TelethonFloodWaitError
+    from telethon.errors import UserDeactivatedBanError as _TelethonUserDeactivatedBanError
+    from telethon.errors import UserDeactivatedError as _TelethonUserDeactivatedError
+except ImportError:
+    _TelethonFloodWaitError = None
+    _TelethonUserDeactivatedError = None
+    _TelethonUserDeactivatedBanError = None
+
 
 async def run_task(
     task_payload: dict[str, Any],
@@ -208,6 +217,51 @@ async def run_task(
             }
 
         except Exception as exc:
+            if (
+                _TelethonUserDeactivatedError is not None
+                and isinstance(
+                    exc,
+                    (_TelethonUserDeactivatedError, _TelethonUserDeactivatedBanError),
+                )
+            ):
+                dur = (datetime.now(timezone.utc) - started_at).total_seconds()
+                log.warning(
+                    "task_telethon_user_deactivated",
+                    task_id=task.task_id,
+                    task_type=task.task_type,
+                    project_id=task.project_id,
+                    worker_id=worker_id,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                return {
+                    "output": None,
+                    "error": f"TELETHON_USER_DEACTIVATED: {exc}",
+                    "worker_id": worker_id,
+                    "duration_seconds": dur,
+                    "project_id": task.project_id,
+                    "attempts": attempt,
+                }
+
+            if _TelethonFloodWaitError is not None and isinstance(exc, _TelethonFloodWaitError):
+                last_error = str(exc)
+                wait_s = min(int(getattr(exc, "seconds", 60) or 60), 300)
+                remaining = MAX_RETRIES - attempt
+                if remaining > 0:
+                    log.warning(
+                        "task_telethon_flood_wait_retry",
+                        task_id=task.task_id,
+                        task_type=task.task_type,
+                        project_id=task.project_id,
+                        worker_id=worker_id,
+                        attempt=attempt,
+                        max_retries=MAX_RETRIES,
+                        retry_in_s=wait_s,
+                        error=last_error,
+                    )
+                    await asyncio.sleep(wait_s)
+                    continue
+
             last_error = str(exc)
             remaining = MAX_RETRIES - attempt
 

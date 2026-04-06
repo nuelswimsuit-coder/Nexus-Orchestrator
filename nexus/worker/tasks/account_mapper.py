@@ -40,7 +40,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
 
 import psutil
 import structlog
@@ -48,6 +47,10 @@ import structlog
 from nexus.shared.staged_accounts import (
     discover_session_meta_json_files,
     staged_accounts_root,
+)
+from nexus.shared.tg_connection import (
+    parse_residential_proxy_pool,
+    telethon_connect_kwargs_for_meta_json,
 )
 from nexus.worker.task_registry import registry
 
@@ -73,48 +76,6 @@ _PERM_KEYS = (
     "has_left",
     "is_banned",
 )
-
-
-def _parse_proxy_pool() -> list[str]:
-    raw = (os.getenv("NEXUS_RESIDENTIAL_PROXY_POOL") or "").strip()
-    if raw:
-        parts = [p.strip() for p in raw.split(",") if p.strip()]
-        if parts:
-            return parts
-    single = (os.getenv("NEXUS_RESIDENTIAL_PROXY_URL") or "").strip()
-    return [single] if single else []
-
-
-def _proxy_tuple_from_url(url: str) -> tuple[Any, ...]:
-    try:
-        import socks  # type: ignore[import-untyped]
-    except ImportError as exc:
-        raise ImportError(
-            "SOCKS proxy requested but PySocks is not installed — "
-            "run: pip install PySocks"
-        ) from exc
-
-    parsed = urlparse(url)
-    scheme = (parsed.scheme or "").lower()
-    if scheme not in ("socks5", "socks5h"):
-        raise ValueError(
-            f"Unsupported proxy scheme {scheme!r}; use socks5 or socks5h"
-        )
-
-    host = parsed.hostname or ""
-    port = parsed.port or 1080
-    user = unquote(parsed.username) if parsed.username else None
-    password = unquote(parsed.password) if parsed.password else None
-    rdns = scheme == "socks5h"
-
-    return (socks.SOCKS5, host, port, rdns, user, password)
-
-
-def _proxy_for_index(pool: list[str], index: int) -> tuple[Any, ...] | None:
-    if not pool:
-        return None
-    url = pool[index % len(pool)]
-    return _proxy_tuple_from_url(url)
 
 
 def _controlled_warmup_delay_s(
@@ -228,7 +189,6 @@ def _count_premium_members(
 
 def _map_one_session(
     meta_json: Path,
-    proxy: tuple[Any, ...] | None,
     premium_scan_limit: int | None,
 ) -> dict[str, Any]:
     from telethon.sync import TelegramClient  # type: ignore
@@ -242,7 +202,8 @@ def _map_one_session(
     session_file = str(meta_json.with_suffix(""))
 
     session_label = meta_json.stem
-    client = TelegramClient(session_file, api_id, api_hash, proxy=proxy)
+    t_kw = telethon_connect_kwargs_for_meta_json(meta_json)
+    client = TelegramClient(session_file, api_id, api_hash, **t_kw)
     client.connect()
     if not client.is_user_authorized():
         client.disconnect()
@@ -340,7 +301,7 @@ def _run_map_job(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    pool = _parse_proxy_pool()
+    pool = parse_residential_proxy_pool()
     require_proxy = (os.getenv("NEXUS_MAPPER_REQUIRE_PROXY") or "").strip().lower() in (
         "1",
         "true",
@@ -392,11 +353,9 @@ def _run_map_job(
             )
             time.sleep(delay)
 
-        proxy = _proxy_for_index(pool, i) if pool else None
         try:
             one = _map_one_session(
                 meta_path,
-                proxy=proxy,
                 premium_scan_limit=premium_scan_limit,
             )
             one["status"] = "ok"

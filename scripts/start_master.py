@@ -633,6 +633,37 @@ async def run() -> None:
     dispatcher.cron.add(hour=2, minute=0, task=nightly_scrape, name="nightly-scrape")
     log.info("cron_nightly_scrape_registered", at="02:00 local")
 
+    if os.getenv("NEXUS_SPAMBOT_WEEKLY_CRON_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        try:
+            sp_h = int((os.getenv("NEXUS_SPAMBOT_CRON_HOUR") or "4").strip() or "4")
+            sp_m = int((os.getenv("NEXUS_SPAMBOT_CRON_MINUTE") or "10").strip() or "10")
+        except ValueError:
+            sp_h, sp_m = 4, 10
+        sp_h = max(0, min(23, sp_h))
+        sp_m = max(0, min(59, sp_m))
+        spambot_weekly = TaskPayload(
+            task_type="management.vault_spambot_weekly",
+            parameters={},
+            project_id="session_vault",
+            priority=3,
+        )
+        dispatcher.cron.add(
+            hour=sp_h,
+            minute=sp_m,
+            task=spambot_weekly,
+            name="vault-spambot-weekly",
+        )
+        log.info(
+            "cron_vault_spambot_weekly_registered",
+            at=f"{sp_h:02d}:{sp_m:02d} local",
+            note="task self-gates to 7d unless parameters.force=true",
+        )
+
     if os.getenv("SEO_WATCHDOG_CRON_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
         raw_shards = (os.getenv("SEO_WATCHDOG_SHARDS") or "1").strip() or "1"
         try:

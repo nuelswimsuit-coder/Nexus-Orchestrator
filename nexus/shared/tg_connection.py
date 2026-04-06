@@ -91,19 +91,23 @@ def stable_u32_from_stem(stem: str) -> int:
     return zlib.crc32(stem.encode("utf-8")) & 0xFFFFFFFF
 
 
-def swarm_identity_sidecar_path(session_base: str) -> Path:
-    """``<stem>.swarm_identity.json`` adjacent to ``<stem>.session``."""
+def swarm_identity_sidecar_path(session_base: str, identity_stem: str | None = None) -> Path:
+    """``<stem>.swarm_identity.json`` next to the session file (same directory)."""
     p = Path(session_base)
-    return p.parent / f"{p.name}.swarm_identity.json"
+    stem = (identity_stem or "").strip() or p.name
+    return p.parent / f"{stem}.swarm_identity.json"
 
 
-def load_or_create_device_profile(session_base: str) -> dict[str, str]:
+def load_or_create_device_profile(
+    session_base: str,
+    identity_stem: str | None = None,
+) -> dict[str, str]:
     """
     Return Telethon ``device_model`` / ``system_version`` / ``app_version`` for this
     session, persisting alongside the vault so reconnects stay consistent.
     """
-    path = swarm_identity_sidecar_path(session_base)
-    stem = Path(session_base).name
+    stem = (identity_stem or Path(session_base).name).strip() or Path(session_base).name
+    path = swarm_identity_sidecar_path(session_base, stem)
     merged: dict[str, Any] = {}
     if path.is_file():
         try:
@@ -198,7 +202,7 @@ def proxy_tuple_for_session_stem(stem: str, pool: list[str] | None = None) -> tu
 def telethon_connect_kwargs_for_meta_json(meta_json: Path) -> dict[str, Any]:
     """Sync Telethon ``TelegramClient(..., **kwargs)`` for vault ``*.json`` paths."""
     session_base = str(meta_json.with_suffix(""))
-    prof = load_or_create_device_profile(session_base)
+    prof = load_or_create_device_profile(session_base, meta_json.stem)
     proxy = proxy_tuple_for_session_stem(meta_json.stem)
     out: dict[str, Any] = {
         "device_model": prof["device_model"],
@@ -210,8 +214,12 @@ def telethon_connect_kwargs_for_meta_json(meta_json: Path) -> dict[str, Any]:
     return out
 
 
-def telethon_connect_kwargs_for_session_base(session_base: str, stem: str) -> dict[str, Any]:
-    prof = load_or_create_device_profile(session_base)
+def telethon_connect_kwargs_for_session_base(
+    session_base: str,
+    identity_stem: str | None = None,
+) -> dict[str, Any]:
+    stem = (identity_stem or Path(session_base).name).strip() or Path(session_base).name
+    prof = load_or_create_device_profile(session_base, stem)
     proxy = proxy_tuple_for_session_stem(stem)
     out: dict[str, Any] = {
         "device_model": prof["device_model"],

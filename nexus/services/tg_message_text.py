@@ -97,3 +97,15 @@ def telethon_display_text(m: Any) -> str:
         return text
     _kind, hint = telethon_media_kind_and_hint(m)
     return hint if hint else "[מדיה / ללא טקסט]"
+
+
+def llm_media_prefix_for_message(m: Any) -> str:
+    """
+    Short English tags for LLM prompts (swarm / community factory), not UI copy.
+    """
+    kind, _hint = telethon_media_kind_and_hint(m)
+    if kind in ("photo", "image"):
+        return "[User sent an Image] "
+    if kind == "video":
+        return "[User sent a Video] "
+    return ""

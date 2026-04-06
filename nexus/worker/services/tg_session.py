@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 import structlog
 
-from nexus.worker.services.tg_connection import (
+from nexus.shared.tg_connection import (
     telegram_network_slot,
     telethon_connect_kwargs_for_session_base,
 )
@@ -106,8 +106,11 @@ async def async_telegram_client(
         )
 
     leased = (parameters.get("string_session") or "").strip()
-    stem = Path(session_base).name
-    extra = telethon_connect_kwargs_for_session_base(session_base, stem)
+    raw_stem = str(parameters.get("session_stem") or Path(session_base).name).strip()
+    extra = telethon_connect_kwargs_for_session_base(
+        session_base,
+        raw_stem if raw_stem else None,
+    )
 
     async with telegram_network_slot(task_name="async_telegram_client"):
         if leased:

@@ -23,6 +23,7 @@ from urllib.parse import quote
 import structlog
 
 from nexus.modules.community_vibe import parse_json_object
+from nexus.services.tg_message_text import llm_media_prefix_for_message
 from nexus.worker.services.israeli_telegram_profile import ensure_israeli_factory_profile
 from nexus.worker.services.tg_session import (
     async_telegram_client,
@@ -42,6 +43,7 @@ KEY_COOLDOWNS = "nexus:swarm:factory:cooldowns"
 KEY_METRICS = "nexus:swarm:factory:metrics"
 KEY_PROFILE_GATE = "nexus:swarm:factory:profile_gate"
 KEY_RECENT_OUTGOING = "nexus:swarm:factory:recent_outgoing"
+KEY_FACTORY_POOL_UIDS = "nexus:swarm:factory:pool_user_ids"
 THREAD_KEY_PREFIX = "nexus:swarm:factory:thread:"
 ACTIVE_TOPIC_KEY_PREFIX = "nexus:swarm:factory:active_topic:"
 THREAD_ID_CAP = 5
@@ -286,8 +288,6 @@ def _anti_robot_message_text(text: str, *, short_mutations: bool = True) -> str:
     """
     s = (text or "").replace("#", "")
     s = re.sub(r"\s{2,}", " ", s).strip()
-    while s.endswith("."):
-        s = s[:-1].rstrip()
     s = _strip_trailing_periods_hebrew(s)
     if not short_mutations or not s:
         return s
@@ -542,6 +542,37 @@ def _build_amcha_system_prompt(session_base: str, persona_seed: str | None) -> s
     return "\n\n".join(parts)
 
 
+def _message_text_for_factory_prompt(m: Any) -> str | None:
+    raw = getattr(m, "message", None)
+    t = str(raw).strip() if raw else ""
+    prefix = llm_media_prefix_for_message(m).strip()
+    if t:
+        line = f"{prefix} {t}".strip() if prefix else t
+    elif prefix:
+        line = prefix
+    else:
+        return None
+    if len(line) > RECENT_GROUP_MSG_MAX_CHARS:
+        line = line[: RECENT_GROUP_MSG_MAX_CHARS - 1] + "…"
+    return line
+
+
+def _consecutive_pool_message_tail(messages_newest_first: list[Any], pool_ids: set[int]) -> int:
+    """How many newest messages in a row are from accounts in ``pool_ids`` (swarm factory users)."""
+    n = 0
+    for m in messages_newest_first:
+        if m is None:
+            continue
+        sid = getattr(m, "sender_id", None)
+        if sid is None:
+            break
+        if int(sid) in pool_ids:
+            n += 1
+        else:
+            break
+    return n
+
+
 def _message_refs_newest_first(messages_oldest_first: list[Any]) -> list[tuple[int, str]]:
     """Telethon history reversed to chronological oldest-first; collect newest text messages first."""
     out: list[tuple[int, str]] = []
@@ -551,14 +582,9 @@ def _message_refs_newest_first(messages_oldest_first: list[Any]) -> list[tuple[i
         mid = getattr(m, "id", None)
         if mid is None:
             continue
-        raw = getattr(m, "message", None)
-        if raw is None:
-            continue
-        t = str(raw).strip()
+        t = _message_text_for_factory_prompt(m)
         if not t:
             continue
-        if len(t) > RECENT_GROUP_MSG_MAX_CHARS:
-            t = t[: RECENT_GROUP_MSG_MAX_CHARS - 1] + "…"
         out.append((int(mid), t))
         if len(out) >= RECENT_GROUP_MSG_CAP:
             break
@@ -578,7 +604,7 @@ def _finalize_primary_message(text: str) -> str:
     s = _strip_hashtags_and_cleanup(text)
     s = _cap_hebrew_words(s, 25)
     parts = s.split()
-    if len(parts) <= 8 or len(s) <= 40:
+    if (len(parts) <= 8 or len(s) <= 40) and any(_is_hebrew_char(c) for c in s):
         s = re.sub(r"[.!?]+\s*$", "", s).strip()
     return _strip_trailing_periods_hebrew(s)
 
@@ -2059,6 +2085,7 @@ async def _factory_converse_slot(
             ent = await client.get_entity(gid_int)
             refs_newest_first: list[tuple[int, str]] = []
             recent_texts: list[str] = []
+            hist: list[Any] = []
             try:
                 hist = await client.get_messages(ent, limit=RECENT_GROUP_MSG_CAP)
                 if hist:
@@ -2068,6 +2095,24 @@ async def _factory_converse_slot(
                     recent_texts = [t for _, t in reversed(refs_newest_first)]
             except Exception as exc:
                 log.debug("factory_recent_messages_failed", group_id=gid_int, error=str(exc))
+            max_chain = int(os.getenv("COMMUNITY_FACTORY_BOT_CHAIN_MAX", "4"))
+            if redis is not None and max_chain > 0:
+                try:
+                    me = await client.get_me()
+                    if me and getattr(me, "id", None) is not None:
+                        await redis.sadd(KEY_FACTORY_POOL_UIDS, str(int(me.id)))
+                    raw_p = await redis.smembers(KEY_FACTORY_POOL_UIDS)
+                    pool_ids = {int(x) for x in raw_p if str(x).isdigit()}
+                    consec = _consecutive_pool_message_tail(hist or [], pool_ids)
+                    if consec >= max_chain:
+                        return {
+                            **base_out,
+                            "status": "skipped",
+                            "reason": "bot_chain_cap",
+                            "consecutive_swarm_tail": consec,
+                        }
+                except Exception as exc:
+                    log.debug("factory_bot_chain_check_failed", error=str(exc))
             last_five_block = _last_five_prompt_block(refs_newest_first)
             pick_pool = refs_newest_first[:5]
             if pick_pool and random.random() < 0.6:
@@ -2079,7 +2124,8 @@ async def _factory_converse_slot(
                     msgs = await client.get_messages(ent, ids=reply_to_id)
                     m0 = msgs[0] if msgs else None
                     if m0 is not None:
-                        anchor_preview = (getattr(m0, "message", None) or "")[:500]
+                        ap = _message_text_for_factory_prompt(m0)
+                        anchor_preview = (ap or (getattr(m0, "message", None) or ""))[:500]
                 except Exception:
                     anchor_preview = None
 

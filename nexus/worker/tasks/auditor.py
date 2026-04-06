@@ -37,13 +37,12 @@ from nexus.shared.management_store import (
 )
 from nexus.worker.tasks.health_check import _creator_id_from_full
 from nexus.shared.staged_accounts import discover_session_meta_json_files, staged_accounts_root
+from nexus.shared.tg_connection import telethon_connect_kwargs_for_meta_json
 from nexus.worker.task_registry import registry
 from nexus.worker.tasks.account_mapper import (
     _asset_kind,
     _is_managed,
     _member_count,
-    _parse_proxy_pool,
-    _proxy_for_index,
 )
 
 log = structlog.get_logger(__name__)
@@ -491,7 +490,6 @@ def _audit_one_group(
 
 def _scan_one_session(
     meta_json: Path,
-    proxy: Any,
     *,
     participant_limit: int | None,
     default_sub_days: int,
@@ -507,8 +505,8 @@ def _scan_one_session(
     api_hash = str(meta["api_hash"])
     session_file = str(meta_json.with_suffix(""))
     session_label = meta_json.stem
-
-    client = TelegramClient(session_file, api_id, api_hash, proxy=proxy)
+    t_kw = telethon_connect_kwargs_for_meta_json(meta_json)
+    client = TelegramClient(session_file, api_id, api_hash, **t_kw)
     client.connect()
     if not client.is_user_authorized():
         client.disconnect()
@@ -608,7 +606,6 @@ def _run_audit_job(
     if max_sessions_per_job is not None and max_sessions_per_job > 0:
         metas_rotated = metas_rotated[: int(max_sessions_per_job)]
 
-    pool = _parse_proxy_pool()
     minimal_rows = sync_list_groups_minimal()
     group_filter = _parse_seo_group_filter()
 
@@ -618,13 +615,11 @@ def _run_audit_job(
     invite_redis_updates: list[dict[str, Any]] = []
 
     for idx, meta_path in enumerate(metas_rotated):
-        proxy = _proxy_for_index(pool, idx) if pool else None
         if idx > 0:
             time.sleep(random.uniform(sleep_lo, sleep_hi))
         try:
             one = _scan_one_session(
                 meta_path,
-                proxy,
                 participant_limit=participant_limit,
                 default_sub_days=default_sub_days,
                 group_filter=group_filter,

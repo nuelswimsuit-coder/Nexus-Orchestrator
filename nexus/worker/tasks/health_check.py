@@ -21,13 +21,12 @@ import structlog
 from nexus.shared.management_store import sync_upsert_group_bundle
 from nexus.shared.staged_accounts import discover_session_meta_json_files, staged_accounts_root
 from nexus.worker.task_registry import registry
+from nexus.shared.tg_connection import telethon_connect_kwargs_for_meta_json
 from nexus.worker.tasks.account_mapper import (
     _asset_kind,
     _controlled_warmup_delay_s,
     _is_managed,
     _member_count,
-    _parse_proxy_pool,
-    _proxy_for_index,
 )
 
 log = structlog.get_logger(__name__)
@@ -145,7 +144,6 @@ def _participant_breakdown(
 
 def _scan_one_session(
     meta_json: Path,
-    proxy: Any,
     participant_limit: int | None,
 ) -> dict[str, Any]:
     from telethon.sync import TelegramClient  # type: ignore
@@ -157,8 +155,8 @@ def _scan_one_session(
     api_hash = str(meta["api_hash"])
     session_file = str(meta_json.with_suffix(""))
     session_label = meta_json.stem
-
-    client = TelegramClient(session_file, api_id, api_hash, proxy=proxy)
+    t_kw = telethon_connect_kwargs_for_meta_json(meta_json)
+    client = TelegramClient(session_file, api_id, api_hash, **t_kw)
     client.connect()
     if not client.is_user_authorized():
         client.disconnect()
@@ -249,11 +247,9 @@ def _run_health_job(
 ) -> dict[str, Any]:
     staged_dir = Path(staged_dir)
     metas = discover_session_meta_json_files(staged_dir)
-    pool = _parse_proxy_pool()
     sessions_out: list[dict[str, Any]] = []
 
     for idx, meta_path in enumerate(metas):
-        proxy = _proxy_for_index(pool, idx) if pool else None
         if controlled_warmup and idx > 0:
             delay = _controlled_warmup_delay_s(
                 warmup_mu_min_s,
@@ -266,7 +262,7 @@ def _run_health_job(
             time.sleep(random.uniform(cooldown_min_s, cooldown_max_s))
 
         try:
-            one = _scan_one_session(meta_path, proxy, participant_limit)
+            one = _scan_one_session(meta_path, participant_limit)
             sessions_out.append(one)
         except Exception as exc:
             log.error(

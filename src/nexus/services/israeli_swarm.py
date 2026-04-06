@@ -1053,9 +1053,14 @@ class CommunityEngine:
             news_anchor_link = ""
             news_image_url: str | None = None
             try:
-                from nexus.services.recent_news_digest import build_tick_news_bundle
+                import redis.asyncio as aioredis  # type: ignore[import]
+                from nexus.services.recent_news_digest import get_tick_news_bundle_for_consumer
 
-                _nb = await build_tick_news_bundle()
+                r_news = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+                try:
+                    _nb = await get_tick_news_bundle_for_consumer(r_news)
+                finally:
+                    await r_news.aclose()
                 news_digest_str = _nb.digest_text
                 news_anchor_str = _nb.anchor_title
                 news_anchor_link = (_nb.anchor_link or "").strip()

@@ -194,6 +194,7 @@ class Dispatcher:
 
         asyncio.create_task(self._heartbeat_loop(), name="master-heartbeat")
         asyncio.create_task(self.cron.run(), name="cron-scheduler")
+        asyncio.create_task(self._news_digest_scheduler_loop(), name="news-digest-scheduler")
         log.info(
             "dispatcher_started",
             node_id=self.node_id,
@@ -443,6 +444,39 @@ class Dispatcher:
         )
 
     # ── Internal helpers ───────────────────────────────────────────────────────
+
+    async def _news_digest_scheduler_loop(self) -> None:
+        """
+        Enqueue ``swarm.news_digest.refresh`` every NEWS_DIGEST_REFRESH_SEC (default 300).
+
+        Set NEWS_DIGEST_REFRESH_SEC=0 to disable. Staggers the first fire so the
+        master finishes startup before hitting the worker queue.
+        """
+        import os as _os
+
+        raw = (_os.getenv("NEWS_DIGEST_REFRESH_SEC") or "300").strip()
+        try:
+            interval = int(raw)
+        except ValueError:
+            interval = 300
+        if interval <= 0:
+            log.info("news_digest_scheduler_disabled")
+            return
+        await asyncio.sleep(20.0)
+        log.info("news_digest_scheduler_started", interval_s=interval)
+        while True:
+            try:
+                if self._arq:
+                    task = TaskPayload(
+                        task_type="swarm.news_digest.refresh",
+                        parameters={},
+                        project_id="nexus-swarm",
+                    )
+                    job_id = await self.dispatch(task)
+                    log.debug("news_digest_task_dispatched", job_id=job_id)
+            except Exception as exc:
+                log.warning("news_digest_dispatch_failed", error=str(exc))
+            await asyncio.sleep(float(interval))
 
     async def _heartbeat_loop(self, interval: float = 30.0) -> None:
         """

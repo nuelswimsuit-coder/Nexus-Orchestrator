@@ -6,7 +6,9 @@ No extra dependencies beyond httpx + stdlib XML.
 
 from __future__ import annotations
 
+import hashlib
 import html as html_module
+import json
 import os
 import random
 import re
@@ -30,14 +32,33 @@ _BROWSER_HEADERS = {
     "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 
-# Hebrew / Israel–oriented feeds (public RSS)
+# Hebrew / Israel–oriented feeds (public RSS). Scraped only from the central
+# refresh job (``swarm.news_digest.refresh``) to avoid per-bot/per-worker bans.
 DEFAULT_RSS_FEEDS: tuple[tuple[str, str], ...] = (
     ("https://feeds.ynet.co.il/rss/home", "ynet"),
+    ("https://www.mako.co.il/rss/news-flash", "n12"),
     (
         "https://news.google.com/rss/search?q=%D7%99%D7%A9%D7%A8%D7%90%D7%9C&hl=iw&gl=IL&ceid=IL:iw",
         "google-news",
     ),
 )
+
+# Redis: single source of truth for swarm/news consumers (see ``refresh_central_news_digest_cache``).
+NEWS_DIGEST_CACHE_KEY = "nexus:news:digest:bundle"
+NEWS_DIGEST_UPDATED_AT_KEY = "nexus:news:digest:updated_at"
+NEWS_DIGEST_HASH_KEY = "nexus:news:digest:content_hash"
+NEWS_DIGEST_REFRESH_LOCK_KEY = "nexus:news:digest:refresh_lock"
+SWARM_NEWS_DIGEST_CHANNEL = "nexus:swarm:news_digest"
+NEWS_DIGEST_CACHE_TTL_SEC = 900
+
+
+def _resolved_rss_feeds() -> tuple[tuple[str, str], ...]:
+    """Ynet / N12 / Google News plus optional Telegram-news RSS (public mirror or aggregator)."""
+    extra = (os.getenv("TELEGRAM_NEWS_RSS_URL") or "").strip()
+    if not extra.startswith(("http://", "https://")):
+        return DEFAULT_RSS_FEEDS
+    label = (os.getenv("TELEGRAM_NEWS_RSS_LABEL") or "telegram-news").strip() or "telegram-news"
+    return (*DEFAULT_RSS_FEEDS, (extra, label[:40]))
 
 
 @dataclass
@@ -147,10 +168,12 @@ async def _fetch_rss_digest(
     *,
     max_age_hours: int = 24,
     max_lines: int = 12,
+    feeds: tuple[tuple[str, str], ...] | None = None,
 ) -> list[NewsItem]:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
     merged: list[NewsItem] = []
-    for url, label in DEFAULT_RSS_FEEDS:
+    use_feeds = feeds if feeds is not None else _resolved_rss_feeds()
+    for url, label in use_feeds:
         try:
             r = await client.get(url, follow_redirects=True, timeout=15.0)
             r.raise_for_status()
@@ -249,7 +272,8 @@ async def build_tick_news_bundle(
     digest_lines: int = 10,
 ) -> TickNewsBundle:
     """
-    Pull recent headlines; prefer GNews rows (often include ``image``) when key is set.
+    Live HTTP fetch (RSS + optional GNews). Prefer ``get_tick_news_bundle_for_consumer``
+    from swarm ticks so sources are hit only from ``swarm.news_digest.refresh``.
     """
     async with httpx.AsyncClient(headers=_BROWSER_HEADERS) as client:
         g_items = await _fetch_gnews_items(client, max_items=10)
@@ -295,6 +319,112 @@ async def build_tick_news_bundle(
         anchor_link=anchor.link,
         image_url=img_url,
     )
+
+
+def tick_news_bundle_to_dict(bundle: TickNewsBundle) -> dict[str, str | None]:
+    return {
+        "digest_text": bundle.digest_text,
+        "anchor_title": bundle.anchor_title,
+        "anchor_link": bundle.anchor_link,
+        "image_url": bundle.image_url,
+    }
+
+
+def tick_news_bundle_from_dict(data: dict[str, Any]) -> TickNewsBundle:
+    raw_img = data.get("image_url")
+    img: str | None = None
+    if raw_img is not None:
+        s = str(raw_img).strip()
+        img = s or None
+    return TickNewsBundle(
+        digest_text=str(data.get("digest_text") or ""),
+        anchor_title=str(data.get("anchor_title") or ""),
+        anchor_link=str(data.get("anchor_link") or ""),
+        image_url=img,
+    )
+
+
+async def refresh_central_news_digest_cache(redis: Any) -> dict[str, Any]:
+    """
+    One HTTP pass (Ynet/N12/Google + optional Telegram RSS + GNews), write Redis,
+    publish ``nexus:swarm:news_digest`` when the digest payload changes.
+
+    Uses a short distributed lock so overlapping workers do not hammer sources.
+    """
+    if redis is None:
+        return {"status": "failed", "error": "redis_unavailable"}
+    got = await redis.set(NEWS_DIGEST_REFRESH_LOCK_KEY, "1", nx=True, ex=55)
+    if not got:
+        return {"status": "skipped", "reason": "lock_held"}
+    changed = False
+    try:
+        bundle = await build_tick_news_bundle()
+        payload_dict = tick_news_bundle_to_dict(bundle)
+        payload_json = json.dumps(payload_dict, ensure_ascii=False)
+        digest_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()[:40]
+        prev = await redis.get(NEWS_DIGEST_HASH_KEY)
+        ts = datetime.now(timezone.utc).isoformat()
+        await redis.set(NEWS_DIGEST_CACHE_KEY, payload_json, ex=NEWS_DIGEST_CACHE_TTL_SEC)
+        await redis.set(NEWS_DIGEST_UPDATED_AT_KEY, ts, ex=NEWS_DIGEST_CACHE_TTL_SEC)
+        await redis.set(NEWS_DIGEST_HASH_KEY, digest_hash, ex=NEWS_DIGEST_CACHE_TTL_SEC)
+        changed = prev != digest_hash
+        if changed:
+            pub = {
+                "schema": "nexus.swarm.news_digest.v1",
+                "event": "news_digest_updated",
+                "ts": ts,
+                "digest_preview": (bundle.digest_text or "")[:500],
+                "anchor_title": (bundle.anchor_title or "")[:500],
+                "anchor_link": (bundle.anchor_link or "")[:2000],
+            }
+            msg = json.dumps(pub, ensure_ascii=False)
+            await redis.publish(SWARM_NEWS_DIGEST_CHANNEL, msg)
+            await redis.publish(
+                "nexus:swarm:events",
+                json.dumps({**pub, "engine": "news_digest"}, ensure_ascii=False),
+            )
+            try:
+                from nexus.shared.swarm_signals import ingest_text_for_swarm
+
+                blob = f"{bundle.anchor_title}\n{bundle.digest_text}"
+                fp = digest_hash[:20]
+                await ingest_text_for_swarm(redis, blob, fp)
+            except Exception as exc:
+                log.debug("news_digest_swarm_signal_failed", error=str(exc))
+        return {"status": "ok", "changed": changed, "updated_at": ts}
+    except Exception as exc:
+        log.warning("news_digest_refresh_failed", error=str(exc))
+        return {"status": "failed", "error": str(exc)}
+    finally:
+        try:
+            await redis.delete(NEWS_DIGEST_REFRESH_LOCK_KEY)
+        except Exception:
+            pass
+
+
+async def get_tick_news_bundle_for_consumer(redis: Any | None) -> TickNewsBundle:
+    """
+    Read cached digest (written by ``refresh_central_news_digest_cache``).
+    On cache miss, tries one refresh (if Redis is available); never does a
+    standalone live scrape when Redis is absent (caller may use ``build_tick_news_bundle``).
+    """
+    if redis is None:
+        log.debug("news_digest_consumer_no_redis_fallback_live")
+        return await build_tick_news_bundle()
+    raw = await redis.get(NEWS_DIGEST_CACHE_KEY)
+    if raw:
+        try:
+            return tick_news_bundle_from_dict(json.loads(raw))
+        except Exception as exc:
+            log.debug("news_digest_cache_parse_failed", error=str(exc))
+    await refresh_central_news_digest_cache(redis)
+    raw2 = await redis.get(NEWS_DIGEST_CACHE_KEY)
+    if raw2:
+        try:
+            return tick_news_bundle_from_dict(json.loads(raw2))
+        except Exception:
+            pass
+    return TickNewsBundle(digest_text="", anchor_title="", anchor_link="", image_url=None)
 
 
 def telegram_image_filename_from_bytes(data: bytes) -> str:

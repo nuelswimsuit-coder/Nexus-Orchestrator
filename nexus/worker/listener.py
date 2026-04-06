@@ -51,11 +51,13 @@ import nexus.worker.tasks.auto_scrape  # noqa: F401 — registers telegram.auto_
 import nexus.worker.tasks.scale  # noqa: F401 — registers nexus.scale_worker
 import nexus.worker.tasks.content_factory  # noqa: F401 — registers telegram.content_factory
 import nexus.worker.tasks.group_warmer  # noqa: F401 — registers swarm.group_warmer
+import nexus.worker.tasks.news_digest_refresh  # noqa: F401 — swarm.news_digest.refresh
 import nexus.worker.tasks.swarm  # noqa: F401 — registers swarm.community_factory.*
 import nexus.worker.tasks.incubator_spawn  # noqa: F401 — registers nexus.incubator.*
 import nexus.worker.tasks.account_mapper  # noqa: F401 — registers account_mapper.map
 import nexus.worker.tasks.auditor  # noqa: F401 — registers seo.watchdog.audit
 import nexus.worker.tasks.health_check  # noqa: F401 — registers management.group_health_scan
+import nexus.worker.tasks.spambot_weekly  # noqa: F401 — registers management.vault_spambot_weekly
 import nexus.worker.tasks.sentinel_seo  # noqa: F401 — registers management.sentinel_seo
 import nexus.worker.tasks.moltbot  # noqa: F401 — registers bot.moltbot
 import nexus.worker.tasks.openclaw  # noqa: F401 — registers scraper.openclaw/openclaw.browser_scrape

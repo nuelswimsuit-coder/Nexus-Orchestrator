@@ -27,11 +27,11 @@ from nexus.modules.community_vibe import (
 from nexus.services.recent_news_digest import (
     TickNewsBundle,
     append_article_link_to_text,
-    build_tick_news_bundle,
     download_image_bytes,
+    get_tick_news_bundle_for_consumer,
     telegram_image_filename_from_bytes,
 )
-from nexus.services.tg_message_text import telethon_display_text
+from nexus.services.tg_message_text import llm_media_prefix_for_message, telethon_display_text
 from nexus.worker.task_registry import registry
 
 log = structlog.get_logger(__name__)
@@ -184,10 +184,16 @@ def _format_transcript_from_messages(
         if getattr(m, "sender", None):
             uname = getattr(m.sender, "username", "") or ""
         label = f"@{uname}" if uname else f"user:{uid}"
-        text = telethon_display_text(m).replace("\n", " ").strip()
-        if not text:
+        raw_msg = (getattr(m, "message", None) or getattr(m, "raw_text", None) or "") or ""
+        body = str(raw_msg).strip().replace("\n", " ")
+        prefix = llm_media_prefix_for_message(m)
+        if body:
+            line_text = f"{prefix}{body}".strip() if prefix else body
+        else:
+            line_text = (prefix.strip() if prefix else telethon_display_text(m).replace("\n", " ").strip())
+        if not line_text:
             continue
-        lines.append(f"{label}: {text}")
+        lines.append(f"{label}: {line_text}")
         id_map.append({"id": int(m.id), "sender": label})
     chronological = list(reversed(lines))
     transcript = "\n".join(chronological[-80:])
@@ -355,7 +361,7 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
             turns = _effective_turns_per_tick(parameters, engagement_mode, len(personas))
             intra_lo, intra_hi = _intra_turn_delay_bounds(engagement_mode, parameters)
             try:
-                news_bundle = await build_tick_news_bundle()
+                news_bundle = await get_tick_news_bundle_for_consumer(redis)
             except Exception as exc:
                 log.warning("warmer_news_bundle_failed", error=str(exc))
                 news_bundle = TickNewsBundle(

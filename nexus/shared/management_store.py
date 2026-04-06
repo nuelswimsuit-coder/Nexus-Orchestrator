@@ -162,6 +162,40 @@ async def upsert_rank_tracker(
         await db.commit()
 
 
+async def upsert_vault_session_spambot_health(
+    *,
+    session_stem: str,
+    spambot_checked_at: str,
+    shadowban_suspected: bool,
+    spambot_reply_snippet: str | None,
+) -> None:
+    """Persist @SpamBot weekly scan outcome for Commander / dashboards (telefix.db)."""
+    now = datetime.now(timezone.utc).isoformat()
+    snippet = (spambot_reply_snippet or "")[:2000]
+    async with await _connect() as db:
+        await db.execute(
+            """
+            INSERT INTO vault_session_telegram_health (
+                session_stem, spambot_checked_at, shadowban_suspected,
+                spambot_reply_snippet, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(session_stem) DO UPDATE SET
+                spambot_checked_at = excluded.spambot_checked_at,
+                shadowban_suspected = excluded.shadowban_suspected,
+                spambot_reply_snippet = excluded.spambot_reply_snippet,
+                updated_at = excluded.updated_at
+            """,
+            (
+                session_stem.strip(),
+                spambot_checked_at,
+                1 if shadowban_suspected else 0,
+                snippet or None,
+                now,
+            ),
+        )
+        await db.commit()
+
+
 async def list_management_groups() -> list[dict[str, Any]]:
     """Join group_metadata + member_stats; attach rank_tracker rows."""
     async with await _connect() as db:

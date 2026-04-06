@@ -92,6 +92,17 @@ CREATE TABLE IF NOT EXISTS seo_churn_event (
 
 CREATE INDEX IF NOT EXISTS idx_seo_churn_group ON seo_churn_event(group_id);
 CREATE INDEX IF NOT EXISTS idx_seo_churn_detected ON seo_churn_event(detected_at DESC);
+
+CREATE TABLE IF NOT EXISTS vault_session_telegram_health (
+    session_stem           TEXT PRIMARY KEY,
+    spambot_checked_at     TEXT,
+    shadowban_suspected    INTEGER NOT NULL DEFAULT 0,
+    spambot_reply_snippet  TEXT,
+    updated_at             TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_vault_session_spambot_checked
+    ON vault_session_telegram_health(spambot_checked_at DESC);
 """
 
 

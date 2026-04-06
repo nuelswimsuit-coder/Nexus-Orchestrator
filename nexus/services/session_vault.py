@@ -14,6 +14,7 @@ Environment:
 
 * ``NEXUS_SESSION_VAULT_SKIP_PROBE`` — if ``1``/``true``, :func:`sync_disk_to_redis`
   warms Redis cache without Telethon probes (faster API startup for large vaults).
+* ``NEXUS_TELEGRAM_NETWORK_CONCURRENCY`` — max parallel vault Telethon probes (default ``30``).
 """
 
 from __future__ import annotations
@@ -28,6 +29,9 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+
+from nexus.shared.config import settings
+from nexus.shared.tg_connection import telethon_connect_kwargs_for_meta_json
 
 log = structlog.get_logger(__name__)
 
@@ -156,6 +160,7 @@ def check_session_health_sync(meta_json: Path) -> dict[str, Any]:
     from telethon.errors import (  # type: ignore[import-untyped]
         AuthKeyDuplicatedError,
         AuthKeyUnregisteredError,
+        FloodWaitError,
         PhoneNumberBannedError,
         UserDeactivatedBanError,
         UserDeactivatedError,
@@ -197,7 +202,8 @@ def check_session_health_sync(meta_json: Path) -> dict[str, Any]:
         }
 
     session_base = _session_path_base(meta_json)
-    client = TelegramClient(session_base, api_id, api_hash)
+    t_kwargs = telethon_connect_kwargs_for_meta_json(meta_json)
+    client = TelegramClient(session_base, api_id, api_hash, **t_kwargs)
     try:
         client.connect()
         if not client.is_user_authorized():
@@ -210,6 +216,14 @@ def check_session_health_sync(meta_json: Path) -> dict[str, Any]:
             }
         try:
             me = client.get_me()
+        except FloodWaitError as exc:
+            return {
+                "session_stem": stem,
+                "phone": phone,
+                "status": SessionStatus.DEGRADED.value,
+                "health": SessionHealth.YELLOW.value,
+                "detail": f"FloodWaitError:{getattr(exc, 'seconds', 0)}",
+            }
         except (UserDeactivatedBanError, PhoneNumberBannedError) as exc:
             return {
                 "session_stem": stem,
@@ -276,7 +290,8 @@ def export_string_session_sync(meta_json: Path) -> dict[str, Any]:
     api_id = int(meta["api_id"])
     api_hash = str(meta["api_hash"])
     session_base = _session_path_base(meta_json)
-    client = TelegramClient(session_base, api_id, api_hash)
+    t_kwargs = telethon_connect_kwargs_for_meta_json(meta_json)
+    client = TelegramClient(session_base, api_id, api_hash, **t_kwargs)
     try:
         client.connect()
         if not client.is_user_authorized():
@@ -385,7 +400,9 @@ async def sync_disk_to_redis(redis: Any) -> dict[str, int]:
             await merge_meta_row(redis, path, _default_meta_record(path))
             n += 1
     else:
-        sem = asyncio.Semaphore(4)
+        sem_limit = max(1, int(settings.telegram_network_concurrency))
+        log.info("session_vault_probe_sem", sem_limit=sem_limit, task_name="sync_disk_to_redis")
+        sem = asyncio.Semaphore(sem_limit)
 
         async def _one(p: Path) -> None:
             async with sem:
