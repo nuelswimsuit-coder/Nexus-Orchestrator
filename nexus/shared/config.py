@@ -93,11 +93,7 @@ class Settings(BaseSettings):
     # Cap concurrent Telethon MTProto connections / network slots (swarm + vault probes).
     # Default is conservative to avoid mass FloodWait / account bans when many sessions run at once.
     telegram_network_concurrency: int = Field(
-<<<<<<< Current (Your changes)
         default=5,
-=======
-        default=4,
->>>>>>> Incoming (Background Agent changes)
         ge=1,
         le=500,
         validation_alias=AliasChoices(

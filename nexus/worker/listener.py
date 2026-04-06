@@ -53,11 +53,7 @@ import nexus.worker.tasks.content_factory  # noqa: F401 — registers telegram.c
 import nexus.worker.tasks.group_warmer  # noqa: F401 — registers swarm.group_warmer
 import nexus.worker.tasks.news_digest_refresh  # noqa: F401 — swarm.news_digest.refresh
 import nexus.worker.tasks.swarm  # noqa: F401 — registers swarm.community_factory.*
-<<<<<<< Current (Your changes)
-import nexus.worker.tasks.swarm_onboarding  # noqa: F401 — swarm onboarding mass join
-=======
 import nexus.worker.tasks.swarm_onboarding  # noqa: F401 — swarm.onboarding mass join
->>>>>>> Incoming (Background Agent changes)
 import nexus.worker.tasks.incubator_spawn  # noqa: F401 — registers nexus.incubator.*
 import nexus.worker.tasks.account_mapper  # noqa: F401 — registers account_mapper.map
 import nexus.worker.tasks.auditor  # noqa: F401 — registers seo.watchdog.audit

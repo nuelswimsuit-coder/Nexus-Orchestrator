@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import AsyncGenerator
 
 import structlog
@@ -38,6 +40,31 @@ from nexus.master.services.vault import Vault
 from nexus.shared.config import settings
 
 log = structlog.get_logger(__name__)
+
+# #region agent log
+_AGENT_DEBUG_LOG = Path(__file__).resolve().parents[3] / "debug-9dd305.log"
+
+
+def _agent_dbg(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    try:
+        line = json.dumps(
+            {
+                "sessionId": "9dd305",
+                "hypothesisId": hypothesis_id,
+                "location": location,
+                "message": message,
+                "data": data,
+                "timestamp": int(time.time() * 1000),
+            },
+            default=str,
+        )
+        with _AGENT_DEBUG_LOG.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+# #endregion
 
 router = APIRouter(prefix="/deploy", tags=["deploy"])
 
@@ -116,7 +143,7 @@ async def _run_deploy(redis, node_ids: list[str] | None, job_id: str) -> None:
 
 @router.post(
     "/cluster",
-    response_model=DeployResponse,
+    response_model=None,
     summary="SYNC & RESTART CLUSTER — push code to all workers",
 )
 async def trigger_deploy(
@@ -174,6 +201,7 @@ async def trigger_deploy(
     "/progress/{node_id}",
     summary="SSE stream of deployment progress for a node",
     response_class=StreamingResponse,
+    response_model=None,
 )
 async def stream_progress(
     node_id: str,
@@ -243,7 +271,7 @@ async def stream_progress(
 
 @router.get(
     "/status",
-    response_model=DeployStatusResponse,
+    response_model=None,
     summary="Latest progress snapshot for all nodes",
 )
 async def get_deploy_status(redis: RedisDep) -> DeployStatusResponse | JSONResponse:
@@ -288,6 +316,7 @@ async def get_deploy_status(redis: RedisDep) -> DeployStatusResponse | JSONRespo
 
 @router.delete(
     "/progress/{node_id}",
+    response_model=None,
     summary="Clear deploy progress buffer for a node",
 )
 async def clear_progress(node_id: str, redis: RedisDep) -> dict[str, str] | JSONResponse:
@@ -321,7 +350,7 @@ async def _run_sync(redis) -> None:  # type: ignore[type-arg]
 
 @router.post(
     "/sync",
-    response_model=DeployResponse,
+    response_model=None,
     summary="🚀 SYNC & RESTART — push code directly to WORKER_IP laptop",
 )
 async def trigger_sync(
@@ -347,6 +376,14 @@ async def trigger_sync(
     target completes successfully.
     """
     try:
+        # #region agent log
+        _agent_dbg(
+            "H1",
+            "deploy.py:trigger_sync:entry",
+            "trigger_sync entered",
+            {"active_keys": list(_active_deploys.keys())},
+        )
+        # #endregion
         # Cancel stale tasks
         stale = [jid for jid, t in _active_deploys.items() if t.done()]
         for jid in stale:
@@ -364,6 +401,14 @@ async def trigger_sync(
         started = datetime.now(timezone.utc).isoformat()
         log.info("sync_triggered", worker_ip=settings.worker_ip)
 
+        # #region agent log
+        _agent_dbg(
+            "H2",
+            "deploy.py:trigger_sync:success",
+            "returning DeployResponse",
+            {"job_id": "sync"},
+        )
+        # #endregion
         return DeployResponse(
             job_id="sync",
             targets=["worker_linux", "worker_windows"],
@@ -376,6 +421,14 @@ async def trigger_sync(
     except HTTPException:
         raise
     except Exception as e:
+        # #region agent log
+        _agent_dbg(
+            "H3",
+            "deploy.py:trigger_sync:except",
+            "route caught exception",
+            {"error_type": type(e).__name__, "error": str(e)[:500]},
+        )
+        # #endregion
         traceback.print_exc()
         log.exception("deploy_sync_route_failed", error=str(e))
         return JSONResponse(

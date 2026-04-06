@@ -377,15 +377,10 @@ def _sanitize_digest_text_block(text: str) -> str:
 def _format_digest_lines(items: list[NewsItem], *, max_lines: int = 10) -> str:
     """Titles only (no outlet tags) so chat models do not echo \"- ynet\" / calcalist-style suffixes."""
     lines: list[str] = []
-<<<<<<< Current (Your changes)
     for it in items[:max_lines]:
         clean = _sanitize_event_headline(it.title)
         if clean:
             lines.append(clean)
-=======
-    for i, it in enumerate(items[:max_lines], start=1):
-        lines.append(f"{i}. {it.title}")
->>>>>>> Incoming (Background Agent changes)
     return "\n".join(lines)
 
 

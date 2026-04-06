@@ -69,7 +69,7 @@ WAR_ROOM_CACHE_KEY = "nexus:war_room:intel"
 ARQ_QUEUE_KEY = "arq:queue:nexus:tasks"
 
 
-@router.get("/status", response_model=ClusterStatusResponse, summary="Cluster topology and health")
+@router.get("/status", response_model=None, summary="Cluster topology and health")
 async def get_cluster_status(redis: RedisDep) -> ClusterStatusResponse | JSONResponse:
     """
     Return live cluster state:
@@ -215,7 +215,7 @@ async def _load_target_heatmap(redis: Redis) -> list[TargetHeatCell]:
     return cells
 
 
-@router.get("/health", response_model=ClusterHealthResponse, summary="Redis + per-node probe latencies for fleet grid")
+@router.get("/health", response_model=None, summary="Redis + per-node probe latencies for fleet grid")
 async def get_cluster_health(redis: RedisDep) -> ClusterHealthResponse | JSONResponse:
     """
     Measures Redis PING RTT and parallel GET latency for each ``nexus:heartbeat:*`` key.
@@ -347,7 +347,7 @@ async def _get_cluster_health_impl(redis: RedisDep) -> ClusterHealthResponse:
 
 @router.get(
     "/fleet/assets",
-    response_model=FleetAssetsResponse,
+    response_model=None,
     summary="Fleet groups, member counts, owning session, and Redis mapper totals",
 )
 async def get_fleet_assets(redis: RedisDep) -> FleetAssetsResponse | JSONResponse:
@@ -402,6 +402,7 @@ async def get_fleet_assets(redis: RedisDep) -> FleetAssetsResponse | JSONRespons
 
 @router.get(
     "/fleet/scan/status",
+    response_model=None,
     summary="Latest fleet scan event (for polling without SSE)",
 )
 async def get_fleet_scan_status(redis: RedisDep) -> dict | JSONResponse:
@@ -429,6 +430,7 @@ async def get_fleet_scan_status(redis: RedisDep) -> dict | JSONResponse:
     "/fleet/scan/stream",
     summary="SSE: real-time fleet mapper / scraper scan phase updates",
     response_class=StreamingResponse,
+    response_model=None,
 )
 async def stream_fleet_scan(request: Request) -> StreamingResponse | JSONResponse:
     """
@@ -514,6 +516,7 @@ class SentinelTestRequest(BaseModel):
 
 @router.post(
     "/test-sentinel",
+    response_model=None,
     summary="Dispatch a sentinel pulse to verify Master-Worker communication",
     tags=["cluster"],
 )
