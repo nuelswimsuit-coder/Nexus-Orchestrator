@@ -41,16 +41,21 @@ def _lsb_tweak_pixel(img: Image.Image, salt_seed: bytes) -> None:
     w, h = img.size
     if w < 1 or h < 1:
         return
-    x, y = (w - 1) % w, (h - 1) % h
     digest = hashlib.sha256(salt_seed).digest()
     raw_mode = img.mode
     if raw_mode == "RGB":
-        r, g, b = img.getpixel((x, y))[:3]
-        r = (r & ~1) | (digest[0] & 1)
-        g = (g & ~1) | ((digest[0] >> 1) & 1)
-        b = (b & ~1) | ((digest[0] >> 2) & 1)
-        img.putpixel((x, y), (r, g, b))
+        blob = digest + hashlib.sha256(digest + salt_seed).digest()
+        # JPEG is lossy: touch a few scattered pixels with tiny XOR masks so hashes diverge.
+        for off in range(0, min(len(blob) - 2, 24), 3):
+            x = int(blob[off]) % w
+            y = int(blob[off + 1]) % h
+            r_mask = ((int(blob[off + 2]) & 7) | 1) & 0x7
+            r, g, b = img.getpixel((x, y))[:3]
+            r = (r ^ r_mask) & 0xFF
+            img.putpixel((x, y), (r, g, b))
     elif raw_mode == "RGBA":
+        x = int(digest[0]) % w
+        y = int(digest[1]) % h
         r, g, b, a = img.getpixel((x, y))[:4]
         r = (r & ~1) | (digest[0] & 1)
         g = (g & ~1) | ((digest[0] >> 1) & 1)
@@ -79,12 +84,13 @@ def prepare_jpeg_png_for_telegram_upload(raw: bytes, *, salt_seed: bytes) -> tup
             im = src.convert("RGB")
             _lsb_tweak_pixel(im, salt_seed)
             out = BytesIO()
+            # 4:4:4 subsampling so a one-pixel tweak survives chroma downsampling.
             im.save(
                 out,
                 format="JPEG",
-                quality=88,
+                quality=90,
                 optimize=True,
-                subsampling=2,
+                subsampling=0,
                 exif=b"",
             )
             data = out.getvalue()
