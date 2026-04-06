@@ -1,4 +1,4 @@
-"""Pre-flight checks before Paramiko SSH deploy (ping, TCP :22, debug line)."""
+"""Pre-flight checks before Paramiko SSH deploy (TCP :22, optional debug line)."""
 
 from __future__ import annotations
 
@@ -51,7 +51,15 @@ def tcp_port_open(host: str, port: int = 22, *, timeout: float = 15.0) -> bool:
         return False
 
 
-<<<<<<< Current (Your changes)
+def skipped_host_banner(host: str, reason: str) -> str:
+    tail = reason.strip() if reason else "unreachable"
+    return f"[SKIPPED] Host {host} unreachable — {tail}"
+
+
+def print_skipped_unreachable(host: str, reason: str) -> None:
+    _print_red(skipped_host_banner(host, reason))
+
+
 def preflight_remote_ssh(host: str, *, port: int = 22) -> str | None:
     """
     Gate deploy on TCP reachability to the SSH port (not ICMP — many hosts block ping).
@@ -60,49 +68,12 @@ def preflight_remote_ssh(host: str, *, port: int = 22) -> str | None:
     """
     if tcp_port_open(host, port, timeout=15.0):
         return None
-    msg = f"Host {host} unreachable — SSH port {port} closed, timed out, or host down"
-    _print_red(f"[SKIPPED] {msg}")
+    msg = f"SSH port {port} closed or connection timed out (host down or sshd off)"
+    print_skipped_unreachable(host, msg)
+    log.warning(
+        "deploy_preflight_failed",
+        host=host,
+        reason="ssh_port_unreachable",
+        detail=msg,
+    )
     return msg
-=======
-def preflight_remote_ssh(host: str, port: int = 22) -> str | None:
-    """
-    TCP connect to the SSH port (authoritative for “host up / sshd listening”).
-    Ping is not required: many LAN workers block ICMP while SSH still works.
-
-    Returns None if OK, else a short machine-readable reason (callers print
-    :func:`print_skipped_unreachable`).
-    """
-<<<<<<< Current (Your changes)
-    if tcp_port_open(host, port, timeout=15.0):
-        return None
-    return f"SSH port {port} closed or connection timed out (host down or sshd off)"
-
-
-def skipped_host_banner(host: str, reason: str) -> str:
-    """Single-line message for logs and ``skipped:`` results."""
-    tail = reason.strip() if reason else "unreachable"
-    return f"[SKIPPED] Host {host} unreachable — {tail}"
-
-
-def print_skipped_unreachable(host: str, reason: str) -> None:
-    _print_red(skipped_host_banner(host, reason))
->>>>>>> Incoming (Background Agent changes)
-=======
-    if not icmp_ping_host(host):
-        msg = (
-            f"❌ NETWORK ERROR: Cannot ping {host}. The worker is either offline, asleep, "
-            "or the IP has changed."
-        )
-        _print_red(msg)
-        log.warning("deploy_preflight_failed", host=host, reason="icmp_unreachable", detail=msg)
-        return msg
-    if not tcp_port_open(host, 22, timeout=15.0):
-        msg = (
-            "❌ SSH ERROR: IP is reachable, but port 22 is closed. Ensure 'sshd' is "
-            "running on the Linux worker."
-        )
-        _print_red(msg)
-        log.warning("deploy_preflight_failed", host=host, reason="ssh_port_closed", detail=msg)
-        return msg
-    return None
->>>>>>> Incoming (Background Agent changes)

@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import traceback
 from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from nexus.api.dependencies import RedisDep
@@ -122,7 +123,7 @@ async def trigger_deploy(
     body: DeployRequest,
     request: Request,
     redis: RedisDep,
-) -> DeployResponse:
+) -> DeployResponse | JSONResponse:
     """
     Start a background deployment job.  Returns immediately with a job_id.
 
@@ -133,30 +134,40 @@ async def trigger_deploy(
     - All node_ids listed in body.node_ids (if provided).
     - Otherwise: all Redis-heartbeat workers + the static WORKER_IP laptop.
     """
-    job_id = f"deploy_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
+    try:
+        job_id = f"deploy_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
 
-    # Cancel any stale deploy task that is no longer running
-    stale = [jid for jid, t in _active_deploys.items() if t.done()]
-    for jid in stale:
-        _active_deploys.pop(jid, None)
+        # Cancel any stale deploy task that is no longer running
+        stale = [jid for jid, t in _active_deploys.items() if t.done()]
+        for jid in stale:
+            _active_deploys.pop(jid, None)
 
-    if _active_deploys:
-        raise HTTPException(
-            status_code=409,
-            detail="A deployment is already in progress. Wait for it to finish.",
+        if _active_deploys:
+            raise HTTPException(
+                status_code=409,
+                detail="A deployment is already in progress. Wait for it to finish.",
+            )
+
+        task = asyncio.create_task(_run_deploy(redis, body.node_ids, job_id))
+        _active_deploys[job_id] = task
+
+        log.info("deploy_triggered", job_id=job_id, targets=body.node_ids)
+
+        return DeployResponse(
+            job_id=job_id,
+            targets=body.node_ids,
+            message="Deployment started — stream via /api/deploy/progress/{node_id}",
+            started_at=datetime.now(timezone.utc).isoformat(),
         )
-
-    task = asyncio.create_task(_run_deploy(redis, body.node_ids, job_id))
-    _active_deploys[job_id] = task
-
-    log.info("deploy_triggered", job_id=job_id, targets=body.node_ids)
-
-    return DeployResponse(
-        job_id=job_id,
-        targets=body.node_ids,
-        message="Deployment started — stream via /api/deploy/progress/{node_id}",
-        started_at=datetime.now(timezone.utc).isoformat(),
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        log.exception("deploy_cluster_route_failed", error=str(e))
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": str(e)},
+        )
 
 
 @router.get(
@@ -167,7 +178,7 @@ async def trigger_deploy(
 async def stream_progress(
     node_id: str,
     redis: RedisDep,
-) -> StreamingResponse:
+) -> StreamingResponse | JSONResponse:
     """
     Server-Sent Events stream.  Emits one `data: <json>\\n\\n` per progress
     event.  Closes automatically when the `done` or `error` step is received,
@@ -175,45 +186,59 @@ async def stream_progress(
     """
 
     async def _generator() -> AsyncGenerator[str, None]:
-        key = f"nexus:deploy:progress:{node_id}"
-        cursor = 0
-        idle_ticks = 0
-        max_idle = 300  # 5 min × 1 s ticks
+        try:
+            key = f"nexus:deploy:progress:{node_id}"
+            cursor = 0
+            idle_ticks = 0
+            max_idle = 300  # 5 min × 1 s ticks
 
-        while idle_ticks < max_idle:
-            # Read any new events appended since last poll
-            events = await redis.lrange(key, cursor, -1)
-            if events:
-                for raw in events:
-                    cursor += 1
-                    idle_ticks = 0
-                    yield f"data: {raw}\n\n"
-                    # Stop streaming once terminal step is reached
-                    try:
-                        ev = json.loads(raw)
-                        # Close on any error status (e.g. installing_deps + error) or final done/done.
-                        if ev.get("status") == "error":
-                            return
-                        if ev.get("step") == "done" and ev.get("status") == "done":
-                            return
-                    except Exception:
-                        pass
-            else:
-                idle_ticks += 1
-                # Keep-alive comment every 15 s
-                if idle_ticks % 15 == 0:
-                    yield ": keep-alive\n\n"
+            while idle_ticks < max_idle:
+                # Read any new events appended since last poll
+                events = await redis.lrange(key, cursor, -1)
+                if events:
+                    for raw in events:
+                        cursor += 1
+                        idle_ticks = 0
+                        yield f"data: {raw}\n\n"
+                        # Stop streaming once terminal step is reached
+                        try:
+                            ev = json.loads(raw)
+                            # Close on any error status (e.g. installing_deps + error) or final done/done.
+                            if ev.get("status") == "error":
+                                return
+                            if ev.get("step") == "done" and ev.get("status") == "done":
+                                return
+                        except Exception:
+                            pass
+                else:
+                    idle_ticks += 1
+                    # Keep-alive comment every 15 s
+                    if idle_ticks % 15 == 0:
+                        yield ": keep-alive\n\n"
 
-            await asyncio.sleep(1)
+                await asyncio.sleep(1)
+        except Exception as e:
+            traceback.print_exc()
+            log.exception("deploy_progress_sse_failed", node_id=node_id, error=str(e))
+            err = json.dumps({"status": "error", "message": str(e)})
+            yield f"data: {err}\n\n"
 
-    return StreamingResponse(
-        _generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    try:
+        return StreamingResponse(
+            _generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    except Exception as e:
+        traceback.print_exc()
+        log.exception("deploy_progress_route_failed", node_id=node_id, error=str(e))
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": str(e)},
+        )
 
 
 @router.get(
@@ -221,44 +246,60 @@ async def stream_progress(
     response_model=DeployStatusResponse,
     summary="Latest progress snapshot for all nodes",
 )
-async def get_deploy_status(redis: RedisDep) -> DeployStatusResponse:
+async def get_deploy_status(redis: RedisDep) -> DeployStatusResponse | JSONResponse:
     """
     Returns the most recent progress event for every node that has a deploy
     progress buffer in Redis.
     """
-    pattern = "nexus:deploy:progress:*"
-    nodes: dict[str, DeployProgressEvent | None] = {}
-    cursor = 0
+    try:
+        pattern = "nexus:deploy:progress:*"
+        nodes: dict[str, DeployProgressEvent | None] = {}
+        cursor = 0
 
-    while True:
-        cursor, keys = await redis.scan(cursor=cursor, match=pattern, count=100)
-        for key in keys:
-            node_id = key.split("nexus:deploy:progress:")[-1]
-            raw = await redis.lindex(key, -1)  # last event
-            if raw:
-                try:
-                    ev = json.loads(raw)
-                    nodes[node_id] = DeployProgressEvent(**ev)
-                except Exception:
+        while True:
+            cursor, keys = await redis.scan(cursor=cursor, match=pattern, count=100)
+            for key in keys:
+                node_id = key.split("nexus:deploy:progress:")[-1]
+                raw = await redis.lindex(key, -1)  # last event
+                if raw:
+                    try:
+                        ev = json.loads(raw)
+                        nodes[node_id] = DeployProgressEvent(**ev)
+                    except Exception:
+                        nodes[node_id] = None
+                else:
                     nodes[node_id] = None
-            else:
-                nodes[node_id] = None
-        if cursor == 0:
-            break
+            if cursor == 0:
+                break
 
-    return DeployStatusResponse(
-        nodes=nodes,
-        queried_at=datetime.now(timezone.utc).isoformat(),
-    )
+        return DeployStatusResponse(
+            nodes=nodes,
+            queried_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as e:
+        traceback.print_exc()
+        log.exception("deploy_status_route_failed", error=str(e))
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": str(e)},
+        )
 
 
 @router.delete(
     "/progress/{node_id}",
     summary="Clear deploy progress buffer for a node",
 )
-async def clear_progress(node_id: str, redis: RedisDep) -> dict[str, str]:
-    await redis.delete(f"nexus:deploy:progress:{node_id}")
-    return {"status": "cleared", "node_id": node_id}
+async def clear_progress(node_id: str, redis: RedisDep) -> dict[str, str] | JSONResponse:
+    try:
+        await redis.delete(f"nexus:deploy:progress:{node_id}")
+        return {"status": "cleared", "node_id": node_id}
+    except Exception as e:
+        traceback.print_exc()
+        log.exception("deploy_clear_progress_failed", node_id=node_id, error=str(e))
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": str(e)},
+        )
 
 
 # ── Phase 18: Nexus-Push direct sync ──────────────────────────────────────────
@@ -285,7 +326,7 @@ async def _run_sync(redis) -> None:  # type: ignore[type-arg]
 async def trigger_sync(
     request: Request,
     redis: RedisDep,
-) -> DeployResponse:
+) -> DeployResponse | JSONResponse:
     """
     Phase 18 — Nexus-Push.
 
@@ -304,29 +345,39 @@ async def trigger_sync(
     target (``worker_linux``, ``worker_windows``). Sync succeeds if at least one
     target completes successfully.
     """
-    # Cancel stale tasks
-    stale = [jid for jid, t in _active_deploys.items() if t.done()]
-    for jid in stale:
-        _active_deploys.pop(jid, None)
+    try:
+        # Cancel stale tasks
+        stale = [jid for jid, t in _active_deploys.items() if t.done()]
+        for jid in stale:
+            _active_deploys.pop(jid, None)
 
-    if "sync" in _active_deploys and not _active_deploys["sync"].done():
-        raise HTTPException(
-            status_code=409,
-            detail="A sync is already in progress.",
+        if "sync" in _active_deploys and not _active_deploys["sync"].done():
+            raise HTTPException(
+                status_code=409,
+                detail="A sync is already in progress.",
+            )
+
+        task = asyncio.create_task(_run_sync(redis))
+        _active_deploys["sync"] = task
+
+        started = datetime.now(timezone.utc).isoformat()
+        log.info("sync_triggered", worker_ip=settings.worker_ip)
+
+        return DeployResponse(
+            job_id="sync",
+            targets=["worker_linux", "worker_windows"],
+            message=(
+                "Sync started — stream via GET /api/deploy/progress/worker_linux "
+                "and .../worker_windows"
+            ),
+            started_at=started,
         )
-
-    task = asyncio.create_task(_run_sync(redis))
-    _active_deploys["sync"] = task
-
-    started = datetime.now(timezone.utc).isoformat()
-    log.info("sync_triggered", worker_ip=settings.worker_ip)
-
-    return DeployResponse(
-        job_id="sync",
-        targets=["worker_linux", "worker_windows"],
-        message=(
-            "Sync started — stream via GET /api/deploy/progress/worker_linux "
-            "and .../worker_windows"
-        ),
-        started_at=started,
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        log.exception("deploy_sync_route_failed", error=str(e))
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": str(e)},
+        )

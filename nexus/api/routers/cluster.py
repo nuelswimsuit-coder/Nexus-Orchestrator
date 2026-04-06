@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import traceback
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from time import perf_counter
@@ -29,7 +30,7 @@ from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from redis.asyncio import Redis
 
@@ -69,73 +70,81 @@ ARQ_QUEUE_KEY = "arq:queue:nexus:tasks"
 
 
 @router.get("/status", response_model=ClusterStatusResponse, summary="Cluster topology and health")
-async def get_cluster_status(redis: RedisDep) -> ClusterStatusResponse:
+async def get_cluster_status(redis: RedisDep) -> ClusterStatusResponse | JSONResponse:
     """
     Return live cluster state:
     - All nodes that have published a heartbeat within their TTL window.
     - Master resource caps from settings.
     - Pending job count for each monitored queue.
     """
-    # ── Collect node heartbeats ────────────────────────────────────────────────
-    # Scan for all heartbeat keys without blocking the event loop.
-    node_statuses: list[NodeStatus] = []
-    cursor = 0
-    pattern = f"{HEARTBEAT_KEY_PREFIX}*".encode()
+    try:
+        # ── Collect node heartbeats ────────────────────────────────────────────────
+        # Scan for all heartbeat keys without blocking the event loop.
+        node_statuses: list[NodeStatus] = []
+        cursor = 0
+        pattern = f"{HEARTBEAT_KEY_PREFIX}*".encode()
 
-    while True:
-        cursor, keys = await redis.scan(cursor=cursor, match=pattern, count=100)
-        for key in keys:
-            raw = await redis.get(key)
-            if raw is None:
-                continue
-            try:
-                hb = NodeHeartbeat.model_validate_json(raw)
-                node_statuses.append(
-                    NodeStatus(
-                        node_id=hb.node_id,
-                        role=hb.role,
-                        cpu_percent=hb.cpu_percent,
-                        ram_used_mb=hb.ram_used_mb,
-                        active_jobs=hb.active_jobs,
-                        last_seen=hb.timestamp,
-                        online=True,
-                        # Phase 3 hardware fields
-                        local_ip=hb.local_ip,
-                        cpu_model=hb.cpu_model,
-                        gpu_model=hb.gpu_model,
-                        ram_total_mb=hb.ram_total_mb,
-                        active_tasks_count=hb.active_tasks_count,
-                        os_info=hb.os_info,
-                        # Phase 4 extended hardware
-                        motherboard=hb.motherboard,
-                        cpu_temp_c=hb.cpu_temp_c,
-                        display_name=hb.display_name,
+        while True:
+            cursor, keys = await redis.scan(cursor=cursor, match=pattern, count=100)
+            for key in keys:
+                raw = await redis.get(key)
+                if raw is None:
+                    continue
+                try:
+                    hb = NodeHeartbeat.model_validate_json(raw)
+                    node_statuses.append(
+                        NodeStatus(
+                            node_id=hb.node_id,
+                            role=hb.role,
+                            cpu_percent=hb.cpu_percent,
+                            ram_used_mb=hb.ram_used_mb,
+                            active_jobs=hb.active_jobs,
+                            last_seen=hb.timestamp,
+                            online=True,
+                            # Phase 3 hardware fields
+                            local_ip=hb.local_ip,
+                            cpu_model=hb.cpu_model,
+                            gpu_model=hb.gpu_model,
+                            ram_total_mb=hb.ram_total_mb,
+                            active_tasks_count=hb.active_tasks_count,
+                            os_info=hb.os_info,
+                            # Phase 4 extended hardware
+                            motherboard=hb.motherboard,
+                            cpu_temp_c=hb.cpu_temp_c,
+                            display_name=hb.display_name,
+                        )
                     )
-                )
-            except Exception as exc:
-                log.warning("heartbeat_parse_error", key=key, error=str(exc))
-        if cursor == 0:
-            break
+                except Exception as exc:
+                    log.warning("heartbeat_parse_error", key=key, error=str(exc))
+            if cursor == 0:
+                break
 
-    # Sort: master first, then workers alphabetically.
-    node_statuses.sort(key=lambda n: (n.role.value != "master", n.node_id))
+        # Sort: master first, then workers alphabetically.
+        node_statuses.sort(key=lambda n: (n.role.value != "master", n.node_id))
 
-    # ── Queue depth ────────────────────────────────────────────────────────────
-    pending_count = await redis.zcard(ARQ_QUEUE_KEY)
-    queues = [QueueStats(queue_name="nexus:tasks", pending_jobs=pending_count)]
+        # ── Queue depth ────────────────────────────────────────────────────────────
+        pending_count = await redis.zcard(ARQ_QUEUE_KEY)
+        queues = [QueueStats(queue_name="nexus:tasks", pending_jobs=pending_count)]
 
-    # ── Master resource caps (from settings, not live measurement) ─────────────
-    caps = ResourceCaps(
-        cpu_cap_percent=settings.master_cpu_cap_percent,
-        ram_cap_mb=settings.master_ram_cap_mb,
-    )
+        # ── Master resource caps (from settings, not live measurement) ─────────────
+        caps = ResourceCaps(
+            cpu_cap_percent=settings.master_cpu_cap_percent,
+            ram_cap_mb=settings.master_ram_cap_mb,
+        )
 
-    return ClusterStatusResponse(
-        nodes=node_statuses,
-        master_resource_caps=caps,
-        queues=queues,
-        timestamp=datetime.now(timezone.utc),
-    )
+        return ClusterStatusResponse(
+            nodes=node_statuses,
+            master_resource_caps=caps,
+            queues=queues,
+            timestamp=datetime.now(timezone.utc),
+        )
+    except Exception as e:
+        traceback.print_exc()
+        log.exception("cluster_status_route_failed", error=str(e))
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": str(e)},
+        )
 
 
 def _redis_key_str(key: bytes | str) -> str:
@@ -207,12 +216,24 @@ async def _load_target_heatmap(redis: Redis) -> list[TargetHeatCell]:
 
 
 @router.get("/health", response_model=ClusterHealthResponse, summary="Redis + per-node probe latencies for fleet grid")
-async def get_cluster_health(redis: RedisDep) -> ClusterHealthResponse:
+async def get_cluster_health(redis: RedisDep) -> ClusterHealthResponse | JSONResponse:
     """
     Measures Redis PING RTT and parallel GET latency for each ``nexus:heartbeat:*`` key.
     Also returns recent swarm signal lines and a two-cell target heatmap derived from
     cached war-room intel when available.
     """
+    try:
+        return await _get_cluster_health_impl(redis)
+    except Exception as e:
+        traceback.print_exc()
+        log.exception("cluster_health_route_failed", error=str(e))
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": str(e)},
+        )
+
+
+async def _get_cluster_health_impl(redis: RedisDep) -> ClusterHealthResponse:
     redis_ok = False
     redis_ping_ms: float | None = None
     try:
@@ -329,63 +350,79 @@ async def get_cluster_health(redis: RedisDep) -> ClusterHealthResponse:
     response_model=FleetAssetsResponse,
     summary="Fleet groups, member counts, owning session, and Redis mapper totals",
 )
-async def get_fleet_assets(redis: RedisDep) -> FleetAssetsResponse:
+async def get_fleet_assets(redis: RedisDep) -> FleetAssetsResponse | JSONResponse:
     """
     Sorted list of managed groups from telefix.db (via telefix_bridge), merged with
     live ``total_managed_members`` / ``total_premium_members`` counters in Redis.
     """
-    raw = await get_fleet_group_assets()
-    counters = await get_fleet_counter_snapshot(redis)
-    audit = await load_latest_fleet_audit(redis)
-
-    groups = [
-        FleetAssetRow(
-            group_id=g["group_id"],
-            title=(g.get("group_name") or g["group_id"] or "").strip() or str(g["group_id"]),
-            member_count=int(g.get("member_count") or 0),
-            premium_members=int(g.get("premium_count") or 0),
-            session_owner=str(g.get("owner_session") or ""),
-            status=str(g.get("status") or "MONITORING"),
-            last_automation=g.get("last_automation"),
-        )
-        for g in raw.get("groups") or []
-    ]
-
-    queried = raw.get("queried_at")
     try:
-        queried_at = (
-            datetime.fromisoformat(queried.replace("Z", "+00:00"))
-            if isinstance(queried, str)
-            else datetime.now(timezone.utc)
-        )
-    except Exception:
-        queried_at = datetime.now(timezone.utc)
+        raw = await get_fleet_group_assets()
+        counters = await get_fleet_counter_snapshot(redis)
+        audit = await load_latest_fleet_audit(redis)
 
-    return FleetAssetsResponse(
-        groups=groups,
-        total_managed_members=counters["total_managed_members"],
-        total_premium_members=counters["total_premium_members"],
-        latest_audit=audit,
-        db_available=bool(raw.get("db_available")),
-        queried_at=queried_at,
-    )
+        groups = [
+            FleetAssetRow(
+                group_id=g["group_id"],
+                title=(g.get("group_name") or g["group_id"] or "").strip() or str(g["group_id"]),
+                member_count=int(g.get("member_count") or 0),
+                premium_members=int(g.get("premium_count") or 0),
+                session_owner=str(g.get("owner_session") or ""),
+                status=str(g.get("status") or "MONITORING"),
+                last_automation=g.get("last_automation"),
+            )
+            for g in raw.get("groups") or []
+        ]
+
+        queried = raw.get("queried_at")
+        try:
+            queried_at = (
+                datetime.fromisoformat(queried.replace("Z", "+00:00"))
+                if isinstance(queried, str)
+                else datetime.now(timezone.utc)
+            )
+        except Exception:
+            queried_at = datetime.now(timezone.utc)
+
+        return FleetAssetsResponse(
+            groups=groups,
+            total_managed_members=counters["total_managed_members"],
+            total_premium_members=counters["total_premium_members"],
+            latest_audit=audit,
+            db_available=bool(raw.get("db_available")),
+            queried_at=queried_at,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        log.exception("cluster_fleet_assets_route_failed", error=str(e))
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": str(e)},
+        )
 
 
 @router.get(
     "/fleet/scan/status",
     summary="Latest fleet scan event (for polling without SSE)",
 )
-async def get_fleet_scan_status(redis: RedisDep) -> dict:
-    raw = await redis.get(FLEET_SCAN_STATUS_KEY)
-    if not raw:
-        return {"event": None}
-    if isinstance(raw, bytes):
-        raw = raw.decode()
+async def get_fleet_scan_status(redis: RedisDep) -> dict | JSONResponse:
     try:
-        ev = FleetScanEvent.model_validate_json(raw)
-        return {"event": ev.model_dump(mode="json")}
-    except Exception:
-        return {"event": None, "raw": raw}
+        raw = await redis.get(FLEET_SCAN_STATUS_KEY)
+        if not raw:
+            return {"event": None}
+        if isinstance(raw, bytes):
+            raw = raw.decode()
+        try:
+            ev = FleetScanEvent.model_validate_json(raw)
+            return {"event": ev.model_dump(mode="json")}
+        except Exception:
+            return {"event": None, "raw": raw}
+    except Exception as e:
+        traceback.print_exc()
+        log.exception("cluster_fleet_scan_status_route_failed", error=str(e))
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": str(e)},
+        )
 
 
 @router.get(
