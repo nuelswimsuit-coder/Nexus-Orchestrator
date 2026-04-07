@@ -1,5 +1,9 @@
 # Nexus Orchestrator — Worker Scale-Out Compose File
 #
+# Workers must reach the master broker with the same password as docker-compose.redis-master.yml:
+#   REDIS_URL=redis://:YOUR_REDIS_PASSWORD@10.100.102.8:6379/0
+# Put that in `.env` (this file uses env_file: .env). See .env.example.
+#
 # Usage:
 #   docker compose -f docker-compose.workers.yml up -d
 #   docker compose -f docker-compose.workers.yml up --scale worker=5 -d

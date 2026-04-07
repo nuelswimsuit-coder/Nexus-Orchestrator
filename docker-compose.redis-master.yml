@@ -1,12 +1,15 @@
 # Redis on the Master — published on all host interfaces so LAN workers can reach 10.100.102.8:6379.
-# Your previous container used 127.0.0.1:6379->6379 (localhost only). This uses 6379:6379.
+# Bind 0.0.0.0 + requirepass satisfies Redis protected-mode for non-loopback clients.
+#
+# Set REDIS_PASSWORD in `.env` next to this file (or export it) before `compose up`.
+# Match every Nexus client: REDIS_URL=redis://:SAME_PASSWORD@10.100.102.8:6379/0 (workers) or
+# redis://:SAME_PASSWORD@127.0.0.1:6379/0 (processes on the master host).
 #
 # Usage (from repo root):
 #   docker compose -f docker-compose.redis-master.yml down
 #   docker compose -f docker-compose.redis-master.yml up -d
 #
-# If you used a password before, add to `command` e.g.:
-#   command: ["redis-server", "--bind", "0.0.0.0", "--requirepass", "YOUR_SECRET"]
+# Host firewall (Linux): sudo sh ./setup_host_firewall.sh
 
 services:
   warmer_redis:
@@ -14,4 +17,9 @@ services:
     container_name: warmer_redis
     ports:
       - "6379:6379"
-    command: ["redis-server", "--bind", "0.0.0.0"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env or export before compose up}
+    command:
+      - sh
+      - -c
+      - exec redis-server --bind 0.0.0.0 --requirepass "$$REDIS_PASSWORD"
