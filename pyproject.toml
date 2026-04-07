@@ -28,6 +28,9 @@ dependencies = [
     # --- HTTP client for agents that call external APIs ---
     "httpx>=0.27",
 
+    # --- Fast JSON (Gemini payloads / parsing) ---
+    "ujson>=5.9",
+
     # --- CLI entrypoints ---
     "typer>=0.12",
 

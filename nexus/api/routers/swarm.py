@@ -876,6 +876,50 @@ async def stop_swarm(request: Request, redis: RedisDep) -> dict[str, Any]:
     return {"ok": True, "status": "stopped"}
 
 
+# Matches ``scripts/git_sync.py`` — workers poll this key and subscribe to the channel.
+_NEXUS_COMMANDS_CHANNEL = "nexus:commands"
+_FORCE_GIT_PULL_REDIS_KEY = "nexus:commands:force_git_pull"
+
+
+@router.post(
+    "/force-sync",
+    summary="Broadcast FORCE_GIT_PULL to all nodes (Redis SET + PUBLISH)",
+)
+async def force_git_pull_swarm(request: Request, redis: RedisDep) -> dict[str, Any]:
+    """
+    Sets ``nexus:commands:force_git_pull`` and publishes JSON on ``nexus:commands`` so
+    ``git_sync.py`` on each worker triggers an immediate git pull/reset.
+    """
+    if _api_redis_is_degraded(request):
+        log.warning("force_git_pull_rejected_redis_degraded")
+        raise HTTPException(status_code=503, detail=_SWARM_DEGRADED_MSG)
+
+    payload = {
+        "command": "FORCE_GIT_PULL",
+        "issued_by": "dashboard",
+        "source": "nexus_api",
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    body = json.dumps(payload, ensure_ascii=False)
+    try:
+        await redis.set(_FORCE_GIT_PULL_REDIS_KEY, body)
+        subscribers = int(await redis.publish(_NEXUS_COMMANDS_CHANNEL, body))
+    except Exception as exc:
+        log.error("force_git_pull_broadcast_failed", error=str(exc))
+        raise HTTPException(
+            status_code=502,
+            detail=f"Redis publish failed: {exc}",
+        ) from exc
+
+    await _append_swarm_feed_line(
+        redis,
+        "[דשבורד] נשלח FORCE_GIT_PULL לכל הצמתים דרך Redis (מפתח + pub/sub)",
+        topic="force_git_pull",
+    )
+    log.info("force_git_pull_broadcast_ok", channel_subscribers=subscribers)
+    return {"ok": True, "channel_subscribers": subscribers}
+
+
 @router.post(
     "/join-all-sessions",
     summary="Enqueue mass join of all eligible vault Telethon sessions to the target group",

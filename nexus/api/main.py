@@ -41,6 +41,7 @@ from nexus.api.routers import (
     content,
     deploy,
     evolution,
+    factory,
     flight_mode,
     group_infiltration,
     hitl,
@@ -1426,6 +1427,7 @@ def create_app() -> FastAPI:
     app.include_router(incubator.router, prefix="/api")
     app.include_router(management_dashboard.router, prefix="/api")
     app.include_router(evolution.router, prefix="/api")
+    app.include_router(factory.router, prefix="/api")
     app.include_router(deploy.router, prefix="/api")
     app.include_router(config.router, prefix="/api")
     app.include_router(projects.router, prefix="/api")
@@ -1436,6 +1438,14 @@ def create_app() -> FastAPI:
     app.include_router(sentinel.router, prefix="/api")
     app.include_router(sessions.router, prefix="/api")
     app.include_router(swarm.router, prefix="/api")
+    # Dashboard (NexusOsGodMode) calls this path; keep in sync with WebSocket /api/v1/swarm/nodes/...
+    app.add_api_route(
+        "/api/v1/swarm/force-sync",
+        swarm.force_git_pull_swarm,
+        methods=["POST"],
+        tags=["swarm"],
+        summary="Broadcast FORCE_GIT_PULL (v1 path alias)",
+    )
     app.include_router(system.router, prefix="/api")
     app.include_router(flight_mode.router, prefix="/api")
     app.include_router(scan.router, prefix="/api")

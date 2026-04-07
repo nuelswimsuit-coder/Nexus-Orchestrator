@@ -80,6 +80,9 @@ _factory_group_recent_sent_local: dict[int, list[str]] = {}
 _factory_media_slot_local: dict[int, float] = {}
 
 GROUPS_TARGET_PER_OWNER = 20
+_RANKSEO_REPORT_PATH = (
+    Path(__file__).resolve().parents[3] / "vault" / "data" / "group_factory_rankseo_report.json"
+)
 REACTION_EMOJIS = ["🔥", "😂", "💀", "🤯", "👀", "😱", "💪", "🤦", "😅", "❤️", "🙏"]
 THREAD_REACTION_EMOJIS = ["👍", "🤦‍♂️", "🤬"]
 
@@ -237,6 +240,58 @@ def _split_roles(bases: list[str]) -> tuple[list[str], list[str]]:
     owners = bases[:owner_count]
     members = bases[owner_count:]
     return owners, members
+
+
+def _split_roles_rankseo(bases: list[str]) -> tuple[list[str], list[str]]:
+    """RANKSEO / Group Factory: every session creates (round-robin) and joins others' groups."""
+    if not bases:
+        return [], []
+    return list(bases), list(bases)
+
+
+def _peer_channel_id(raw: int) -> int:
+    """Normalize stored Telegram channel id to a positive channel id for PeerChannel."""
+    x = abs(int(raw))
+    s = str(x)
+    if len(s) > 6 and s.startswith("100"):
+        return int(s[3:])
+    return int(raw) if int(raw) > 0 else x
+
+
+def _write_rankseo_report_file(groups: list[dict[str, Any]]) -> None:
+    try:
+        _RANKSEO_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        links = [g.get("invite_link") for g in groups if isinstance(g, dict) and g.get("invite_link")]
+        payload = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "private_groups_total": len(groups),
+            "private_invite_links_total": len(links),
+            "groups": groups,
+            "links_text": "\n".join(str(u) for u in links if u),
+        }
+        _RANKSEO_REPORT_PATH.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        log.warning("rankseo_report_write_failed", error=str(exc))
+
+
+async def _factory_after_joins_done(
+    redis: Any, state: dict[str, Any], carry: dict[str, Any]
+) -> None:
+    """After the join matrix is done: optional invite export, then chat or complete."""
+    iphases = [str(p).lower() for p in (state.get("init_phases") or [])]
+    if state.get("rankseo_mode") and "export_invites" in iphases:
+        state["phase"] = "exporting_invites"
+        state["export_invite_idx"] = 0
+        await _redis_json_set(redis, KEY_STATE, state)
+        await _enqueue_task("swarm.community_factory.export_private_invites_tick", carry)
+        return
+    state["phase"] = "chatting" if state.get("chat_enabled") else "complete"
+    await _redis_json_set(redis, KEY_STATE, state)
+    if state.get("chat_enabled"):
+        await _enqueue_task("swarm.community_factory.converse_tick", carry)
 
 
 def _default_metrics() -> dict[str, Any]:
