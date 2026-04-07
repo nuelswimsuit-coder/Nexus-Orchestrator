@@ -86,8 +86,20 @@ from nexus.shared.network.ssh_handler import (
     local_sync_project_tree,
 )
 from nexus.shared.paths import repository_root
+from nexus.shared.workers_config import load_static_workers
 
 log = structlog.get_logger(__name__)
+
+
+def _first_static_worker_ip_match(
+    workers: list, preferred_node_ids: tuple[str, ...]
+) -> str | None:
+    by_id = {w.node_id: w.ip for w in workers}
+    for nid in preferred_node_ids:
+        ip = str(by_id.get(nid) or "").strip()
+        if ip:
+            return ip
+    return None
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -686,6 +698,9 @@ class DeployerService:
         json_ip = self._worker_ip_from_shared_config_json()
         if json_ip:
             return json_ip
+        static_win = self._ip_from_workers_config("worker_windows")
+        if static_win:
+            return static_win
         if sys.platform == "win32":
             # Single-box dev: WORKER_IP=127.0.0.1 but WORKER_IP_WINDOWS unset → avoid SSH to .20.
             lip = (
@@ -2208,6 +2223,27 @@ class DeployerService:
                 break
         return worker_ids
 
+    def _ip_from_workers_config(self, node_id: str) -> str | None:
+        explicit = (self._get_setting("workers_config_path") or "").strip()
+        workers = load_static_workers(
+            repo_root=NEXUS_ROOT, explicit_path=explicit or None
+        )
+        if not workers:
+            return None
+        if node_id == "worker_windows":
+            return _first_static_worker_ip_match(
+                workers,
+                ("worker_windows", "worker_laptop_windows", "worker_master_windows"),
+            )
+        if node_id == "worker_linux":
+            return _first_static_worker_ip_match(
+                workers, ("worker_linux", "worker_laptop_linux")
+            )
+        for w in workers:
+            if w.node_id == node_id and (w.ip or "").strip():
+                return w.ip.strip()
+        return None
+
     async def _resolve_ip(self, node_id: str) -> str | None:
         """
         Resolve the IP for a node.
@@ -2219,6 +2255,8 @@ class DeployerService:
         2. ``worker_linux`` + ``WORKER_IP`` (any value), else heartbeat ``local_ip``,
            else stripped ``WORKER_IP`` (may be empty if unset).
         3. Otherwise ``local_ip`` from the Redis heartbeat.
+        4. ``configs/workers.json`` for canonical / laptop node IDs (Windows never
+           falls back to ``WORKER_IP``).
         """
         stripped = node_id.strip()
         try:
@@ -2243,7 +2281,10 @@ class DeployerService:
             if node_id == "worker_windows":
                 return win_ip or fb_win
             if node_id == "worker_linux":
-                return _effective_worker_linux_ssh_host((worker_ip or "").strip())
+                lip = _effective_worker_linux_ssh_host((worker_ip or "").strip())
+                if lip:
+                    return lip
+                return self._ip_from_workers_config("worker_linux")
             # Last resort: if only one static IP is configured, use it
             return worker_ip or None
         try:

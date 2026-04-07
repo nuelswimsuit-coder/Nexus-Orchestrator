@@ -182,6 +182,8 @@ class Settings(BaseSettings):
     worker_ssh_key_file: str = Field(default="")
     # Direct IP of the Linux worker laptop (used when no Redis heartbeat exists)
     worker_ip: str = Field(default="")
+    # Windows worker for Nexus-Push (optional; else Redis or configs/workers.json)
+    worker_ip_windows: str = Field(default="")
     # Canonical remote path — used by /api/deploy/sync (Phase 18)
     # Falls back to worker_deploy_root_linux if not set.
     worker_remote_path: str = Field(default="")

@@ -60,8 +60,21 @@ from nexus.shared.deploy_preflight import (
     preflight_remote_ssh,
     print_ssh_debug_command,
 )
+from nexus.shared.workers_config import load_static_workers
 
 log = structlog.get_logger(__name__)
+
+
+def _first_static_worker_ip_match(
+    workers: list, preferred_node_ids: tuple[str, ...]
+) -> str | None:
+    """Return the first non-empty IP among ``preferred_node_ids`` in the static table."""
+    by_id = {w.node_id: w.ip for w in workers}
+    for nid in preferred_node_ids:
+        ip = str(by_id.get(nid) or "").strip()
+        if ip:
+            return ip
+    return None
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -930,14 +943,37 @@ class DeployerService:
                 break
         return worker_ids
 
+    def _ip_from_workers_config(self, node_id: str) -> str | None:
+        explicit = (self._get_setting("workers_config_path") or "").strip()
+        workers = load_static_workers(
+            repo_root=NEXUS_ROOT, explicit_path=explicit or None
+        )
+        if not workers:
+            return None
+        if node_id == "worker_windows":
+            return _first_static_worker_ip_match(
+                workers,
+                ("worker_windows", "worker_laptop_windows", "worker_master_windows"),
+            )
+        if node_id == "worker_linux":
+            return _first_static_worker_ip_match(
+                workers, ("worker_linux", "worker_laptop_linux")
+            )
+        for w in workers:
+            if w.node_id == node_id and (w.ip or "").strip():
+                return w.ip.strip()
+        return None
+
     async def _resolve_ip(self, node_id: str) -> str | None:
         """
         Resolve the IP for a node.
 
         Priority:
-        1. If node_id == "worker_linux" and WORKER_IP is set → use it directly.
-        2. If node_id == "worker_windows" and WORKER_IP_WINDOWS (or _FALLBACK) is set → use it.
-        3. Otherwise look up local_ip from the Redis heartbeat.
+        1. ``worker_linux`` + ``WORKER_IP`` (or ``configs/workers.json`` if unset and no heartbeat).
+        2. ``worker_windows`` + ``WORKER_IP_WINDOWS`` / settings / ``WORKER_IP_WINDOWS_FALLBACK``
+           — never reuse ``WORKER_IP`` (Linux) for Windows.
+        3. Redis heartbeat ``local_ip``.
+        4. ``configs/workers.json`` when heartbeat is missing or has no usable IP.
         """
         worker_ip = (self._get_setting("worker_ip") or "").strip()
         if node_id == "worker_linux" and worker_ip:
@@ -947,6 +983,9 @@ class DeployerService:
             wip = (os.environ.get("WORKER_IP_WINDOWS") or "").strip()
             if wip:
                 return wip
+            wip = (self._get_setting("worker_ip_windows") or "").strip()
+            if wip:
+                return wip
             wip_fb = (os.environ.get("WORKER_IP_WINDOWS_FALLBACK") or "").strip()
             if wip_fb:
                 return wip_fb
@@ -954,12 +993,26 @@ class DeployerService:
         key = f"nexus:heartbeat:{node_id}"
         raw = await self._redis.get(key)
         if not raw:
-            # Last resort: if only one static IP is configured, use it
+            if node_id == "worker_windows":
+                return self._ip_from_workers_config("worker_windows")
+            if node_id == "worker_linux":
+                static_linux = self._ip_from_workers_config("worker_linux")
+                if static_linux:
+                    return static_linux
             return worker_ip or None
         try:
             hb = json.loads(raw)
-            return hb.get("local_ip")
+            lip = hb.get("local_ip")
+            if lip is not None:
+                s = str(lip).strip()
+                if s and s.lower() != "unknown":
+                    return s
+            if node_id == "worker_windows":
+                return self._ip_from_workers_config("worker_windows")
+            return None
         except Exception:
+            if node_id == "worker_windows":
+                return self._ip_from_workers_config("worker_windows")
             return None
 
     # ── Per-node deployment ────────────────────────────────────────────────────
