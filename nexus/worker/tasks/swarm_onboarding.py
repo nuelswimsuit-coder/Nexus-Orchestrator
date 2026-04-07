@@ -18,6 +18,7 @@ swarm.onboarding.mass_join
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import socket
 import sys
@@ -45,6 +46,10 @@ _JOIN_SEM = asyncio.Semaphore(10)
 
 _MASS_JOIN_LATEST_KEY = "nexus:swarm:mass_join:latest_task_id"
 _MASS_JOIN_TTL_S = 86400 * 7
+# Per (normalized target, session stem): survive worker/API restarts so re-runs skip Telethon work.
+_MASS_JOIN_OUTCOME_PREFIX = "nexus:swarm:mass_join:outcome:v1:"
+_MASS_JOIN_OUTCOME_TTL_S = 86400 * 120  # 120d
+_CACHE_KINDS_SKIP_CLIENT = frozenset({"already_member", "join_ok"})
 
 
 def _mass_join_meta_key(task_id: str) -> str:
