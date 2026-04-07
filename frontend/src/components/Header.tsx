@@ -87,8 +87,29 @@ function SystemHealthBreadcrumb({ stealth }: { stealth: boolean }) {
     "/api/hitl/pending", swrFetcher<HitlPendingResponse>, { refreshInterval: 4_000 }
   );
 
-  const masterOnline = cluster?.nodes.some(n => n.role === "master" && n.online) ?? false;
-  const workers      = cluster?.nodes.filter(n => n.role === "worker" && n.online).length ?? 0;
+  // #region agent log
+  fetch("http://127.0.0.1:7273/ingest/903bdd2a-d3ba-4205-9ef3-4953f609952a", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "fd2053" },
+    body: JSON.stringify({
+      sessionId: "fd2053",
+      location: "Header.tsx:SystemHealthBreadcrumb",
+      message: "cluster shape before derive",
+      data: {
+        hypothesisId: "H1-H2",
+        hasCluster: cluster != null,
+        nodesType: typeof cluster?.nodes,
+        nodesIsArray: Array.isArray(cluster?.nodes),
+      },
+      timestamp: Date.now(),
+      runId: "post-fix-verify",
+    }),
+  }).catch(() => {});
+  // #endregion
+
+  const masterOnline = cluster?.nodes?.some(n => n.role === "master" && n.online) ?? false;
+  const workers =
+    (cluster?.nodes?.filter(n => n.role === "worker" && n.online))?.length ?? 0;
   const hitlCount    = hitl?.total ?? 0;
   const statusC      = stealth ? "#334155" : (masterOnline ? "#22c55e" : "#ef4444");
 
