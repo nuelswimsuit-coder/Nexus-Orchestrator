@@ -115,6 +115,18 @@ def _effective_turns_per_tick(parameters: dict[str, Any], engagement_mode: str, 
     return 1
 
 
+def _pick_burst_drama_mode(turns: int) -> str:
+    """Pick multi-turn arc: threaded hot-take fight, Q&A pile-on, or normal (with per-turn disagree odds)."""
+    if turns < 3:
+        return "normal"
+    r = random.random()
+    if r < 0.22:
+        return "chain_reaction"
+    if r < 0.37:
+        return "qa_thread"
+    return "normal"
+
+
 def _intra_turn_delay_bounds(engagement_mode: str, parameters: dict[str, Any]) -> tuple[float, float]:
     lo_raw, hi_raw = parameters.get("intra_turn_min_s"), parameters.get("intra_turn_max_s")
     if lo_raw is not None and hi_raw is not None:
@@ -375,6 +387,8 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                 )
             message_ids: list[int | None] = []
             sent_media = False
+            burst_mode = _pick_burst_drama_mode(turns)
+            chain_root_handle = ""
 
             for turn_i in range(turns):
                 if turn_i > 0:
@@ -393,6 +407,68 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
 
                 sp_u = str(speaker.get("username", "")).lstrip("@")
                 other_handles = [h for h in handles if h != sp_u]
+                if burst_mode == "chain_reaction" and turn_i == 0:
+                    chain_root_handle = sp_u
+
+                drama_directive: str | None = None
+                forced_rid: int | None = None
+                require_peer = bool(other_handles)
+
+                if burst_mode == "chain_reaction":
+                    if turn_i == 0:
+                        drama_directive = (
+                            "BOT_A_HOT_TAKE: Drop a bold Hebrew opinion on the topic (spicy, group-chat energy). "
+                            "Provoke reactions; you may @mention someone from the list."
+                        )
+                    elif turn_i == 1:
+                        prev_mid = message_ids[0] if message_ids else None
+                        if prev_mid:
+                            forced_rid = int(prev_mid)
+                        drama_directive = (
+                            "BOT_B_CYNIC: Reply with cynical / skeptical energy — eye-roll, doubt their take. "
+                            "Do not agree. Hebrew slang OK; no slurs."
+                        )
+                    else:
+                        cynic_mid = message_ids[1] if len(message_ids) > 1 else None
+                        prev_mid = message_ids[0] if message_ids else None
+                        target = cynic_mid or prev_mid
+                        if target:
+                            forced_rid = int(target)
+                        if chain_root_handle:
+                            drama_directive = (
+                                f"BOT_C_DEFENDER: Defend @{chain_root_handle} against the cynic — push back, take their side. "
+                                "Use @ in the text if that handle is in other_participant_handles."
+                            )
+                        else:
+                            drama_directive = (
+                                "BOT_C_DEFENDER: Defend the original hot-take poster against the cynic — push back."
+                            )
+                elif burst_mode == "qa_thread":
+                    if turn_i == 0:
+                        drama_directive = (
+                            "QA_OPEN: Ask the room a short general Hebrew question (e.g. 'מישהו יודע אם...', "
+                            "'מישהו יכול להסביר לי...'). Sound like a real member, not a bot."
+                        )
+                    else:
+                        opener = message_ids[0] if message_ids else None
+                        if opener:
+                            forced_rid = int(opener)
+                        drama_directive = (
+                            "QA_ANSWER: Give a terse Hebrew answer (maybe wrong-funny) or partial info."
+                            if random.random() < 0.5
+                            else (
+                                "QA_COMPLAIN: Grumble about the question or dodge — 'שאלה מוזרה', "
+                                "'תגוגל אחי', 'למה פה' — Hebrew group tone."
+                            )
+                        )
+                elif turn_i >= 1:
+                    prev_bot_mid = message_ids[turn_i - 1] if turn_i - 1 < len(message_ids) else None
+                    if prev_bot_mid and random.random() < 0.30:
+                        forced_rid = int(prev_bot_mid)
+                        drama_directive = (
+                            "DISAGREE_PREV: You MUST disagree with or challenge what the previous bot implied — "
+                            "no agreeing; blunt Hebrew @mention them if you see their handle in the thread map."
+                        )
 
                 nd = news_bundle.digest_text if turn_i == 0 else ""
                 ah = news_bundle.anchor_title if turn_i == 0 else ""
@@ -407,6 +483,9 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                     message_index_map=id_map,
                     news_digest=nd,
                     anchor_headline=ah,
+                    forced_reply_to_id=forced_rid,
+                    drama_directive=drama_directive,
+                    require_peer_mention=require_peer,
                 )
                 text = str(line.get("text", "")).strip()
                 text, link_parse_mode = append_article_link_to_text(
@@ -423,6 +502,12 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                 valid_ids = {m["id"] for m in id_map}
                 if reply_id not in valid_ids:
                     reply_id = None
+                if (
+                    reply_id is None
+                    and forced_rid is not None
+                    and forced_rid in valid_ids
+                ):
+                    reply_id = forced_rid
                 elif reply_id is not None:
                     try:
                         if await sender_of_message_is_owner_or_admin(client, entity, reply_id):
@@ -439,6 +524,8 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                                 anchor_headline=ah,
                                 privileged_reply_target=True,
                                 forced_reply_to_id=reply_id,
+                                drama_directive=None,
+                                require_peer_mention=False,
                             )
                             text = str(line.get("text", "")).strip()
                             text, link_parse_mode = append_article_link_to_text(

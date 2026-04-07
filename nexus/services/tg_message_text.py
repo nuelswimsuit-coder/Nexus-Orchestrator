@@ -81,6 +81,7 @@ def telethon_media_kind_and_hint(m: Any) -> tuple[str | None, str]:
         from telethon.tl.types import (  # type: ignore[import-untyped]
             DocumentAttributeAudio,
             DocumentAttributeFilename,
+            DocumentAttributeSticker,
             DocumentAttributeVideo,
             MessageMediaContact,
             MessageMediaGeo,
@@ -119,11 +120,17 @@ def telethon_media_kind_and_hint(m: Any) -> tuple[str | None, str]:
 
     doc = getattr(media, "document", None)
     if doc is not None:
+        for attr in getattr(doc, "attributes", None) or []:
+            if isinstance(attr, DocumentAttributeSticker):
+                return "sticker", "🎭 סטיקר"
         fname = ""
         for attr in getattr(doc, "attributes", None) or []:
             if isinstance(attr, DocumentAttributeFilename):
                 fname = str(attr.file_name or "").strip()
                 break
+        for attr in getattr(doc, "attributes", None) or []:
+            if isinstance(attr, DocumentAttributeSticker):
+                return "sticker", "🎭 סטיקר"
         for attr in getattr(doc, "attributes", None) or []:
             if isinstance(attr, DocumentAttributeVideo):
                 sec = int(getattr(attr, "duration", 0) or 0)
@@ -162,8 +169,12 @@ def llm_media_prefix_for_message(m: Any) -> str:
     Short English tags for LLM prompts (swarm / community factory), not UI copy.
     """
     kind, _hint = telethon_media_kind_and_hint(m)
+    if kind == "sticker":
+        return "[User sent a Sticker] "
     if kind in ("photo", "image"):
         return "[User sent an Image] "
     if kind == "video":
         return "[User sent a Video] "
+    if kind == "sticker":
+        return "[User sent a Sticker — react in casual Hebrew, e.g. laugh/agree] "
     return ""

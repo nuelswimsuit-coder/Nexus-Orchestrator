@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import random
+import time
 import re
 import uuid
 from datetime import datetime, timezone
@@ -25,7 +26,11 @@ import structlog
 from nexus.modules.community_vibe import parse_json_object
 from nexus.services.anti_parrot_shield import MAX_REGENERATION_RETRIES, is_too_similar_to_recent
 from nexus.services.media_opsec import make_image_upload_salt_seed, prepare_jpeg_png_for_telegram_upload
-from nexus.services.tg_message_text import llm_media_prefix_for_message, strip_trailing_israeli_news_outlet
+from nexus.services.tg_message_text import (
+    llm_media_prefix_for_message,
+    strip_trailing_israeli_news_outlet,
+    telethon_display_text,
+)
 from nexus.services.tg_participant_privilege import sender_of_message_is_owner_or_admin
 from nexus.worker.services.israeli_telegram_profile import ensure_israeli_factory_profile
 from nexus.worker.services.tg_session import (
@@ -48,6 +53,7 @@ KEY_PROFILE_GATE = "nexus:swarm:factory:profile_gate"
 KEY_RECENT_OUTGOING = "nexus:swarm:factory:recent_outgoing"
 GROUP_RECENT_SENT_PREFIX = "nexus:swarm:factory:group_recent_sent:"
 KEY_FACTORY_POOL_UIDS = "nexus:swarm:factory:pool_user_ids"
+KEY_MEDIA_SLOT_PREFIX = "nexus:swarm:factory:media_slot:"
 THREAD_KEY_PREFIX = "nexus:swarm:factory:thread:"
 ACTIVE_TOPIC_KEY_PREFIX = "nexus:swarm:factory:active_topic:"
 THREAD_ID_CAP = 5
@@ -70,6 +76,8 @@ _DEFAULT_STICKER_PACKS = ["AnimatedEmojies", "HotCherry"]
 _factory_profile_verified_local: set[str] = set()
 # Per-group last sent lines when Redis is missing (best-effort within this process only).
 _factory_group_recent_sent_local: dict[int, list[str]] = {}
+# When Redis is None: monotonic deadline until another factory bot may send sticker/gif/image in this group.
+_factory_media_slot_local: dict[int, float] = {}
 
 GROUPS_TARGET_PER_OWNER = 20
 REACTION_EMOJIS = ["🔥", "😂", "💀", "🤯", "👀", "😱", "💪", "🤦", "😅", "❤️", "🙏"]
@@ -491,10 +499,10 @@ def _anti_duplication_shield_rejects_turn(
     """
     if rich_media_mode:
         at = str(turn.get("action_type") or "text").strip().lower()
-        if at in ("sticker", "gif", "image") and not str(
-            turn.get("message_text") or turn.get("primary_message") or ""
-        ).strip():
-            return False
+        if at in ("sticker", "gif", "image"):
+            mt = str(turn.get("message_text") or turn.get("primary_message") or "").strip()
+            if len(mt) < 1:
+                return True
     primary = _finalize_primary_message(
         str(turn.get("primary_message") or turn.get("message_text") or "")
     ).strip()
@@ -654,6 +662,59 @@ async def _factory_group_recent_sent_push(redis: Any, group_id: int, fragment: s
         log.debug("factory_group_recent_sent_push_failed", group_id=group_id, error=str(exc))
 
 
+def _default_hebrew_media_companion(action: str, image_query: str) -> str:
+    q = (image_query or "").lower()
+    funny_kw = ("funny", "lol", "meme", "laugh", "comedy", "joke", "haha", "rofl", "lmao")
+    if action == "sticker" or any(k in q for k in funny_kw):
+        return random.choice(
+            (
+                "חחח חזק",
+                "מדויק",
+                "וואלה מצחיק",
+                "הרגת אותי",
+                "די חזק",
+                "נכון לגמרי חח",
+                "אמאלה",
+            )
+        )
+    if any(k in q for k in ("wow", "crazy", "wild", "insane")):
+        return random.choice(("וואלה הזייה", "לא ציפיתי", "חזק מדי"))
+    if any(k in q for k in ("sad", "cry", "rip")):
+        return random.choice(("איכס", "חבל", "מבאס"))
+    return random.choice(("וואלה", "חזק", "אש", "מדויק"))
+
+
+def _ensure_rich_media_message_text(turn: dict[str, Any]) -> dict[str, Any]:
+    at = str(turn.get("action_type") or "text").strip().lower()
+    if at not in ("sticker", "gif", "image"):
+        return turn
+    mt = str(turn.get("message_text") or turn.get("primary_message") or "").strip()
+    if mt:
+        return {**turn, "message_text": mt, "primary_message": mt}
+    companion = _default_hebrew_media_companion(at, str(turn.get("image_query") or ""))
+    return {**turn, "message_text": companion, "primary_message": companion}
+
+
+async def _try_acquire_factory_media_slot(redis: Any, group_id: int) -> bool:
+    ttl = int(os.getenv("COMMUNITY_FACTORY_MEDIA_LOCK_SEC", "900") or "900")
+    ttl = max(120, min(ttl, 7200))
+    now_m = time.monotonic()
+    gid = int(group_id)
+    if redis is None:
+        until = _factory_media_slot_local.get(gid, 0.0)
+        if now_m < until:
+            return False
+        _factory_media_slot_local[gid] = now_m + float(ttl)
+        return True
+    key = f"{KEY_MEDIA_SLOT_PREFIX}{gid}"
+    try:
+        ok = await redis.set(key, "1", nx=True, ex=int(ttl))
+        return bool(ok)
+    except Exception as exc:
+        log.debug("factory_media_slot_redis_failed", group_id=gid, error=str(exc))
+        return False
+
+
 def _factory_turn_antiparrot_compare_text(
     turn: dict[str, Any],
     *,
@@ -661,7 +722,7 @@ def _factory_turn_antiparrot_compare_text(
     rich_media_mode: bool,
 ) -> str | None:
     """
-    Comparable primary line for de-duplication. None => skip text similarity (e.g. silent sticker).
+    Comparable primary line for de-duplication. None => skip text similarity (e.g. empty opener).
     """
     if news_opener:
         pm = str(turn.get("primary_message") or turn.get("message_text") or "").strip()
@@ -672,7 +733,7 @@ def _factory_turn_antiparrot_compare_text(
         if mt.strip():
             return mt.strip()
         if at in ("sticker", "gif", "image"):
-            return None
+            return mt.strip() or None
         return mt.strip() or None
     pm = str(turn.get("primary_message") or turn.get("message_text") or "").strip()
     out = _finalize_primary_message(pm)
@@ -737,6 +798,8 @@ def _build_amcha_system_prompt(
 def _message_text_for_factory_prompt(m: Any) -> str | None:
     raw = getattr(m, "message", None)
     t = str(raw).strip() if raw else ""
+    if not t:
+        t = telethon_display_text(m).strip()
     prefix = llm_media_prefix_for_message(m).strip()
     if t:
         line = f"{prefix} {t}".strip() if prefix else t
@@ -1026,8 +1089,10 @@ async def _generate_amcha_turn(
             '"action_type","message_text","image_query",'
             '"primary_message" או "text","needs_correction","correction_message" או "correction","article_url","link_label". '
             "action_type חייב להיות אחד מ: text | text_with_emoji | sticker | gif | image. "
-            "בערך לאורך זמן: ~60% text או text_with_emoji, ~15% sticker, ~15% gif, ~10% image. "
-            "ב-sticker/gif/image: message_text יכול להיות ריק או כיתוב קצר; image_query — מילת מפתח באנגלית לחיפוש (למשל coffee, traffic, shawarma). "
+            "בערך לאורך זמן: ~70% text או text_with_emoji, ~10% sticker, ~10% gif, ~10% image — אל תציף מדיה. "
+            "חובה ב-sticker/gif/image: message_text הוא תגובה קצרה בעברית (2–8 מילים) שמלווה את המדיה — "
+            "למשל לסטיקר מצחיק: 'חחח חזק', 'מדויק', 'וואלה מצחיק'; לא להשאיר ריק. "
+            "image_query — מילת מפתח באנגלית לחיפוש (למשל funny, coffee, traffic, shawarma). "
             "ב-text/text_with_emoji: מלא message_text (ועדיף גם primary_message באותו תוכן). "
             "article_url ו-link_label — מחרוזות; כשאין קישור חדשותי השאר ריק."
         )
@@ -1084,9 +1149,16 @@ async def _generate_amcha_turn(
             head = f'הנושא הפעיל בקבוצה: "{(active_topic_line or "").strip()[:400]}". '
         else:
             head = ""
+        replier_media_ban = ""
+        if rich_media_mode:
+            replier_media_ban = (
+                "חובה: אתה משיב בשרשור — אסור sticker/gif/image; רק text או text_with_emoji. "
+                "אם מישהו שלח מדיה, תגיב במילים בלבד (למשל 'חחח חזק', 'מדויק').\n"
+            )
         user_he = (
             f"{last_five_block}\n\n{effective_stance}\n\n"
             f"{head}"
+            f"{replier_media_ban}"
             f'אתה משיב להודעה/שורה הזו (או לקונטקסט שלה): "{ap}"\n'
             "אסור לחזור על עובדות או ניסוח מהציטוט — רק תגובה אישית קצרה (2–10 מילים).\n"
             f"{typo_rule}\n{anti}\n{json_schema}"
@@ -1141,6 +1213,7 @@ async def _generate_amcha_turn(
             at = str(out.get("action_type") or "").strip().lower().strip('"').strip("'")
             if at in ("sticker", "gif", "image"):
                 normalized = _normalize_rich_turn(out)
+                normalized = _ensure_rich_media_message_text(normalized)
                 return _coerce_rich_respectful_media(
                     _apply_anti_robot_to_turn_dict(normalized, rich_media_mode=True)
                 )
@@ -1581,6 +1654,20 @@ async def _send_rich_factory_messages(
             msg = await _try_send_random_sticker_from_packs(client, entity, reply_to=reply_to_id)
             if msg is not None:
                 sent.append(msg)
+                line = (mt[:4096] if (mt or "").strip() else _default_hebrew_media_companion("sticker", iq))
+                line = (line or "חחח").strip()
+                try:
+                    smid = getattr(msg, "id", None)
+                    sent.append(
+                        await client.send_message(
+                            entity,
+                            line,
+                            reply_to=int(smid) if smid is not None else reply_to_id,
+                            parse_mode=None,
+                        )
+                    )
+                except Exception as exc:
+                    log.debug("factory_sticker_text_followup_failed", error=str(exc))
             else:
                 fb = (mt[:4096] if mt else "😂") or "😂"
                 sent.append(await client.send_message(entity, fb, reply_to=reply_to_id, parse_mode=None))
@@ -1603,19 +1690,38 @@ async def _send_rich_factory_messages(
                 msg_obj = await _try_send_inline_gif(client, entity, iq or "funny")
             if msg_obj is not None:
                 sent.append(msg_obj)
-                if mt and not used_url_send:
+                need_followup = (not used_url_send) or not (mt or "").strip()
+                if need_followup:
+                    line = (mt[:4096] if (mt or "").strip() else _default_hebrew_media_companion("gif", iq))
+                    line = (line or "וואלה").strip()
+                    gmid = getattr(msg_obj, "id", None)
                     try:
                         sent.append(
                             await client.send_message(
-                                entity, mt[:4096], reply_to=reply_to_id, parse_mode=None
+                                entity,
+                                line,
+                                reply_to=int(gmid) if gmid is not None else reply_to_id,
+                                parse_mode=None,
                             )
                         )
                     except Exception as exc:
-                        log.debug("factory_gif_caption_failed", error=str(exc))
+                        log.debug("factory_gif_text_followup_failed", error=str(exc))
             else:
                 fb_msg = await _try_send_random_sticker_from_packs(client, entity, reply_to=reply_to_id)
                 if fb_msg is not None:
                     sent.append(fb_msg)
+                    line = (mt[:4096] if (mt or "").strip() else _default_hebrew_media_companion("sticker", iq))
+                    line = (line or "חחח").strip()
+                    try:
+                        fmid = getattr(fb_msg, "id", None)
+                        if fmid is not None:
+                            sent.append(
+                                await client.send_message(
+                                    entity, line, reply_to=int(fmid), parse_mode=None
+                                )
+                            )
+                    except Exception as exc:
+                        log.debug("factory_gif_fallback_sticker_followup_failed", error=str(exc))
                 else:
                     sent.append(
                         await client.send_message(
@@ -1646,6 +1752,18 @@ async def _send_rich_factory_messages(
                     msg_obj = None
             if msg_obj is not None:
                 sent.append(msg_obj)
+                if not (mt or "").strip():
+                    line = _default_hebrew_media_companion("image", iq)
+                    try:
+                        imid = getattr(msg_obj, "id", None)
+                        if imid is not None:
+                            sent.append(
+                                await client.send_message(
+                                    entity, line[:4096], reply_to=int(imid), parse_mode=None
+                                )
+                            )
+                    except Exception as exc:
+                        log.debug("factory_image_text_followup_failed", error=str(exc))
             else:
                 sent.append(
                     await client.send_message(
@@ -2210,6 +2328,8 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         m0 = ams[0] if ams else None
                         if m0 is not None:
                             anchor_preview = str(getattr(m0, "message", None) or "")[:800]
+                            if not anchor_preview.strip():
+                                anchor_preview = telethon_display_text(m0)[:800]
                     except Exception:
                         anchor_preview = ""
                     active_record = await _active_topic_read(redis, gid_int)
@@ -2475,6 +2595,36 @@ async def _factory_converse_slot(
             )
             if turn is None:
                 return {**base_out, "status": "skipped", "reason": "antiparrot_group_recent"}
+            original_action = str(turn.get("action_type") or "text").strip().lower()
+            media_slot_acquired = False
+            if original_action in ("sticker", "gif", "image"):
+                # Only thread openers post rich media; repliers stay text (burst replies anchor on the media msg).
+                if role != "opener":
+                    mt_coerce = str(turn.get("message_text") or turn.get("primary_message") or "").strip()
+                    if not mt_coerce:
+                        mt_coerce = _default_hebrew_media_companion(
+                            original_action, str(turn.get("image_query") or "")
+                        )
+                    turn = {
+                        **turn,
+                        "action_type": random.choice(("text", "text_with_emoji")),
+                        "message_text": mt_coerce,
+                        "primary_message": mt_coerce,
+                    }
+                else:
+                    media_slot_acquired = await _try_acquire_factory_media_slot(redis, gid_int)
+                    if not media_slot_acquired:
+                        mt_coerce = str(turn.get("message_text") or turn.get("primary_message") or "").strip()
+                        if not mt_coerce:
+                            mt_coerce = _default_hebrew_media_companion(
+                                original_action, str(turn.get("image_query") or "")
+                            )
+                        turn = {
+                            **turn,
+                            "action_type": random.choice(("text", "text_with_emoji")),
+                            "message_text": mt_coerce,
+                            "primary_message": mt_coerce,
+                        }
             turn["_persona_seed"] = persona
             turn["_media_salt_seed"] = make_image_upload_salt_seed(session_base)
 
@@ -2525,6 +2675,21 @@ async def _factory_converse_slot(
                 burst_carry["burst_reply_to_msg_id"] = int(mid)
                 burst_carry["burst_count"] = random.randint(4, 8)
                 await _enqueue_task("swarm.community_factory.burst_reply_chain", burst_carry)
+            if (
+                mid is not None
+                and original_action in ("sticker", "gif", "image")
+                and media_slot_acquired
+                and not news_opener
+            ):
+                mburst = dict(carry)
+                mburst["burst_group_id"] = gid_int
+                mburst["burst_reply_to_msg_id"] = int(mid)
+                try:
+                    bn = int(os.getenv("COMMUNITY_FACTORY_MEDIA_BURST_REPLIES", "5") or "5")
+                except ValueError:
+                    bn = 5
+                mburst["burst_count"] = max(1, min(12, bn))
+                await _enqueue_task("swarm.community_factory.burst_reply_chain", mburst)
 
             recent_frag = summary_line or str(turn.get("message_text") or turn.get("primary_message") or "")
             await _redis_recent_outgoing_push(redis, recent_frag)

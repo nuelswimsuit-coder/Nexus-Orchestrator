@@ -272,6 +272,8 @@ async def compose_chatter_line(
     anchor_headline: str = "",
     privileged_reply_target: bool = False,
     forced_reply_to_id: int | None = None,
+    drama_directive: str | None = None,
+    require_peer_mention: bool = False,
 ) -> dict[str, Any]:
     """
     Produce one chat line with optional reply and @mentions.
@@ -280,8 +282,16 @@ async def compose_chatter_line(
     """
     sys_prompt = (
         "You write one authentic Telegram group line as an impatient Israeli — NOT a newsreader.\n"
+<<<<<<< Current (Your changes)
         "Rules: 2–10 words only (count them). Natural emoji/slang matching the speaker. "
-        "@mention from the list when it fits (with @).\n"
+        "MUST tag someone: include exactly one @handle from other_participant_handles (with @) — "
+        "e.g. 'מה אתה אומר @user?' or 'צודק @user זה ביזיון'.\n"
+=======
+        "Rules: 2–10 words only (count them). Natural emoji/slang matching the speaker.\n"
+        "DRAMA & NAMES: When other_participant_handles is non-empty, address at least one peer by @username "
+        "inside the text (Hebrew phrasing e.g. 'מה אתה אומר @Yossi?', 'צודק @Hila זה ביזיון'). "
+        "Put @ in the text; mention_usernames JSON lists those handles without @.\n"
+>>>>>>> Incoming (Background Agent changes)
         "If news_from_last_24h is non-empty, internalize ONE real item and output a fresh casual reaction "
         "in your own words — NEVER copy/paste the headline, NEVER print [source] tags or '- ynet' / '- מעריב' / outlet names.\n"
         "FORBIDDEN openers: 'שמעתם כבר', 'דיווח:', 'ראיתם מה', 'לפי דיווח'.\n"
@@ -290,6 +300,12 @@ async def compose_chatter_line(
         "Output ONLY JSON: {\"text\":\"message\",\"reply_to_id\":null or integer,"
         "\"mention_usernames\":[\"without@\"]}"
     )
+    if require_peer_mention and other_handles and not privileged_reply_target:
+        sys_prompt += (
+            " MANDATORY: your text must include @mention of at least one handle from other_participant_handles."
+        )
+    if drama_directive and not privileged_reply_target:
+        sys_prompt += f"\nScene direction (follow closely): {drama_directive.strip()}"
     if privileged_reply_target:
         sys_prompt += (
             " The message you reply to is from a group owner or admin: never argue, insult, "

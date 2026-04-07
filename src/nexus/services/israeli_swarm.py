@@ -27,8 +27,12 @@ VAULT_INCOMING_DIR      — Override path to vault/incoming (default: auto-detec
 VAULT_SESSIONS_DIR      — Override path to vault/sessions (default: auto-detect)
 SWARM_SESSIONS_PER_CYCLE — Telethon send attempts per engine cycle (default 3, max 12)
 SWARM_TELETHON_TIMEOUT_S — Max seconds per Telethon connect/send attempt (default 90, max 300)
+SWARM_GLOBAL_POST_INTERVAL_S — Min seconds between any swarm Telegram send (Redis; see nexus.shared.swarm_pacing)
 SWARM_UPDATE_PROFILES   — If not 0/false/off, set each session's Telegram first/last name
                           and a distinct avatar once (writes *.swarm_identity.json).
+SWARM_DRAMA_HOT_TAKE_PCT — Chance an opener starts a hot-take → cynic → defend chain (default 0.12)
+SWARM_DRAMA_QA_PCT       — Chance an opener asks a “מישהו יודע…” style question (default 0.08)
+SWARM_DISAGREE_PCT       — Chance a normal replier disagrees with the message it replies to (default 0.30)
 
 A daemon thread publishes ``nexus:swarm:israeli:heartbeat`` every 15s so the dashboard
 sees a pulse even while ``CommunityEngine`` is blocked inside a long Telethon cycle.
@@ -56,6 +60,12 @@ from typing import Any, Literal
 from nexus.services.anti_parrot_shield import MAX_REGENERATION_RETRIES, is_too_similar_to_recent
 from nexus.services.recent_news_digest import append_article_link_to_text, telegram_image_filename_from_bytes
 from nexus.services.tg_message_text import strip_trailing_israeli_news_outlet
+from nexus.shared.swarm_pacing import (
+    is_quiet_hours,
+    news_response_jitter_s,
+    resolve_major_news,
+    wait_global_telegram_send_turn,
+)
 
 log = logging.getLogger("hatan.israeli_swarm")
 _HEARTBEAT_REDIS_WARNED = False
@@ -468,27 +478,171 @@ ISRAELI_NEWS_SYSTEM_PROMPT = (
     "You are NOT a journalist, NOT a news anchor, and NOT summarizing articles.\n"
     "STRICT OUTPUT RULES (Hebrew only in JSON \"text\"):\n"
     "1. LENGTH: exactly 2–10 words. Not one word; not a sentence; bursts like real chat.\n"
-    "2. NO COPY-PASTE: Never output the raw headline or any long phrase from real_news / preferred_anchor. "
+    "2. NAMES & @MENTIONS: You MUST include at least one @-tag addressing someone from "
+    "required_at_mention / mention_targets in the JSON context — like "
+    "\"מה אתה אומר @יוסי?\" or \"צודק @הילה זה ביזיון\". Use the exact @token given when present.\n"
+    "3. NO COPY-PASTE: Never output the raw headline or any long phrase from real_news / preferred_anchor. "
     "Read internally, then react in your own words (reaction, swear, joke, cynicism).\n"
-    "3. NO SOURCES: Never print outlet names or patterns like \"- Ynet\", \"- מעריב\", \"- calcalist\", \"- N12\", "
+    "4. NO SOURCES: Never print outlet names or patterns like \"- Ynet\", \"- מעריב\", \"- calcalist\", \"- N12\", "
     "or \"[ynet]\". The digest has no outlet labels — do not invent them.\n"
-    "4. NO LAZY OPENERS: Forbidden starts include \"שמעתם כבר\", \"שמעתם על\", \"דיווח:\", \"לפי כותרות\", "
+    "5. NO LAZY OPENERS: Forbidden starts include \"שמעתם כבר\", \"שמעתם על\", \"דיווח:\", \"לפי כותרות\", "
     "\"ראיתם ש\", \"חדשות:\" — jump straight into the vibe.\n"
-    "5. ROLE=replier: Do NOT repeat or paraphrase facts from message_you_reply_to. "
+    "6. ROLE=replier: Do NOT repeat or paraphrase facts from message_you_reply_to. "
     "Only opinion, joke, complaint, or disagreement matching your persona — zero recap.\n"
-    "6. NO hashtags (#). Minor typos OK. Casual slang (אחי, וואלה, תכלס, אמאלה, הזייה).\n"
+    "7. NO hashtags (#). Minor typos OK. Casual slang (אחי, וואלה, תכלס, אמאלה, הזייה).\n"
     "Grounding: pick ONE event implied by the digest, but your line must sound like a person texting, not citing news."
 )
 
 ISRAELI_NEWS_PRIVILEGED_REPLY_PROMPT = (
     "You are a casual Israeli Telegram user. The message you reply to was sent by a group OWNER or ADMIN.\n"
     "Write 2–10 words in polite casual Hebrew. Do not repeat what they said; brief agreement, thanks, or light follow-up only.\n"
+    "Include a natural @name toward someone from mention_targets when the JSON provides it; stay respectful.\n"
     "No arguing, insults, or profanity. No hashtags. Never paste headlines or outlet names."
 )
 
 _REDIS_SWARM_PROFILE_GATE = "nexus:swarm:israeli:profile_gate"
 _THREAD_ID_CAP = 5
 _THREAD_REACTION_EMOJIS = ["👍", "🤦‍♂️", "🤬"]
+
+
+def _swarm_interaction_hash(group_link: str) -> str:
+    return hashlib.sha256(group_link.strip().encode("utf-8")).hexdigest()[:16]
+
+
+def _redis_drama_key(group_link: str) -> str:
+    return f"nexus:swarm:israeli:drama:{_swarm_interaction_hash(group_link)}"
+
+
+def _redis_qa_key(group_link: str) -> str:
+    return f"nexus:swarm:israeli:qa:{_swarm_interaction_hash(group_link)}"
+
+
+def _swarm_mention_pool(
+    meta_newest_first: list[dict[str, Any]],
+    self_display: str,
+) -> list[str]:
+    """First-name tokens from recent senders (for @tags in Hebrew display style)."""
+    out: list[str] = []
+    self_first = (self_display or "").split()[0] if (self_display or "").strip() else ""
+    for m in meta_newest_first or []:
+        s = str(m.get("sender") or "").strip()
+        if not s or s == "משתמש":
+            continue
+        first = s.split()[0].strip()
+        if first and first != self_first and first not in out:
+            out.append(first)
+    if not out:
+        out = [random.choice(_ISRAELI_FIRST_NAMES)]
+    return out[:12]
+
+
+def _pick_required_mention_token(pool: list[str], self_display: str) -> str:
+    self_first = (self_display or "").split()[0] if (self_display or "").strip() else ""
+    candidates = [p for p in pool if p != self_first]
+    if not candidates:
+        candidates = list(pool)
+    return random.choice(candidates) if candidates else random.choice(_ISRAELI_FIRST_NAMES)
+
+
+async def _async_drama_read(group_link: str) -> dict[str, Any] | None:
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import]
+
+        r = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            raw = await r.get(_redis_drama_key(group_link))
+            if not raw:
+                return None
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else None
+        finally:
+            await r.aclose()
+    except Exception:
+        return None
+
+
+async def _async_drama_write(group_link: str, payload: dict[str, Any]) -> None:
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import]
+
+        r = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            await r.set(
+                _redis_drama_key(group_link),
+                json.dumps(payload, ensure_ascii=False),
+                ex=7200,
+            )
+        finally:
+            await r.aclose()
+    except Exception:
+        pass
+
+
+async def _async_drama_clear(group_link: str) -> None:
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import]
+
+        r = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            await r.delete(_redis_drama_key(group_link))
+        finally:
+            await r.aclose()
+    except Exception:
+        pass
+
+
+async def _async_qa_read(group_link: str) -> dict[str, Any] | None:
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import]
+
+        r = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            raw = await r.get(_redis_qa_key(group_link))
+            if not raw:
+                return None
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else None
+        finally:
+            await r.aclose()
+    except Exception:
+        return None
+
+
+async def _async_qa_write(group_link: str, payload: dict[str, Any]) -> None:
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import]
+
+        r = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            await r.set(
+                _redis_qa_key(group_link),
+                json.dumps(payload, ensure_ascii=False),
+                ex=3600,
+            )
+        finally:
+            await r.aclose()
+    except Exception:
+        pass
+
+
+async def _async_qa_clear(group_link: str) -> None:
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import]
+
+        r = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            await r.delete(_redis_qa_key(group_link))
+        finally:
+            await r.aclose()
+    except Exception:
+        pass
+
+
+def _swarm_drama_env_float(name: str, default: float) -> float:
+    try:
+        return float((os.getenv(name) or str(default)).strip())
+    except ValueError:
+        return default
 
 
 def _swarm_identity_path(stem: str) -> pathlib.Path:
@@ -582,6 +736,18 @@ def _finalize_swarm_llm_line(text: str) -> str:
     if len(parts) == 1 and parts[0]:
         parts.append(random.choice(["אחי", "תכלס", "וואלה", "נו"]))
     return " ".join(parts).strip()
+
+
+def _ensure_swarm_line_has_mention(text: str, mention_token: str) -> str:
+    """Prefix @token when the model omitted any @ (keeps word cap via finalize)."""
+    t = (text or "").strip()
+    tok = (mention_token or "").strip().lstrip("@")
+    if not tok:
+        return _finalize_swarm_llm_line(t)
+    if "@" in t:
+        return _finalize_swarm_llm_line(t)
+    merged = f"@{tok} {t}".strip()
+    return _finalize_swarm_llm_line(merged)
 
 
 def _display_name_is_non_israeli(first: str, last: str) -> bool:
@@ -848,6 +1014,9 @@ async def _generate_community_message(
     anchor_headline: str = "",
     privileged_reply_target: bool = False,
     regeneration_attempt: int = 0,
+    mention_targets: list[str] | None = None,
+    required_mention_token: str = "",
+    interaction_tone: str | None = None,
 ) -> tuple[str, int | None]:
     """Short colloquial Hebrew line; reply_to is forced for replier role (Redis thread)."""
     angle = random.choice(_NEWS_ANGLES)
@@ -856,10 +1025,17 @@ async def _generate_community_message(
 
     if not _GEMINI_KEY:
         text = random.choice(_FALLBACK_CHAT_LINES)
-        return _finalize_swarm_llm_line(text), reply_out
+        tok = (required_mention_token or "").strip().lstrip("@") or _pick_required_mention_token(
+            mention_targets or _swarm_mention_pool(meta_newest_first, display),
+            display,
+        )
+        text = _ensure_swarm_line_has_mention(text, tok)
+        return text, reply_out
 
     nd = (news_digest or "").strip()
     ah = (anchor_headline or "").strip()
+    mt = list(mention_targets) if mention_targets else _swarm_mention_pool(meta_newest_first, display)
+    rmt = (required_mention_token or "").strip().lstrip("@") or _pick_required_mention_token(mt, display)
 
     if role == "opener":
         user_obj: dict[str, Any] = {
@@ -896,6 +1072,10 @@ async def _generate_community_message(
             "ההודעה שאתה משיב לה נשלחה על ידי מנהל או בעלים של הקבוצה. "
             "היה מנומס, קצר, בלי ויכוח, בלי קללות ובלי התנגדות אגרסיבית."
         )
+    user_obj["mention_targets"] = mt
+    user_obj["required_at_mention"] = f"@{rmt}"
+    if interaction_tone:
+        user_obj["interaction_tone"] = interaction_tone
     if regeneration_attempt == 1:
         user_obj["anti_parrot_regen"] = (
             "דחייה טכנית: שורה קודמת דומה מדי להודעות שכבר נשלחו בקבוצה. "
@@ -949,13 +1129,14 @@ async def _generate_community_message(
         )
         parsed = _extract_json_object(raw) or {}
         text = _finalize_swarm_llm_line(str(parsed.get("text") or "").strip())
+        text = _ensure_swarm_line_has_mention(text, rmt)
         if text:
             return text, reply_out
     except Exception as exc:
         log.debug("[GEMINI] Community message failed (%s) — fallback", exc)
 
     text_fb = random.choice(_FALLBACK_CHAT_LINES)
-    return _finalize_swarm_llm_line(text_fb), reply_out
+    return _ensure_swarm_line_has_mention(text_fb, rmt), reply_out
 
 
 async def _generate_unique_community_message(
@@ -971,6 +1152,9 @@ async def _generate_unique_community_message(
     news_digest: str = "",
     anchor_headline: str = "",
     privileged_reply_target: bool = False,
+    mention_targets: list[str] | None = None,
+    required_mention_token: str = "",
+    interaction_tone: str | None = None,
 ) -> tuple[str, int | None] | None:
     """
     Up to 1 + MAX_REGENERATION_RETRIES Gemini attempts vs last 15 lines sent in this group.
@@ -990,6 +1174,9 @@ async def _generate_unique_community_message(
             anchor_headline=anchor_headline,
             privileged_reply_target=privileged_reply_target,
             regeneration_attempt=attempt,
+            mention_targets=mention_targets,
+            required_mention_token=required_mention_token,
+            interaction_tone=interaction_tone,
         )
         if not is_too_similar_to_recent(text, recent):
             return text, reply_out
@@ -1157,6 +1344,7 @@ class CommunityEngine:
                     break
 
     async def _cycle(self) -> None:
+        r_redis: Any = None
         try:
             if not _redis_swarm_status_allows_send():
                 log.debug("[COMMUNITY] Swarm paused — Redis status is not 'running'")
@@ -1228,11 +1416,8 @@ class CommunityEngine:
                 import redis.asyncio as aioredis  # type: ignore[import]
                 from nexus.services.recent_news_digest import get_tick_news_bundle_for_consumer
 
-                r_news = await aioredis.from_url(_REDIS_URL, decode_responses=True)
-                try:
-                    _nb = await get_tick_news_bundle_for_consumer(r_news)
-                finally:
-                    await r_news.aclose()
+                r_redis = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+                _nb = await get_tick_news_bundle_for_consumer(r_redis)
                 news_digest_str = _nb.digest_text
                 news_anchor_str = _nb.anchor_title
                 news_anchor_link = (_nb.anchor_link or "").strip()
@@ -1282,6 +1467,19 @@ class CommunityEngine:
                     anchor_id = thread_ids[-1]
                     who_try = f"{sf} {sl}".strip() or phone
                     _rpush_israeli_attempt_sync(phone, who_try)
+                    try:
+                        maj = await resolve_major_news(r_redis) if r_redis is not None else False
+                        if (news_digest_str or news_anchor_str).strip():
+                            await asyncio.sleep(
+                                news_response_jitter_s(
+                                    major_news=maj, quiet=is_quiet_hours()
+                                )
+                            )
+                        await wait_global_telegram_send_turn(
+                            r_redis, major_news=maj
+                        )
+                    except Exception:
+                        pass
                     ok_r = await self._try_react_telethon(session_file, group_link, anchor_id)
                     if ok_r:
                         any_sent = True
@@ -1290,7 +1488,102 @@ class CommunityEngine:
                         await self._mark_verified_written(phone)
                     continue
 
-                forced_reply = thread_ids[-1] if role == "replier" and thread_ids else None
+                forced_reply: int | None = thread_ids[-1] if role == "replier" and thread_ids else None
+                drama_state = await _async_drama_read(group_link)
+                qa_state = await _async_qa_read(group_link)
+                interaction_tone: str | None = None
+                pending_hot_take_opener = False
+                pending_qa_opener = False
+                drama_turn = "none"
+                required_mention_tok = ""
+
+                if role == "replier" and drama_state:
+                    phase = str(drama_state.get("phase") or "")
+                    if phase == "cynic":
+                        try:
+                            forced_reply = int(drama_state["root_id"])
+                        except (KeyError, TypeError, ValueError):
+                            await _async_drama_clear(group_link)
+                            drama_state = None
+                        else:
+                            ra = str(drama_state.get("root_author") or "").strip()
+                            ra_first = ra.split()[0] if ra else ""
+                            if ra_first:
+                                required_mention_tok = ra_first
+                            interaction_tone = (
+                                f"תגובה צינית וקצרה להוט-טייק של {ra or 'מישהו'} — "
+                                "בלי לחזור על המשפט שלו, רק לעג או ספק."
+                            )
+                            drama_turn = "cynic"
+                    elif phase == "defend":
+                        try:
+                            forced_reply = int(drama_state["cynic_msg_id"])
+                        except (KeyError, TypeError, ValueError):
+                            await _async_drama_clear(group_link)
+                            drama_state = None
+                        else:
+                            ra = str(drama_state.get("root_author") or "").strip()
+                            ra_first = ra.split()[0] if ra else ""
+                            if ra_first:
+                                required_mention_tok = ra_first
+                            interaction_tone = (
+                                f"הגן בקצרה על {ra or 'מישהו'} מול הציניות — לא מסכן אבל חד."
+                            )
+                            drama_turn = "defend"
+
+                if (
+                    role == "replier"
+                    and qa_state
+                    and int(qa_state.get("remaining") or 0) > 0
+                    and drama_turn == "none"
+                ):
+                    try:
+                        forced_reply = int(qa_state["question_msg_id"])
+                    except (KeyError, TypeError, ValueError):
+                        await _async_qa_clear(group_link)
+                    else:
+                        if random.random() < 0.35:
+                            interaction_tone = (
+                                "קטר בקצרה על השאלה או אמור שאין לך מושג — ציני אבל לא מעליב."
+                            )
+                        else:
+                            interaction_tone = (
+                                "ענה בקצרה על השאלה (ניחוש או עצה) — או 'אין לי מושג אחי' אם באמת לא יודע."
+                            )
+                        drama_turn = "qa"
+
+                who_display = f"{sf} {sl}".strip()
+                mention_pool = _swarm_mention_pool(meta_nf, who_display)
+
+                if role == "opener" and not drama_state and not qa_state:
+                    ht_pct = _swarm_drama_env_float("SWARM_DRAMA_HOT_TAKE_PCT", 0.12)
+                    qa_pct = _swarm_drama_env_float("SWARM_DRAMA_QA_PCT", 0.08)
+                    roll = random.random()
+                    if roll < ht_pct:
+                        await _async_qa_clear(group_link)
+                        interaction_tone = (
+                            "הוט טייק חד ושנון — דעה קיצונית שתפתח ויכוח. "
+                            "עדיין 2–10 מילים; עוגן רגשי מחדשות מהדיגסט בלי לצטט כותרת."
+                        )
+                        pending_hot_take_opener = True
+                    elif roll < ht_pct + qa_pct:
+                        await _async_drama_clear(group_link)
+                        interaction_tone = (
+                            "שאל שאלה כללית שמתחילה ב'מישהו יודע אם' או 'מישהו בקיא' — קצר, לא ספאם."
+                        )
+                        pending_qa_opener = True
+
+                if (
+                    role == "replier"
+                    and drama_turn == "none"
+                    and interaction_tone is None
+                ):
+                    disagree_pct = _swarm_drama_env_float("SWARM_DISAGREE_PCT", 0.30)
+                    if random.random() < disagree_pct:
+                        interaction_tone = (
+                            "התנגד להודעה שאתה משיב לה — עמדה נגדית קצרה, בלי לשכפל את המשפט שלהם."
+                        )
+
                 anchor_txt = (
                     _anchor_from_transcript(transcript, forced_reply) if forced_reply else None
                 )
@@ -1299,6 +1592,16 @@ class CommunityEngine:
                     privileged_reply = await _anchor_sender_is_privileged(
                         session_file, api_id, api_hash, group_link, forced_reply
                     )
+                if privileged_reply and role == "replier":
+                    interaction_tone = None
+                    if drama_turn in ("cynic", "defend"):
+                        await _async_drama_clear(group_link)
+                    if drama_turn == "qa":
+                        await _async_qa_clear(group_link)
+                    drama_turn = "none"
+                    pending_hot_take_opener = False
+                    pending_qa_opener = False
+
                 gen_pair = await _generate_unique_community_message(
                     group_link,
                     transcript,
@@ -1311,6 +1614,9 @@ class CommunityEngine:
                     news_digest=news_digest_str,
                     anchor_headline=news_anchor_str,
                     privileged_reply_target=privileged_reply,
+                    mention_targets=mention_pool,
+                    required_mention_token=required_mention_tok,
+                    interaction_tone=interaction_tone,
                 )
                 if gen_pair is None:
                     continue
@@ -1332,6 +1638,17 @@ class CommunityEngine:
                 photo_bytes: bytes | None = None
                 if shared_photo and random.random() < 0.82:
                     photo_bytes = shared_photo
+                try:
+                    maj = await resolve_major_news(r_redis) if r_redis is not None else False
+                    if (news_digest_str or news_anchor_str).strip():
+                        await asyncio.sleep(
+                            news_response_jitter_s(
+                                major_news=maj, quiet=is_quiet_hours()
+                            )
+                        )
+                    await wait_global_telegram_send_turn(r_redis, major_news=maj)
+                except Exception:
+                    pass
                 sent, new_mid = await self._try_send_telethon(
                     session_file,
                     message,
@@ -1354,6 +1671,47 @@ class CommunityEngine:
                     who = f"{sf} {sl}".strip() or phone
                     chunk = f"[הודעה חדשה במחזור זה] {who}: {message}"
                     transcript = (transcript + "\n" + chunk)[-5500:] if transcript else chunk
+                    if new_mid is not None:
+                        if pending_hot_take_opener:
+                            await _async_drama_write(
+                                group_link,
+                                {
+                                    "phase": "cynic",
+                                    "root_id": int(new_mid),
+                                    "root_author": who,
+                                },
+                            )
+                        if pending_qa_opener:
+                            await _async_qa_write(
+                                group_link,
+                                {"question_msg_id": int(new_mid), "remaining": 3},
+                            )
+                        if drama_turn == "cynic":
+                            dr = await _async_drama_read(group_link)
+                            if dr and str(dr.get("phase")) == "cynic":
+                                await _async_drama_write(
+                                    group_link,
+                                    {
+                                        "phase": "defend",
+                                        "root_id": int(dr["root_id"]),
+                                        "root_author": str(dr.get("root_author") or ""),
+                                        "cynic_msg_id": int(new_mid),
+                                    },
+                                )
+                        elif drama_turn == "defend":
+                            await _async_drama_clear(group_link)
+                        elif drama_turn == "qa" and qa_state:
+                            rem = int(qa_state.get("remaining") or 0) - 1
+                            if rem <= 0:
+                                await _async_qa_clear(group_link)
+                            else:
+                                await _async_qa_write(
+                                    group_link,
+                                    {
+                                        "question_msg_id": int(qa_state["question_msg_id"]),
+                                        "remaining": rem,
+                                    },
+                                )
 
             if not any_sent and has_api:
                 _rpush_feed_line(
@@ -1361,6 +1719,11 @@ class CommunityEngine:
                     "engine",
                 )
         finally:
+            if r_redis is not None:
+                try:
+                    await r_redis.aclose()
+                except Exception:
+                    pass
             _touch_engine_heartbeat_sync()
 
     async def _try_send_telethon(
