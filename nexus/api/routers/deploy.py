@@ -357,7 +357,6 @@ async def _run_sync(redis) -> None:  # type: ignore[type-arg]
     summary="🚀 SYNC & RESTART — push code directly to WORKER_IP laptop",
 )
 async def trigger_sync(
-    request: Request,
     redis: RedisDep,
 ) -> DeployResponse | JSONResponse:
     """

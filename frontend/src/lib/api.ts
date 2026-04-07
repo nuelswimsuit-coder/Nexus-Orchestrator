@@ -6,26 +6,25 @@
  * host when deploying.
  */
 
-const _SERVER_API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001").trim();
+/**
+ * FastAPI origin (no trailing slash).
+ * Use the real backend URL in the browser too — Next.js `/api` rewrites can break POST/SSE
+ * (buffering, flaky proxy, 500s) while CORS already allows localhost:3000 → this host.
+ */
+const _SERVER_API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001")
+  .trim()
+  .replace(/\/$/, "");
 
-/** Browser: same-origin `/api` (Next rewrites → backend). Server: absolute URL. */
-export const API_BASE = typeof window !== "undefined" ? "" : _SERVER_API_BASE;
+export const API_BASE = _SERVER_API_BASE;
 
 /** WebSocket base for the active API target. */
 export function apiWsBase(): string {
-  if (typeof window !== "undefined" && API_BASE === "") {
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${window.location.host}`;
-  }
-  return _SERVER_API_BASE.replace(/^https/, "wss").replace(/^http/, "ws");
+  return API_BASE.replace(/^https/, "wss").replace(/^http/, "ws");
 }
 
-/**
- * Origin for Server-Sent Events. Always the real API host (never same-origin "").
- * Next.js dev rewrites buffer streaming responses, so EventSource must hit FastAPI directly.
- */
+/** Origin for Server-Sent Events — same host as REST (see API_BASE). */
 export function apiSseBase(): string {
-  return _SERVER_API_BASE;
+  return API_BASE;
 }
 
 // ── Generic fetch helper ──────────────────────────────────────────────────────
@@ -35,8 +34,26 @@ function _resolveApiUrl(path: string): string {
   if (/^https?:\/\//i.test(p)) {
     return p;
   }
-  const base = typeof window !== "undefined" ? API_BASE : _SERVER_API_BASE;
-  return `${base}${p.startsWith("/") ? p : `/${p}`}`;
+  return `${API_BASE}${p.startsWith("/") ? p : `/${p}`}`;
+}
+
+function _formatApiErrorBody(status: number, body: string): string {
+  const raw = (body || "").trim();
+  if (!raw) return status === 500 ? "Internal Server Error (empty body)" : "(empty body)";
+  try {
+    const j = JSON.parse(raw) as {
+      detail?: unknown;
+      message?: unknown;
+      error?: unknown;
+    };
+    if (typeof j.detail === "string") return j.detail;
+    if (Array.isArray(j.detail)) return JSON.stringify(j.detail).slice(0, 600);
+    if (typeof j.message === "string") return j.message;
+    if (typeof j.error === "string") return `${j.error}${j.detail ? ` — ${JSON.stringify(j.detail).slice(0, 400)}` : ""}`;
+  } catch {
+    /* not JSON */
+  }
+  return raw.slice(0, 800);
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -46,7 +63,8 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`API ${res.status}: ${body}`);
+    const detail = _formatApiErrorBody(res.status, body);
+    throw new Error(`API ${res.status}: ${detail}`);
   }
   return res.json() as Promise<T>;
 }
