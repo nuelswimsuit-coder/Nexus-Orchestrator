@@ -9203,3 +9203,4 @@ eded the max restart limit (3). Manual intervention required.
 [watchdog] [auto-worker] restarted — pid=40304
 [launcher] child process exited pid=40304 label=auto-worker returncode=1.
 [WATCHDOG] Service *auto-worker* has crashed 3 times and exceeded the max restart limit (3). Manual intervention required.
+[launcher] received signal 2; kill_all()

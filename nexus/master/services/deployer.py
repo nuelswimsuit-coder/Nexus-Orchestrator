@@ -79,6 +79,22 @@ def _agent_dbg_deploy(payload: dict) -> None:
         pass
 
 
+def _agent_log_735268(payload: dict) -> None:
+    """Debug session NDJSON (Cursor debug-735268)."""
+    try:
+        import time as _time
+
+        row = {
+            "sessionId": "735268",
+            "timestamp": int(_time.time() * 1000),
+            **payload,
+        }
+        with open(NEXUS_ROOT / "debug-735268.log", "a", encoding="utf-8") as _f:
+            _f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 # #endregion
 
 # Directories to sync (relative to project root)
@@ -190,7 +206,29 @@ def _build_deployment_zip() -> bytes:
             if local_file.exists():
                 zf.write(str(local_file), file_name)
 
-    return buf.getvalue()
+    raw = buf.getvalue()
+    # #region agent log
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw), "r") as _zr:
+            _names = _zr.namelist()
+        _agent_log_735268(
+            {
+                "location": "deployer.py:_build_deployment_zip",
+                "message": "deployment zip built",
+                "runId": "pre-fix",
+                "hypothesisId": "H4",
+                "data": {
+                    "n_entries": len(_names),
+                    "head": _names[:8],
+                    "tail": _names[-5:] if len(_names) > 5 else [],
+                    "zip_bytes": len(raw),
+                },
+            }
+        )
+    except Exception:
+        pass
+    # #endregion
+    return raw
 
 
 # ── Progress event helper ──────────────────────────────────────────────────────
@@ -667,7 +705,9 @@ class DeployerService:
             try:
                 await loop.run_in_executor(
                     None,
-                    lambda: self._upload_zip_and_extract(ssh, remote_root, "Linux", zip_bytes),
+                    lambda: self._upload_zip_and_extract(
+                        ssh, remote_root, "Linux", zip_bytes, "worker_linux"
+                    ),
                 )
             except Exception as exc:
                 upload_err = str(exc)
@@ -725,6 +765,23 @@ class DeployerService:
         host (e.g. SSH down) does not block deployment to a healthy Windows worker,
         and vice versa.
         """
+        # #region agent log
+        _lip = (self._get_setting("worker_ip") or "").strip()
+        _wip = await self._resolve_ip("worker_windows")
+        _agent_log_735268(
+            {
+                "location": "deployer.py:sync_to_worker",
+                "message": "parallel nexus-push targets",
+                "runId": "pre-fix",
+                "hypothesisId": "H1",
+                "data": {
+                    "linux_ip": _lip,
+                    "windows_ip": (_wip or ""),
+                    "same_ip": bool(_lip and _wip and _lip == _wip),
+                },
+            }
+        )
+        # #endregion
         linux_res, win_res = await asyncio.gather(
             self._sync_linux_nexus_push(),
             self._sync_windows_worker_for_sync(),
@@ -1030,7 +1087,10 @@ class DeployerService:
             await self._emit(node_id, "uploading", "running",
                              f"Uploading {zip_size_kb} KB ZIP → {remote_root}")
             await asyncio.get_event_loop().run_in_executor(
-                None, lambda: self._upload_zip_and_extract(ssh, remote_root, remote_os, zip_bytes)
+                None,
+                lambda: self._upload_zip_and_extract(
+                    ssh, remote_root, remote_os, zip_bytes, node_id
+                ),
             )
             await self._emit(node_id, "uploading", "done", "Files synced via ZIP")
 
@@ -1173,6 +1233,7 @@ class DeployerService:
         remote_root: str,
         remote_os: str,
         zip_bytes: bytes,
+        deploy_leg: str = "",
     ) -> None:
         """
         Upload the deployment ZIP as a single SFTP transfer, then extract it
@@ -1209,12 +1270,50 @@ class DeployerService:
                 f'"'
             )
 
+        # #region agent log
+        import time as _time_735268
+
+        _agent_log_735268(
+            {
+                "location": "deployer.py:_upload_zip_and_extract:pre_exec",
+                "message": "remote unzip starting",
+                "runId": "pre-fix",
+                "hypothesisId": "H1,H3",
+                "data": {
+                    "deploy_leg": deploy_leg,
+                    "remote_os": remote_os,
+                    "remote_root": remote_root,
+                    "remote_zip": remote_zip,
+                    "zip_bytes": len(zip_bytes),
+                    "ts_ms": int(_time_735268.time() * 1000),
+                },
+            }
+        )
+        # #endregion
+
         _, stdout, stderr = ssh.exec_command(unzip_cmd, timeout=120)
         stdout.channel.settimeout(120)
         out = stdout.read().decode(errors="replace")
         err = stderr.read().decode(errors="replace")
         exit_code = stdout.channel.recv_exit_status()
         if exit_code != 0:
+            # #region agent log
+            _agent_log_735268(
+                {
+                    "location": "deployer.py:_upload_zip_and_extract:fail",
+                    "message": "remote unzip non-zero exit",
+                    "runId": "pre-fix",
+                    "hypothesisId": "H2,H5",
+                    "data": {
+                        "deploy_leg": deploy_leg,
+                        "remote_os": remote_os,
+                        "exit_code": exit_code,
+                        "unzip_cmd": unzip_cmd[:2000],
+                        "combined_tail": (out + err)[-12000:],
+                    },
+                }
+            )
+            # #endregion
             raise RuntimeError(
                 f"Remote unzip failed (exit {exit_code}): {(out + err)[-500:]}"
             )
