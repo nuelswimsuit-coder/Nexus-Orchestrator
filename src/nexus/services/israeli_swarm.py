@@ -20,6 +20,10 @@ Orchestrates a full Israeli-Hebrew Telegram swarm:
 Environment variables
 ---------------------
 GEMINI_API_KEY          — Google Gemini API key (required for dialogue gen)
+NEXUS_OLLAMA_BASE_URL / OLLAMA_HOST — optional; local Ollama (e.g. Mac Mini) for 3-line chat summary before Gemini
+NEXUS_CONVERSATION_SUMMARY_OLLAMA_URL — optional override URL for that summarizer only
+NEXUS_CONVERSATION_SUMMARY_OLLAMA_MODEL / NEXUS_OLLAMA_MODEL — summarizer model (default llama3)
+NEXUS_CONVERSATION_SUMMARY_MESSAGES — max lines fed to summarizer (default 20)
 SWARM_GROUP_LINK        — Telegram group invite link / username
 TELEFIX_DB_PATH         — Override path to telefix.db
 REDIS_URL               — Redis connection string (default: redis://127.0.0.1:6379/0)
@@ -58,6 +62,7 @@ from io import BytesIO
 from typing import Any, Literal
 
 from nexus.services.anti_parrot_shield import MAX_REGENERATION_RETRIES, is_too_similar_to_recent
+from nexus.services.conversation_summary_context import summarize_transcript_for_paid_api
 from nexus.services.recent_news_digest import append_article_link_to_text, telegram_image_filename_from_bytes
 from nexus.services.tg_message_text import (
     purge_absolute_news_source_blacklist,
@@ -493,7 +498,9 @@ ISRAELI_NEWS_SYSTEM_PROMPT = (
     "6. ROLE=replier: Do NOT repeat or paraphrase facts from message_you_reply_to. "
     "Only opinion, joke, complaint, or disagreement matching your persona — zero recap.\n"
     "7. NO hashtags (#). Minor typos OK. Casual slang (אחי, תכלס, הזייה).\n"
-    "Grounding: pick ONE event implied by the digest, but your line must sound like a person texting, not citing news."
+    "Grounding: pick ONE event implied by the digest, but your line must sound like a person texting, not citing news.\n"
+    "Context: recent group activity is given only as state_of_conversation (three Hebrew summary lines from a local model), "
+    "plus optional real_news_last_24h — not raw chat logs."
 )
 
 ISRAELI_NEWS_PRIVILEGED_REPLY_PROMPT = (
@@ -916,7 +923,7 @@ async def _fetch_group_transcript_and_meta(
     api_id: int,
     api_hash: str,
     group_link: str,
-    limit: int = 22,
+    limit: int = 20,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Return (chronological transcript for the prompt, newest-first meta for reply IDs)."""
     from telethon import TelegramClient  # type: ignore[import]
@@ -1023,15 +1030,14 @@ async def _generate_community_message(
 
     nd = (news_digest or "").strip()
     ah = (anchor_headline or "").strip()
+    state_of_conversation = await summarize_transcript_for_paid_api(transcript)
 
     if role == "opener":
         user_obj: dict[str, Any] = {
             "role": "opener",
             "angle_hint": angle,
             "your_display_name": display,
-            "recent_chat_chronological": (
-                transcript or "(אין הודעות אחרונות — תפתח בניחוש חדשותי קצר)"
-            )[-5500:],
+            "state_of_conversation": state_of_conversation,
             "task": "פותח: תגובה רגשית קצרה (2–10 מילים) לאירוע אחד מהדיגסט — בלי לצטט כותרת, בלי מקור, בלי קידומת חדשות.",
             "output_contract": 'החזר אך ורק JSON: {"text":"..."}',
         }
@@ -1042,7 +1048,7 @@ async def _generate_community_message(
             "angle_hint": angle,
             "your_display_name": display,
             "message_you_reply_to": ap,
-            "recent_chat_chronological": (transcript or "")[-5500:],
+            "state_of_conversation": state_of_conversation,
             "task": "משיב בשרשור: רק עמדה/בדיחה/תלונה/התנגדות — 2–10 מילים. אסור לחזור על עובדות מההודעה שאתה משיב לה.",
             "output_contract": 'החזר אך ורק JSON: {"text":"..."}',
         }

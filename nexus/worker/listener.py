@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import os
 import socket
 from datetime import date, datetime, timezone
@@ -80,6 +79,7 @@ from nexus.worker.tasks.poly5m_velocity import (
     attach_velocity_feed_to_worker_ctx,
     detach_velocity_feed_from_worker_ctx,
 )
+from nexus.worker.tasks.swarm import run_swarm_news_digest_subscriber
 
 log = structlog.get_logger(__name__)
 
@@ -212,7 +212,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     )
 
     ctx["_swarm_news_digest_task"] = asyncio.create_task(
-        _swarm_news_digest_subscriber(ctx),
+        run_swarm_news_digest_subscriber(ctx),
         name="worker_swarm_news_digest_subscriber",
     )
 
@@ -371,102 +371,6 @@ async def _panic_subscriber(ctx: dict[str, Any]) -> None:
                     pass
 
 
-async def _swarm_news_digest_subscriber(ctx: dict[str, Any]) -> None:
-    """
-    Subscribe to ``nexus:swarm:news_digest``. When OpenClaw (or any producer)
-    publishes after updating the Redis digest bundle, enqueue a community-factory
-    ``converse_tick`` with ``news_digest_wake`` so opener slots run immediately.
-    """
-    from redis.asyncio import from_url as _redis_from_url
-
-    from nexus.services.recent_news_digest import SWARM_NEWS_DIGEST_CHANNEL
-    from nexus.shared import redis_util
-    from nexus.worker.tasks.swarm import schedule_converse_tick_on_swarm_news_digest_message
-
-    raw_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
-    redis_url = redis_util.coerce_redis_url_for_platform(raw_url)
-    retry_s = 1.0
-    attempt = 0
-    while True:
-        pubsub_client = None
-        try:
-            attempt += 1
-            pubsub_client = _redis_from_url(redis_url, decode_responses=True)
-            pubsub = pubsub_client.pubsub()
-            await pubsub.subscribe(SWARM_NEWS_DIGEST_CHANNEL)
-            if attempt > 1:
-                log.info(
-                    "worker_swarm_news_digest_subscriber_reconnected",
-                    attempts=attempt,
-                    **{"Source": "OpenClaw"},
-                )
-            else:
-                log.info(
-                    "worker_swarm_news_digest_subscriber_started",
-                    channel=SWARM_NEWS_DIGEST_CHANNEL,
-                    **{"Source": "OpenClaw"},
-                )
-            retry_s = 1.0
-
-            async for message in pubsub.listen():
-                if message.get("type") != "message":
-                    continue
-                data = message.get("data") or ""
-                if not isinstance(data, str) or not data.strip():
-                    continue
-                payload: dict[str, Any] = {}
-                try:
-                    parsed = json.loads(data)
-                    if isinstance(parsed, dict):
-                        payload = parsed
-                except Exception:
-                    payload = {}
-
-                log.info(
-                    "swarm_news_digest_redis_received",
-                    **{"Source": "OpenClaw"},
-                    event=payload.get("event"),
-                    schema=payload.get("schema"),
-                    digest_engine=payload.get("engine"),
-                )
-
-                shared_redis = ctx.get("redis")
-                if shared_redis is None:
-                    log.warning(
-                        "swarm_news_digest_wake_skipped_no_redis",
-                        **{"Source": "OpenClaw"},
-                    )
-                    continue
-
-                out = await schedule_converse_tick_on_swarm_news_digest_message(
-                    shared_redis, raw_payload=data
-                )
-                log.info(
-                    "swarm_news_digest_wake_enqueue_result",
-                    **{"Source": "OpenClaw"},
-                    **out,
-                )
-        except asyncio.CancelledError:
-            break
-        except Exception as exc:
-            if attempt <= 2 or attempt % 5 == 0:
-                log.warning(
-                    "worker_swarm_news_digest_subscriber_retry",
-                    attempt=attempt,
-                    retry_in_s=round(retry_s, 2),
-                    error=str(exc),
-                    **{"Source": "OpenClaw"},
-                )
-            await asyncio.sleep(retry_s)
-            retry_s = min(retry_s * 1.7, 10.0)
-        finally:
-            if pubsub_client is not None:
-                try:
-                    await pubsub_client.aclose()
-                except Exception:
-                    pass
-
-
 async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
     """
     Write a NodeHeartbeat key to Redis so the API cluster endpoint
@@ -490,6 +394,7 @@ async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
     ram_used_mb = round(mem.used / (1024 * 1024), 1)
     cpu_percent = psutil.cpu_percent(interval=None)
     cpu_temp = get_cpu_temperature()
+    gpu_mem_pct = get_gpu_memory_used_percent()
 
     display_name = os.getenv("NODE_DISPLAY_NAME", "")
 
@@ -503,6 +408,7 @@ async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
         local_ip=hw["local_ip"],
         cpu_model=hw["cpu_model"],
         gpu_model=hw["gpu_model"],
+        gpu_mem_used_pct=gpu_mem_pct,
         ram_total_mb=hw["ram_total_mb"],
         active_tasks_count=0,
         os_info=hw["os_info"],

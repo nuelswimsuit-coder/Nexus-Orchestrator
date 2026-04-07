@@ -19,7 +19,7 @@ OPENCLAW_ORCH_GPU_VRAM_PCT_HIGH  Enter drain state at this VRAM %% (default 90).
 OPENCLAW_ORCH_GPU_VRAM_PCT_LOW   Leave drain state below this %% (default 75).
 OPENCLAW_ORCH_MAC_NODE_ID        Preferred worker when draining (default ``worker_mac_mini``).
 OPENCLAW_ORCH_MASTER_NODE_IDS    Comma-separated node_id list (default ``master``).
-OPENCLAW_ORCH_LAPTOP_NODE_IDS    Comma-separated ids (default ``worker_laptop_linux,worker_laptop_windows``).
+OPENCLAW_ORCH_LAPTOP_NODE_IDS    Comma-separated laptop worker node_ids (see env doc in code).
 OPENCLAW_ORCH_AUTO_PUSH          Set ``0`` to skip ``nexus-push`` (default ``1``).
 OPENCLAW_ORCH_DRY_RUN            Set ``1`` to log actions without writing files or pushing.
 OPENCLAW_ORCH_USE_SYSTEM_RAM_FALLBACK  If ``1`` and VRAM unknown, use system RAM %% on GPU node.
@@ -77,7 +77,9 @@ def _split_ids(raw: str) -> set[str]:
 
 
 def _workers_path(repo_root: Path) -> Path | None:
-    env_path = (os.environ.get("NEXUS_WORKERS_CONFIG") or os.environ.get("WORKERS_JSON") or "").strip()
+    env_path = (
+        os.environ.get("NEXUS_WORKERS_CONFIG") or os.environ.get("WORKERS_JSON") or ""
+    ).strip()
     p = resolve_workers_config_path(repo_root, env_path or None)
     return p
 

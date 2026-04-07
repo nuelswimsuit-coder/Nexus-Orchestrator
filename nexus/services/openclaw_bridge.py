@@ -14,6 +14,16 @@ and published on ``nexus:swarm:news_digest`` (see ``SWARM_NEWS_DIGEST_CHANNEL``)
 - ``--output-dir`` or ``OPENCLAW_OUTPUT_DIR`` — directory to watch (non-recursive).
 - If neither is set and stdin is a TTY, you are prompted once for the path.
 - ``REDIS_URL`` or ``redis://REDIS_HOST:REDIS_PORT/REDIS_DB`` (via ``nexus.shared.redis_util``).
+
+**Batch LLM ingestion (token efficiency)**
+
+Items are buffered until ``OPENCLAW_INGEST_BATCH_MAX`` (default ``10``) or
+``OPENCLAW_INGEST_FLUSH_SEC`` seconds (default ``300``) since the first item in
+the current window. One OpenAI chat call analyzes the whole batch; results are
+written as separate Redis keys under ``nexus:openclaw:swarm:ingest:item:*``,
+published on ``nexus:swarm:news_digest``, and keyword hits go through
+``ingest_text_for_swarm_sync``. Requires ``OPENAI_API_KEY``; without it, local
+fallback summaries/scores are used. Optional: ``OPENCLAW_BATCH_LLM_MODEL``.
 """
 
 from __future__ import annotations
@@ -165,16 +175,45 @@ def read_openclaw_json(path: Path) -> Any:
     raise last_exc
 
 
-def build_swarm_message(headline: str, content: str) -> dict[str, str]:
+def build_swarm_message(
+    headline: str,
+    content: str,
+    *,
+    source_doc: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     ts = datetime.now(timezone.utc).isoformat()
-    return {
-        "headline": headline,
-        "content": content,
-        "timestamp": ts,
+    out: dict[str, Any] = {"headline": headline, "content": content, "timestamp": ts}
+    reserved = {
+        "headline",
+        "title",
+        "subject",
+        "head_line",
+        "anchor_title",
+        "name",
+        "content",
+        "body",
+        "text",
+        "summary",
+        "article",
+        "article_text",
+        "digest_text",
+        "excerpt",
+        "description",
+        "message",
+        "timestamp",
+        "ts",
     }
+    if isinstance(source_doc, dict):
+        for k, v in source_doc.items():
+            ks = str(k)
+            if ks in out or ks.lower() in reserved:
+                continue
+            if isinstance(v, (str, int, float, bool)) or v is None:
+                out[ks] = v if not isinstance(v, str) else v[:8000]
+    return out
 
 
-def _payload_fingerprint(payload: dict[str, str]) -> str:
+def _payload_fingerprint(payload: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -214,13 +253,13 @@ class OpenClawJsonHandler(FileSystemEventHandler):
             return
         self._maybe_handle(Path(event.dest_path))
 
-    def is_same_as_last_publish(self, path: Path, payload: dict[str, str]) -> bool:
+    def is_same_as_last_publish(self, path: Path, payload: dict[str, Any]) -> bool:
         key = str(path.resolve())
         fp = _payload_fingerprint(payload)
         with self._lock:
             return self._last_hash_by_path.get(key) == fp
 
-    def remember_publish(self, path: Path, payload: dict[str, str]) -> None:
+    def remember_publish(self, path: Path, payload: dict[str, Any]) -> None:
         key = str(path.resolve())
         fp = _payload_fingerprint(payload)
         with self._lock:
@@ -245,7 +284,8 @@ def process_json_file(
         log.info("openclaw_bridge_skip_empty", path=str(path))
         return False
 
-    payload = build_swarm_message(headline, content)
+    src = data if isinstance(data, dict) else None
+    payload = build_swarm_message(headline, content, source_doc=src)
     if handler is not None and handler.is_same_as_last_publish(path, payload):
         log.debug("openclaw_bridge_skip_duplicate", path=str(path))
         return False

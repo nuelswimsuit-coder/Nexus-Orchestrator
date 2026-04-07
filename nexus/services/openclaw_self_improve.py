@@ -101,7 +101,7 @@ def patch_personas_openclaw_json(archetype_index: int, constraint: str) -> bool:
     data[key] = lines
     new_json = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     new_line = f"OPENCLAW_ARCHETYPE_EXTRA_JSON = {repr(new_json)}"
-    updated = text[: m.start()] + new_line + text[m.end() :]
+    updated = text.replace(m.group(0), new_line, 1)
     if updated == text:
         return False
     path.write_text(updated, encoding="utf-8")

@@ -193,6 +193,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         name="stability_monitor",
     )
 
+    openclaw_self_improve_task: asyncio.Task[None] | None = None
+    if os.getenv("OPENCLAW_SELF_IMPROVE_ENABLED", "").strip().lower() in ("1", "true", "yes", "on"):
+        from nexus.services.openclaw_self_improve import run_openclaw_self_improve_loop
+
+        openclaw_self_improve_task = asyncio.create_task(
+            run_openclaw_self_improve_loop(redis),
+            name="openclaw_self_improve",
+        )
+        log.info("openclaw_self_improve_task_started", channel="nexus:swarm:logs")
+
     scalper_task: asyncio.Task[None] | None = None
     if os.getenv("NEXUS_POLY_SCALPER_ENABLED", "").strip().lower() in ("1", "true", "yes", "on"):
         from nexus.master.services.poly_5m_scalper import run_poly_scalper_loop
@@ -258,6 +268,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         scalper_task.cancel()
         try:
             await scalper_task
+        except asyncio.CancelledError:
+            pass
+
+    if openclaw_self_improve_task is not None:
+        openclaw_self_improve_task.cancel()
+        try:
+            await openclaw_self_improve_task
         except asyncio.CancelledError:
             pass
 

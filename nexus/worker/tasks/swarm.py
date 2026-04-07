@@ -33,7 +33,13 @@ from nexus.services.tg_message_text import (
     telethon_display_text,
 )
 from nexus.services.tg_participant_privilege import sender_of_message_is_owner_or_admin
-from nexus.shared.personas import PERSONA_ARCHETYPE_PROMPTS, session_is_asleep_jerusalem
+from nexus.shared.personas import (
+    PERSONA_ARCHETYPE_PROMPTS,
+    deterministic_archetype_index,
+    effective_persona_prompt_for_archetype_index,
+    session_is_asleep_jerusalem,
+)
+from nexus.shared.swarm_logs_redis import ISSUE_HALLUCINATION, ISSUE_PARROT_BUG, publish_swarm_log_event
 from nexus.worker.services.israeli_telegram_profile import ensure_israeli_factory_profile
 from nexus.shared.telethon_human_hesitation import schedule_post_send_human_hesitation
 from nexus.worker.services.tg_session import (
@@ -721,7 +727,7 @@ def _deterministic_persona_axes(session_base: str) -> tuple[str, str]:
     d = hashlib.md5(raw).digest()
     ai = int.from_bytes(d[0:2], "big") % len(PERSONA_ARCHETYPES)
     gi = int.from_bytes(d[2:4], "big") % len(GEO_ANCHORS)
-    return PERSONA_ARCHETYPES[ai], GEO_ANCHORS[gi]
+    return effective_persona_prompt_for_archetype_index(ai), GEO_ANCHORS[gi]
 
 
 def _resolve_ollama_base_url() -> str:
@@ -1191,9 +1197,16 @@ async def _generate_unique_amcha_turn(redis: Any, group_id: int, **kwargs: Any) 
     kwargs["redis_for_news_digest"] = redis
     news_opener = bool(kwargs.get("news_opener"))
     rich_media_mode = bool(kwargs.get("rich_media_mode"))
+    session_base = str(kwargs.get("session_base") or "")
     recent = await _factory_group_recent_sent_fetch(redis, group_id)
+    last_compare = ""
     for attempt in range(1 + MAX_REGENERATION_RETRIES):
         turn = await _generate_amcha_turn(**kwargs, regeneration_attempt=attempt)
+        if news_opener and turn is not None and redis is not None:
+            oc = await read_openclaw_digest_overlay(redis)
+            img = _first_http_url_from_mapping(oc or {}, _OPENCLAW_PUBSUB_IMAGE_KEYS)
+            if img:
+                turn = {**turn, "openclaw_image_url": img}
         compare = _factory_turn_antiparrot_compare_text(
             turn, news_opener=news_opener, rich_media_mode=rich_media_mode
         )
@@ -1201,11 +1214,25 @@ async def _generate_unique_amcha_turn(redis: Any, group_id: int, **kwargs: Any) 
             return turn
         if not is_too_similar_to_recent(compare, recent):
             return turn
+        last_compare = compare or last_compare
         log.debug(
             "factory_antiparrot_rejected",
             group_id=int(group_id),
             attempt=attempt,
             sample=compare[:80],
+        )
+    if redis is not None:
+        ai = deterministic_archetype_index(session_base or "default")
+        await publish_swarm_log_event(
+            redis,
+            {
+                "issue": ISSUE_PARROT_BUG,
+                "session_base": session_base,
+                "archetype_index": ai,
+                "sample": (last_compare or "")[:400],
+                "group_id": int(group_id),
+                "engine": "swarm_factory",
+            },
         )
     return None
 
@@ -1302,6 +1329,31 @@ def _message_refs_newest_first(messages_oldest_first: list[Any]) -> list[tuple[i
         if len(out) >= RECENT_GROUP_MSG_CAP:
             break
     return out
+
+
+def _raw_had_trailing_news_outlet_echo(raw: str) -> bool:
+    r = (raw or "").strip()
+    if not r:
+        return False
+    return strip_trailing_israeli_news_outlet(r) != r
+
+
+async def _maybe_publish_outlet_echo_issue(redis: Any, session_base: str, raw_llm: str) -> None:
+    if redis is None or not (session_base or "").strip():
+        return
+    if not _raw_had_trailing_news_outlet_echo(raw_llm):
+        return
+    ai = deterministic_archetype_index(session_base)
+    await publish_swarm_log_event(
+        redis,
+        {
+            "issue": ISSUE_HALLUCINATION,
+            "session_base": session_base,
+            "archetype_index": ai,
+            "sample": (raw_llm or "")[:400],
+            "engine": "swarm_factory",
+        },
+    )
 
 
 def _last_five_prompt_block(refs_newest_first: list[tuple[int, str]]) -> str:
@@ -1571,15 +1623,26 @@ async def _generate_amcha_turn(
 
     core_analysis: dict[str, Any] | None = None
     nb_cached: Any = None
+    overlay_early: dict[str, Any] | None = None
     if news_opener and redis_for_news_digest is not None:
         try:
             from nexus.services.recent_news_digest import get_tick_news_bundle_for_consumer
             from nexus.shared.intelligence_cache import compute_news_id, ensure_core_analysis
 
+            overlay_early = await read_openclaw_digest_overlay(redis_for_news_digest)
             nb_cached = await get_tick_news_bundle_for_consumer(redis_for_news_digest)
-            nt = (nb_cached.anchor_title or "").strip()
-            nd = (nb_cached.digest_text or "").strip()
-            nl = (nb_cached.anchor_link or "").strip()
+            nt = (
+                str((overlay_early or {}).get("headline") or "").strip()
+                or (str(getattr(nb_cached, "anchor_title", "") or "").strip())
+            )
+            nd = (
+                str((overlay_early or {}).get("content") or "").strip()
+                or (str(getattr(nb_cached, "digest_text", "") or "").strip())
+            )
+            nl = (
+                str((overlay_early or {}).get("article_url") or "").strip()
+                or (str(getattr(nb_cached, "anchor_link", "") or "").strip())
+            )
             if nt or nd or nl:
                 nid = compute_news_id(nt, nl, nd)
                 core_analysis = await ensure_core_analysis(
@@ -1679,15 +1742,28 @@ async def _generate_amcha_turn(
             except Exception as exc:
                 log.debug("factory_news_opener_digest_bundle_failed", error=str(exc))
                 nb = None
+        parts: list[str] = []
+        ov = overlay_early
+        if ov:
+            oh = str(ov.get("headline") or "").strip()
+            oc = str(ov.get("content") or "").strip()
+            if oh:
+                parts.append(f"כותרת OpenClaw (רקע): {oh[:500]}")
+            if oc:
+                parts.append(f"תוכן OpenClaw (רקע): {oc[:1200]}")
+            ex = ov.get("extra")
+            if isinstance(ex, dict):
+                for ek, ev in list(ex.items())[:16]:
+                    if isinstance(ev, (str, int, float, bool)):
+                        parts.append(f"מטא־דאטה {ek}: {str(ev)[:400]}")
         if nb is not None:
-            parts: list[str] = []
             if (nb.digest_text or "").strip():
                 parts.append(f"שורות עדכון (רקע בלבד, לא להעתיק מילה במילה): {nb.digest_text[:1200]}")
             if (nb.anchor_title or "").strip():
                 parts.append(f"כותרת מובילה (רקע): {nb.anchor_title[:400]}")
             if (nb.anchor_link or "").strip():
                 parts.append(f"קישור מוביל (לשימוש ב-article_url אם מתאים): {nb.anchor_link[:2000]}")
-            digest_hint = "\n".join(parts)
+        digest_hint = "\n".join(parts)
         digest_block = f"\n{digest_hint}\n" if digest_hint else "\n"
         user_he = (
             f"{last_five_block}\n\n{effective_stance}\n\n"
@@ -2184,14 +2260,18 @@ async def _send_rich_factory_messages(
     reply_to_id: int | None,
     news_opener: bool,
     use_md: bool = False,
+    redis: Any | None = None,
+    session_base: str = "",
 ) -> list[Any]:
     """Jitter before Telegram, then text / sticker / Tenor·Giphy·inline GIF / image bytes per action_type."""
     await asyncio.sleep(random.uniform(0.5, 4.0))
     sent: list[Any] = []
     action = str(turn.get("action_type") or "text").strip().lower()
+    raw_primary = str(turn.get("primary_message") or turn.get("message_text") or "")
 
     if news_opener:
         primary_out = _finalize_primary_message(str(turn.get("primary_message") or turn.get("message_text") or ""))
+        await _maybe_publish_outlet_echo_issue(redis, session_base, raw_primary)
         url = await _maybe_tinyurl_shorten(str(turn.get("article_url") or ""))
         primary_out, use_md2 = _format_opener_with_md_link(
             str(turn.get("primary_message") or primary_out),
@@ -2199,7 +2279,7 @@ async def _send_rich_factory_messages(
             str(turn.get("link_label") or ""),
         )
         use_md = use_md or use_md2
-        return await _send_amcha_messages(
+        msgs = await _send_amcha_messages(
             client,
             entity,
             primary=primary_out,
@@ -2208,8 +2288,41 @@ async def _send_rich_factory_messages(
             reply_to_id=reply_to_id,
             parse_mode="md" if use_md else None,
         )
+        img_u = str(turn.get("openclaw_image_url") or "").strip()
+        if img_u.startswith(("http://", "https://")):
+            try:
+                from nexus.services.recent_news_digest import (
+                    download_image_bytes,
+                    telegram_image_filename_from_bytes,
+                )
+
+                data = await download_image_bytes(img_u)
+                if data:
+                    fname = telegram_image_filename_from_bytes(data)
+                    bio = BytesIO(data)
+                    rpl: int | None = None
+                    if msgs:
+                        rpl = getattr(msgs[-1], "id", None)
+                        if rpl is not None:
+                            rpl = int(rpl)
+                    if rpl is None:
+                        rpl = reply_to_id
+                    try:
+                        photo_msg = await client.send_file(
+                            entity,
+                            file=(fname, bio),
+                            reply_to=rpl,
+                            force_document=False,
+                        )
+                        msgs.append(photo_msg)
+                    except Exception as exc:
+                        log.debug("factory_news_opener_photo_failed", error=str(exc))
+            except Exception as exc:
+                log.debug("factory_news_opener_image_branch_failed", error=str(exc))
+        return msgs
 
     mt = _finalize_primary_message(str(turn.get("message_text") or turn.get("primary_message") or ""))
+    await _maybe_publish_outlet_echo_issue(redis, session_base, raw_primary)
     iq = str(turn.get("image_query") or "").strip()
     persona_seed = str(turn.get("_persona_seed") or "")
 
@@ -2586,6 +2699,245 @@ async def swarm_lore_nightly(parameters: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ── OpenClaw / pubsub: flexible JSON + optional image metadata for news openers ──
+
+OPENCLAW_DIGEST_OVERLAY_KEY = "nexus:swarm:factory:openclaw_digest_overlay"
+OPENCLAW_DIGEST_OVERLAY_TTL_SEC = 900
+_OPENCLAW_PUBSUB_IMAGE_KEYS = (
+    "image_url",
+    "image",
+    "thumb_url",
+    "thumbnail",
+    "photo_url",
+    "og_image",
+    "hero_image",
+)
+_OPENCLAW_OVERLAY_EXTRA_SKIP: frozenset[str] = frozenset(
+    {
+        "headline",
+        "title",
+        "subject",
+        "head_line",
+        "anchor_title",
+        "name",
+        "content",
+        "body",
+        "text",
+        "summary",
+        "article",
+        "article_text",
+        "digest_text",
+        "excerpt",
+        "description",
+        "message",
+        "timestamp",
+        "ts",
+        "time",
+        "schema",
+        "event",
+        "engine",
+        "digest_preview",
+        "anchor_link",
+        "article_url",
+        "url",
+        "link",
+        "article_link",
+        *_OPENCLAW_PUBSUB_IMAGE_KEYS,
+    }
+)
+
+
+def parse_swarm_news_digest_pubsub_payload(raw: str) -> dict[str, Any] | None:
+    """Best-effort JSON object from a pub/sub payload; never raises."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        obj = json.loads(s)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if isinstance(obj, list):
+        for it in obj:
+            if isinstance(it, dict):
+                return it
+        return None
+    if isinstance(obj, dict):
+        return obj
+    return None
+
+
+def _is_internal_nexus_digest_pubsub_event(obj: dict[str, Any]) -> bool:
+    if str(obj.get("event") or "").strip() == "news_digest_updated":
+        return True
+    sch = str(obj.get("schema") or "").strip()
+    return bool(sch.startswith("nexus."))
+
+
+def _first_http_url_from_mapping(obj: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for k in keys:
+        v = obj.get(k)
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s.startswith(("http://", "https://")):
+            return s[:4000]
+    return ""
+
+
+async def read_openclaw_digest_overlay(redis: Any) -> dict[str, Any] | None:
+    if redis is None:
+        return None
+    try:
+        raw = await redis.get(OPENCLAW_DIGEST_OVERLAY_KEY)
+        if not raw:
+            return None
+        if isinstance(raw, (bytes, bytearray)):
+            raw = bytes(raw).decode("utf-8", errors="ignore")
+        data = json.loads(str(raw))
+        return data if isinstance(data, dict) else None
+    except Exception as exc:
+        log.debug("openclaw_digest_overlay_read_failed", error=str(exc))
+    return None
+
+
+async def persist_openclaw_digest_overlay_from_pubsub(redis: Any, obj: dict[str, Any]) -> None:
+    """
+    Store headline/body/image URL and unknown scalar metadata from a non-internal
+    pub/sub JSON object so factory news openers can use it on the next tick.
+    """
+    if redis is None or not isinstance(obj, dict):
+        return
+    if _is_internal_nexus_digest_pubsub_event(obj):
+        return
+    headline, content = "", ""
+    try:
+        from nexus.services.openclaw_bridge import extract_headline_content
+
+        headline, content = extract_headline_content(obj)
+    except Exception:
+        headline = str(obj.get("headline") or obj.get("title") or "").strip()
+        content = str(obj.get("content") or obj.get("body") or obj.get("text") or "").strip()
+    img = _first_http_url_from_mapping(obj, _OPENCLAW_PUBSUB_IMAGE_KEYS)
+    article = _first_http_url_from_mapping(
+        obj,
+        ("article_url", "url", "link", "article_link", "anchor_link"),
+    )
+    extra: dict[str, Any] = {}
+    for k, v in obj.items():
+        ks = str(k)
+        if ks in _OPENCLAW_OVERLAY_EXTRA_SKIP:
+            continue
+        if isinstance(v, (str, int, float, bool)) or v is None:
+            if isinstance(v, str) and not v.strip():
+                continue
+            extra[ks[:80]] = v if not isinstance(v, str) else v[:2000]
+    if not (headline or content or img or article or extra):
+        return
+    record = {
+        "headline": headline[:2000],
+        "content": content[:8000],
+        "image_url": img or None,
+        "article_url": article or None,
+        "extra": extra,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await redis.set(
+            OPENCLAW_DIGEST_OVERLAY_KEY,
+            json.dumps(record, ensure_ascii=False),
+            ex=int(OPENCLAW_DIGEST_OVERLAY_TTL_SEC),
+        )
+    except Exception as exc:
+        log.warning("openclaw_digest_overlay_persist_failed", error=str(exc))
+
+
+async def run_swarm_news_digest_subscriber(ctx: dict[str, Any]) -> None:
+    """
+    Dedicated Redis pub/sub connection for ``nexus:swarm:news_digest``.
+    Try-parses each message; overlay + converse wake are handled in
+    ``schedule_converse_tick_on_swarm_news_digest_message``.
+    """
+    from redis.asyncio import from_url as _redis_from_url
+
+    from nexus.services.recent_news_digest import SWARM_NEWS_DIGEST_CHANNEL
+    from nexus.shared import redis_util
+
+    raw_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
+    redis_url = redis_util.coerce_redis_url_for_platform(raw_url)
+    retry_s = 1.0
+    attempt = 0
+    while True:
+        pubsub_client = None
+        try:
+            attempt += 1
+            pubsub_client = _redis_from_url(redis_url, decode_responses=True)
+            pubsub = pubsub_client.pubsub()
+            await pubsub.subscribe(SWARM_NEWS_DIGEST_CHANNEL)
+            if attempt > 1:
+                log.info(
+                    "worker_swarm_news_digest_subscriber_reconnected",
+                    attempts=attempt,
+                    **{"Source": "OpenClaw"},
+                )
+            else:
+                log.info(
+                    "worker_swarm_news_digest_subscriber_started",
+                    channel=SWARM_NEWS_DIGEST_CHANNEL,
+                    **{"Source": "OpenClaw"},
+                )
+            retry_s = 1.0
+
+            async for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                data = message.get("data") or ""
+                if not isinstance(data, str) or not data.strip():
+                    continue
+                parsed = parse_swarm_news_digest_pubsub_payload(data)
+                log.info(
+                    "swarm_news_digest_redis_received",
+                    **{"Source": "OpenClaw"},
+                    event=(parsed or {}).get("event") if parsed else None,
+                    schema=(parsed or {}).get("schema") if parsed else None,
+                    digest_engine=(parsed or {}).get("engine") if parsed else None,
+                    parse_ok=parsed is not None,
+                )
+                shared_redis = ctx.get("redis")
+                if shared_redis is None:
+                    log.warning(
+                        "swarm_news_digest_wake_skipped_no_redis",
+                        **{"Source": "OpenClaw"},
+                    )
+                    continue
+                out = await schedule_converse_tick_on_swarm_news_digest_message(
+                    shared_redis, raw_payload=data
+                )
+                log.info(
+                    "swarm_news_digest_wake_enqueue_result",
+                    **{"Source": "OpenClaw"},
+                    **out,
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            if attempt <= 2 or attempt % 5 == 0:
+                log.warning(
+                    "worker_swarm_news_digest_subscriber_retry",
+                    attempt=attempt,
+                    retry_in_s=round(retry_s, 2),
+                    error=str(exc),
+                    **{"Source": "OpenClaw"},
+                )
+            await asyncio.sleep(retry_s)
+            retry_s = min(retry_s * 1.7, 10.0)
+        finally:
+            if pubsub_client is not None:
+                try:
+                    await pubsub_client.aclose()
+                except Exception:
+                    pass
+
+
 DIGEST_WAKE_LOCK_PREFIX = "nexus:swarm:factory:digest_wake_lock:"
 
 
@@ -2610,6 +2962,13 @@ async def schedule_converse_tick_on_swarm_news_digest_message(
         return {"ok": False, "reason": "lock_error"}
     if not got:
         return {"ok": False, "reason": "deduped"}
+
+    parsed = parse_swarm_news_digest_pubsub_payload(raw)
+    if isinstance(parsed, dict):
+        try:
+            await persist_openclaw_digest_overlay_from_pubsub(redis, parsed)
+        except Exception as exc:
+            log.debug("swarm_news_digest_overlay_apply_failed", error=str(exc))
 
     state = await _redis_json_get(redis, KEY_STATE)
     groups = await _redis_json_get(redis, KEY_GROUPS)
@@ -3649,6 +4008,8 @@ async def _factory_converse_slot(
                 reply_to_id=reply_to_id,
                 news_opener=news_opener,
                 use_md=use_md,
+                redis=redis,
+                session_base=session_base,
             )
             if derail_kind and not sent_list:
                 await _derail_restore_claim(redis, derail_kind, derail_cont_after)

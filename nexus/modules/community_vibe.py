@@ -5,7 +5,7 @@ Used by ``swarm.group_warmer`` for persona assignment, topic selection,
 message composition, and periodic community classification.
 
 Performance: shared ``httpx`` client (pooling), ``ujson`` for bodies/parsing,
-tight ``maxOutputTokens`` and smaller transcript windows to cut GPU/CPU time.
+tight ``maxOutputTokens``; paid chatter calls use a 3-line local summary + news only.
 (Redis batching belongs in callers; this module does not touch Redis.)
 """
 
@@ -40,7 +40,6 @@ GEMINI_URL = (
 
 # Smaller context → faster inference (Ollama path mirrors prompts upstream).
 _TRANSCRIPT_REFRESH_MAX = 4000
-_TRANSCRIPT_CHATTER_MAX = 3500
 _TRANSCRIPT_CLASSIFY_MAX = 6000
 _NEWS_DIGEST_MAX = 4000
 _ANCHOR_HEADLINE_MAX = 300

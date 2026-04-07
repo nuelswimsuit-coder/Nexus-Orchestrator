@@ -16,14 +16,12 @@ import json
 import os
 import socket
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
 
 from nexus.shared.notifications.base import Alert, AlertLevel
-
-if TYPE_CHECKING:
-    from nexus.shared.notifications.service import NotificationService
+from nexus.shared.notifications.service import NotificationService
 
 log = structlog.get_logger(__name__)
 
@@ -163,9 +161,11 @@ async def load_openclaw_nexus_sync_status(redis: Any) -> dict[str, Any]:
 
 
 async def _notify_openclaw_sync_critical(
-    notifier: NotificationService,
+    notifier: NotificationService | None,
     detail: dict[str, Any],
 ) -> None:
+    if notifier is None:
+        return
     body_lines = [
         detail.get("message", "OpenClaw ↔ Nexus sync failure."),
         f"Last heartbeat: {detail.get('last_heartbeat_at') or 'never'}",
