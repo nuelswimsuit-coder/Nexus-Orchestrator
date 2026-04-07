@@ -26,7 +26,8 @@ function deployEventTerminal(ev: DeployProgressEvent): boolean {
   return (
     ev.status === "error" ||
     ev.step === "error" ||
-    (ev.step === "done" && ev.status === "done")
+    (ev.step === "done" && ev.status === "done") ||
+    (ev.step === "skipped" && ev.status === "done")
   );
 }
 
@@ -166,6 +167,7 @@ const MODAL_STEP_TAG: Record<string, string> = {
   installing_deps: "INSTALLING DEPS",
   bootstrapping:   "INSTALLING DEPS",
   restarting:      "RESTARTING",
+  skipped:         "SKIPPED",
   done:            "DONE",
   error:           "ERROR",
 };
@@ -177,6 +179,7 @@ const MODAL_STEP_COLOR: Record<string, string> = {
   installing_deps: "#34d399",
   bootstrapping:   "#34d399",
   restarting:      "#f472b6",
+  skipped:         "#94a3b8",
   done:            "#22c55e",
   error:           "#ef4444",
 };
@@ -203,6 +206,7 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
 
   const streamsRef  = useRef<Map<string, EventSource>>(new Map());
   const termRef     = useRef<HTMLDivElement>(null);
+  const phaseRef    = useRef<DeployPhase>("idle");
   /** Prevents double DONE/ERROR when both SSE and status poll see the same terminal state. */
   const deploySettledRef = useRef(false);
 
@@ -210,6 +214,7 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
 
   // Keep global context in sync
   const setPhase = useCallback((p: DeployPhase) => {
+    phaseRef.current = p;
     setPhaseLocal(p);
     setDeployPhase(p);
   }, [setDeployPhase]);
@@ -292,7 +297,8 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
 
         const failed = ev.status === "error" || ev.step === "error";
         const succeeded = ev.step === "done" && ev.status === "done";
-        if (failed || succeeded) {
+        const skipped = ev.step === "skipped" && ev.status === "done";
+        if (failed || succeeded || skipped) {
           es.close();
           streamsRef.current.delete(node_id);
           setTimeout(() => setDeployingNode(node_id, false), 4000);
@@ -398,7 +404,23 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
             setPhase("error");
           }
         } catch {}
-        if (_pollCount >= 360) clearInterval(statusPoll); // ~12 min at 2s
+        if (_pollCount >= 360) {
+          clearInterval(statusPoll);
+          if (phaseRef.current === "running" && !deploySettledRef.current) {
+            deploySettledRef.current = true;
+            streamsRef.current.forEach(s => s.close());
+            streamsRef.current.clear();
+            for (const id of NEXUS_PUSH_SYNC_NODE_IDS) {
+              setDeployingNode(id, false);
+            }
+            addLine(
+              "ERROR",
+              "Deploy status poll timed out (~12 min) — check server logs and worker connectivity.",
+              "#ef4444",
+            );
+            setPhase("error");
+          }
+        }
       }, 2_000);
 
     } catch (err: unknown) {

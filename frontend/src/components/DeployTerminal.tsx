@@ -34,6 +34,7 @@ const STEP_CFG: Record<string, { tag: string; color: string }> = {
   installing_deps: { tag: "INSTALLING DEPS", color: "#34d399" },
   bootstrapping:   { tag: "INSTALLING DEPS", color: "#34d399" },
   restarting:      { tag: "RESTARTING",      color: "#f472b6" },
+  skipped:         { tag: "SKIPPED",         color: "#94a3b8" },
   done:            { tag: "DONE",            color: "#22c55e" },
   error:           { tag: "ERROR",           color: "#ef4444" },
 };
@@ -44,7 +45,8 @@ function deployEventTerminal(ev: DeployProgressEvent): boolean {
   return (
     ev.status === "error" ||
     ev.step === "error" ||
-    (ev.step === "done" && ev.status === "done")
+    (ev.step === "done" && ev.status === "done") ||
+    (ev.step === "skipped" && ev.status === "done")
   );
 }
 
@@ -181,7 +183,8 @@ export default function DeployTerminal() {
 
           const failed = ev.status === "error" || ev.step === "error";
           const succeeded = ev.step === "done" && ev.status === "done";
-          if (failed || succeeded) {
+          const skipped = ev.step === "skipped" && ev.status === "done";
+          if (failed || succeeded || skipped) {
             es.close();
             streamsRef.current.delete(nodeId);
             setUploadProg(null);
@@ -290,6 +293,23 @@ export default function DeployTerminal() {
         if (pollCount >= 360 && statusPollRef.current) {
           clearInterval(statusPollRef.current);
           statusPollRef.current = null;
+          if (phaseRef.current === "running" && !deploySettledRef.current) {
+            deploySettledRef.current = true;
+            streamsRef.current.forEach(es => es.close());
+            streamsRef.current.clear();
+            setUploadProg(null);
+            for (const id of NEXUS_PUSH_SYNC_NODE_IDS) {
+              setDeployingNode(id, false);
+            }
+            addLine(
+              makeLine(
+                "ERROR",
+                "#ef4444",
+                "Deploy status poll timed out (~12 min) — check server logs and worker connectivity.",
+              ),
+            );
+            setPhase("error");
+          }
         }
       }, 2_000);
     } catch (err: unknown) {

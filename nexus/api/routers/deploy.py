@@ -236,6 +236,9 @@ async def stream_progress(
                                 return
                             if ev.get("step") == "done" and ev.get("status") == "done":
                                 return
+                            # Unreachable host preflight — terminal for this leg (sync continues other target).
+                            if ev.get("step") == "skipped" and ev.get("status") == "done":
+                                return
                         except Exception:
                             pass
                 else:
