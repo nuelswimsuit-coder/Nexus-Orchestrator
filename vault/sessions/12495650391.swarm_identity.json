@@ -2,5 +2,9 @@
   "first_name": "Tamar",
   "last_name": "Ohana",
   "avatar_seed": "12495650391",
-  "profile_applied": false
+  "profile_applied": false,
+  "device_model": "Samsung Galaxy S22",
+  "system_version": "SDK 33",
+  "app_version": "10.11.5",
+  "device_profile_version": 1
 }

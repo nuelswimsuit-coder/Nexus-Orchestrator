@@ -2,5 +2,9 @@
   "first_name": "Dana",
   "last_name": "Segal",
   "avatar_seed": "972535234414",
-  "profile_applied": false
+  "profile_applied": false,
+  "device_model": "Motorola Edge 40",
+  "system_version": "SDK 33",
+  "app_version": "10.11.2",
+  "device_profile_version": 1
 }

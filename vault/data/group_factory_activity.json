@@ -94,7 +94,17 @@
       "ts": "2026-04-07T16:45:35.872234+00:00",
       "level": "info",
       "message": "מפעל הקבוצות הופעל: דגל automation_armed=true נשמר. לולאת GroupFactory ברקע רצה בתהליך המאסטר (אם פעיל)."
+    },
+    {
+      "ts": "2026-04-07T18:53:03.322653+00:00",
+      "level": "info",
+      "message": "מפעל הקבוצות הופעל: automation_armed=true. לולאת חימום/אינדוקס t.me במאסטר (אם פעיל). יצירת מגה-קבוצות פרטיות (Telethon): worker מריץ seo.group_factory — סשנים בריאים מה-vault, עד 3 קבוצות לסשן, round-robin, ייצוא הזמנה, שמירה ב-Redis, ואז הצטרפות שאר ה-swarm עם jitter. נשלח לתור: task_id=21dc6dc5-b152-4e8b-93de-b797105445c5."
+    },
+    {
+      "ts": "2026-04-07T18:53:09.262190+00:00",
+      "level": "info",
+      "message": "מפעל הקבוצות הופעל: automation_armed=true. לולאת חימום/אינדוקס t.me במאסטר (אם פעיל). יצירת מגה-קבוצות פרטיות (Telethon): worker מריץ seo.group_factory — סשנים בריאים מה-vault, עד 3 קבוצות לסשן, round-robin, ייצוא הזמנה, שמירה ב-Redis, ואז הצטרפות שאר ה-swarm עם jitter. נשלח לתור: task_id=82858351-c38f-4bf1-aa9a-807ba11d1abc."
     }
   ],
-  "updated_at": "2026-04-07T16:45:35.872234+00:00"
+  "updated_at": "2026-04-07T18:53:09.262190+00:00"
 }
