@@ -23,8 +23,9 @@ from urllib.parse import quote
 import structlog
 
 from nexus.modules.community_vibe import parse_json_object
+from nexus.services.anti_parrot_shield import MAX_REGENERATION_RETRIES, is_too_similar_to_recent
 from nexus.services.media_opsec import make_image_upload_salt_seed, prepare_jpeg_png_for_telegram_upload
-from nexus.services.tg_message_text import llm_media_prefix_for_message
+from nexus.services.tg_message_text import llm_media_prefix_for_message, strip_trailing_israeli_news_outlet
 from nexus.services.tg_participant_privilege import sender_of_message_is_owner_or_admin
 from nexus.worker.services.israeli_telegram_profile import ensure_israeli_factory_profile
 from nexus.worker.services.tg_session import (
@@ -45,6 +46,7 @@ KEY_COOLDOWNS = "nexus:swarm:factory:cooldowns"
 KEY_METRICS = "nexus:swarm:factory:metrics"
 KEY_PROFILE_GATE = "nexus:swarm:factory:profile_gate"
 KEY_RECENT_OUTGOING = "nexus:swarm:factory:recent_outgoing"
+GROUP_RECENT_SENT_PREFIX = "nexus:swarm:factory:group_recent_sent:"
 KEY_FACTORY_POOL_UIDS = "nexus:swarm:factory:pool_user_ids"
 THREAD_KEY_PREFIX = "nexus:swarm:factory:thread:"
 ACTIVE_TOPIC_KEY_PREFIX = "nexus:swarm:factory:active_topic:"
@@ -54,11 +56,20 @@ RECENT_GROUP_MSG_MAX_CHARS = 180
 RECENT_OUTGOING_CAP = 200
 RECENT_OUTGOING_PROMPT_LINES = 40
 
+# Hebrew swarm LLM decoding: stable temperature + top_p (avoid collapsed/repetitive local output).
+AMCHA_LLM_TEMPERATURE = 0.85
+AMCHA_LLM_TOP_P = 0.9
+# Anti-duplication shield vs recent group + cross-account lines (word Jaccard, same spirit as content_factory).
+AMCHA_ANTI_DUP_JACCARD_THRESHOLD = 0.85
+AMCHA_OLLAMA_ANTI_DUP_MAX_TRIES = 3
+
 _RICH_ACTION_TYPES = frozenset({"text", "text_with_emoji", "sticker", "gif", "image"})
 _DEFAULT_STICKER_PACKS = ["AnimatedEmojies", "HotCherry"]
 
 # When Redis is unavailable, avoid re-running profile checks every tick (Latin names stay "non_israeli" per heuristic).
 _factory_profile_verified_local: set[str] = set()
+# Per-group last sent lines when Redis is missing (best-effort within this process only).
+_factory_group_recent_sent_local: dict[int, list[str]] = {}
 
 GROUPS_TARGET_PER_OWNER = 20
 REACTION_EMOJIS = ["🔥", "😂", "💀", "🤯", "👀", "😱", "💪", "🤦", "😅", "❤️", "🙏"]
@@ -458,6 +469,48 @@ def _anti_duplication_prompt_suffix(recent_texts: list[str]) -> str:
     )
 
 
+def _jaccard_word_similarity(a: str, b: str) -> float:
+    """Word-level Jaccard similarity (0–1), Unicode-word friendly."""
+    set_a = set(re.sub(r"[^\w\s]", "", (a or "").lower()).split())
+    set_b = set(re.sub(r"[^\w\s]", "", (b or "").lower()).split())
+    if not set_a or not set_b:
+        return 0.0
+    return len(set_a & set_b) / len(set_a | set_b)
+
+
+def _anti_duplication_shield_rejects_turn(
+    turn: dict[str, Any],
+    *,
+    recent_texts: list[str] | None,
+    global_recent_outgoing: list[str] | None,
+    rich_media_mode: bool,
+) -> bool:
+    """
+    Reject a parsed turn when the primary line is too close to recent group text
+    or recent cross-account outgoing lines (local models often parrot despite prompt).
+    """
+    if rich_media_mode:
+        at = str(turn.get("action_type") or "text").strip().lower()
+        if at in ("sticker", "gif", "image") and not str(
+            turn.get("message_text") or turn.get("primary_message") or ""
+        ).strip():
+            return False
+    primary = _finalize_primary_message(
+        str(turn.get("primary_message") or turn.get("message_text") or "")
+    ).strip()
+    if len(primary) < 2:
+        return False
+    refs: list[str] = []
+    for src in list(recent_texts or []) + list(global_recent_outgoing or []):
+        s = (src or "").strip()
+        if s:
+            refs.append(s)
+    for ref in refs:
+        if _jaccard_word_similarity(primary, ref) >= AMCHA_ANTI_DUP_JACCARD_THRESHOLD:
+            return True
+    return False
+
+
 def _session_persona_seed(session_base: str) -> str:
     raw = (session_base or "").encode("utf-8", errors="ignore")
     return hashlib.sha256(raw).hexdigest()[:24]
@@ -542,6 +595,112 @@ async def _redis_recent_outgoing_push(redis: Any, fragment: str) -> None:
         await redis.ltrim(KEY_RECENT_OUTGOING, 0, RECENT_OUTGOING_CAP - 1)
     except Exception as exc:
         log.debug("factory_recent_outgoing_push_failed", error=str(exc))
+
+
+def _factory_group_recent_sent_key(group_id: int) -> str:
+    return f"{GROUP_RECENT_SENT_PREFIX}{int(group_id)}"
+
+
+def _local_factory_group_recent_fetch(group_id: int) -> list[str]:
+    return list(_factory_group_recent_sent_local.get(int(group_id), []))
+
+
+def _local_factory_group_recent_push(group_id: int, fragment: str) -> None:
+    from nexus.services.anti_parrot_shield import RECENT_SENT_CAP
+
+    frag = (fragment or "").strip()[:600]
+    if not frag:
+        return
+    gid = int(group_id)
+    cur = _factory_group_recent_sent_local.setdefault(gid, [])
+    cur.insert(0, frag)
+    del cur[RECENT_SENT_CAP:]
+
+
+async def _factory_group_recent_sent_fetch(redis: Any, group_id: int) -> list[str]:
+    from nexus.services.anti_parrot_shield import RECENT_SENT_CAP
+
+    if redis is None:
+        return _local_factory_group_recent_fetch(group_id)
+    try:
+        raw = await redis.lrange(_factory_group_recent_sent_key(group_id), 0, RECENT_SENT_CAP - 1)
+    except Exception:
+        return []
+    out: list[str] = []
+    for x in raw or []:
+        if isinstance(x, (bytes, bytearray)):
+            s = bytes(x).decode("utf-8", errors="ignore")
+        else:
+            s = str(x)
+        s = s.strip()
+        if s:
+            out.append(s)
+    return out
+
+
+async def _factory_group_recent_sent_push(redis: Any, group_id: int, fragment: str) -> None:
+    from nexus.services.anti_parrot_shield import RECENT_SENT_CAP
+
+    frag = (fragment or "").strip()[:600]
+    if not frag:
+        return
+    if redis is None:
+        _local_factory_group_recent_push(group_id, frag)
+        return
+    try:
+        await redis.lpush(_factory_group_recent_sent_key(group_id), frag)
+        await redis.ltrim(_factory_group_recent_sent_key(group_id), 0, RECENT_SENT_CAP - 1)
+    except Exception as exc:
+        log.debug("factory_group_recent_sent_push_failed", group_id=group_id, error=str(exc))
+
+
+def _factory_turn_antiparrot_compare_text(
+    turn: dict[str, Any],
+    *,
+    news_opener: bool,
+    rich_media_mode: bool,
+) -> str | None:
+    """
+    Comparable primary line for de-duplication. None => skip text similarity (e.g. silent sticker).
+    """
+    if news_opener:
+        pm = str(turn.get("primary_message") or turn.get("message_text") or "").strip()
+        return _finalize_primary_message(pm) if pm else None
+    if rich_media_mode:
+        at = str(turn.get("action_type") or "").strip().lower()
+        mt = _finalize_primary_message(str(turn.get("message_text") or turn.get("primary_message") or ""))
+        if mt.strip():
+            return mt.strip()
+        if at in ("sticker", "gif", "image"):
+            return None
+        return mt.strip() or None
+    pm = str(turn.get("primary_message") or turn.get("message_text") or "").strip()
+    out = _finalize_primary_message(pm)
+    return out if out.strip() else None
+
+
+async def _generate_unique_amcha_turn(redis: Any, group_id: int, **kwargs: Any) -> dict[str, Any] | None:
+    """Up to 1 + MAX_REGENERATION_RETRIES generations; None => skip send (too similar to recent group lines)."""
+    kwargs.pop("regeneration_attempt", None)
+    news_opener = bool(kwargs.get("news_opener"))
+    rich_media_mode = bool(kwargs.get("rich_media_mode"))
+    recent = await _factory_group_recent_sent_fetch(redis, group_id)
+    for attempt in range(1 + MAX_REGENERATION_RETRIES):
+        turn = await _generate_amcha_turn(**kwargs, regeneration_attempt=attempt)
+        compare = _factory_turn_antiparrot_compare_text(
+            turn, news_opener=news_opener, rich_media_mode=rich_media_mode
+        )
+        if compare is None:
+            return turn
+        if not is_too_similar_to_recent(compare, recent):
+            return turn
+        log.debug(
+            "factory_antiparrot_rejected",
+            group_id=int(group_id),
+            attempt=attempt,
+            sample=compare[:80],
+        )
+    return None
 
 
 def _build_amcha_system_prompt(
@@ -635,6 +794,7 @@ def _last_five_prompt_block(refs_newest_first: list[tuple[int, str]]) -> str:
 
 def _finalize_primary_message(text: str) -> str:
     s = _strip_hashtags_and_cleanup(text)
+    s = strip_trailing_israeli_news_outlet(s)
     parts = s.split()
     if len(parts) > 10:
         parts = parts[:10]
@@ -647,7 +807,9 @@ def _finalize_primary_message(text: str) -> str:
 
 
 def _finalize_correction_message(text: str) -> str:
-    return _strip_trailing_periods_hebrew(_cap_hebrew_words(_strip_hashtags_and_cleanup(text), 20))
+    s = _strip_hashtags_and_cleanup(text)
+    s = strip_trailing_israeli_news_outlet(s)
+    return _strip_trailing_periods_hebrew(_cap_hebrew_words(s, 20))
 
 
 def _safe_md_link_label(label: str) -> str:
@@ -791,6 +953,7 @@ async def _ollama_chat_completion_content(
     user_he: str,
     *,
     temperature: float,
+    top_p: float,
     max_tokens: int,
 ) -> str | None:
     """Ollama OpenAI-compatible /api/chat — returns assistant message text."""
@@ -806,6 +969,7 @@ async def _ollama_chat_completion_content(
         "stream": False,
         "options": {
             "temperature": float(temperature),
+            "top_p": float(top_p),
             "num_predict": int(max_tokens),
         },
     }
@@ -845,6 +1009,7 @@ async def _generate_amcha_turn(
     rich_media_mode: bool = False,
     global_recent_outgoing: list[str] | None = None,
     privileged_anchor: bool = False,
+    regeneration_attempt: int = 0,
 ) -> dict[str, Any]:
     anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
     anti += _global_outgoing_prompt_suffix(list(global_recent_outgoing or []))
@@ -927,16 +1092,33 @@ async def _generate_amcha_turn(
             f"{typo_rule}\n{anti}\n{json_schema}"
         )
 
+    if regeneration_attempt == 1:
+        user_he += (
+            "\n\n⚠️ דחייה טכנית: הפלט דומה מדי להודעות שכבר נשלחו בקבוצה זו (מערכת בקרה). "
+            "חובה מוחלטת: משפט אחר לגמרי — מילים, מבנה וגוון שונים. אסור לשכפל ניסוח קודם."
+        )
+    elif regeneration_attempt >= 2:
+        user_he += (
+            "\n\n🚨 ניסיון אחרון לפני דילוג: אסור שום דמיון לשורות שנשלחו לאחרונה בקבוצה. "
+            "זווית חדשה לגמרי (בדיחה / רגש אחר / נושא אחר) — בלי אותן מילות מפתח."
+        )
+
+    temperature = AMCHA_LLM_TEMPERATURE
+    top_p = AMCHA_LLM_TOP_P
     if rich_media_mode:
-        temperature = 0.95
         frequency_penalty = 0.8
         presence_penalty = 0.5
         max_tokens = 384
     else:
-        temperature = random.uniform(0.85, 0.95)
         frequency_penalty = random.uniform(0.35, 0.5)
         presence_penalty = random.uniform(0.35, 0.5)
         max_tokens = 320
+
+    if regeneration_attempt > 0:
+        temperature = min(1.0, float(temperature) + 0.06 * regeneration_attempt)
+        top_p = min(1.0, float(top_p) + 0.02 * regeneration_attempt)
+        frequency_penalty = min(2.0, float(frequency_penalty) + 0.1 * regeneration_attempt)
+        presence_penalty = min(2.0, float(presence_penalty) + 0.1 * regeneration_attempt)
 
     def _coerce_rich_respectful_media(d: dict[str, Any]) -> dict[str, Any]:
         if not privileged_anchor:
@@ -975,21 +1157,51 @@ async def _generate_amcha_turn(
 
     ollama_base = _resolve_ollama_base_url()
     ollama_model = _resolve_ollama_model()
+    ollama_dup_strikes = 0
     if ollama_base:
-        raw_ol = await _ollama_chat_completion_content(
-            ollama_base,
-            ollama_model,
-            system_prompt,
-            user_he,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        if raw_ol:
+        for attempt in range(AMCHA_OLLAMA_ANTI_DUP_MAX_TRIES):
+            user_for_attempt = user_he
+            if attempt > 0:
+                user_for_attempt = (
+                    user_he
+                    + "\n\n(חובה: ניסוח שונה לגמרי מכל ניסיון קודם — לא לשכפל אותה הודעה.)"
+                )
+            raw_ol = await _ollama_chat_completion_content(
+                ollama_base,
+                ollama_model,
+                system_prompt,
+                user_for_attempt,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+            )
+            if not raw_ol:
+                break
             obj_ol = _parse_llm_json_object(raw_ol)
-            if obj_ol:
-                processed_ol = _postprocess_llm_dict(obj_ol)
-                if processed_ol is not None:
-                    return processed_ol
+            if not obj_ol:
+                break
+            processed_ol = _postprocess_llm_dict(obj_ol)
+            if processed_ol is None:
+                break
+            if _anti_duplication_shield_rejects_turn(
+                processed_ol,
+                recent_texts=recent_texts,
+                global_recent_outgoing=global_recent_outgoing,
+                rich_media_mode=rich_media_mode,
+            ):
+                ollama_dup_strikes += 1
+                log.warning(
+                    "factory_ollama_anti_duplication_reject",
+                    attempt=attempt + 1,
+                    strikes=ollama_dup_strikes,
+                )
+                continue
+            return processed_ol
+        if ollama_dup_strikes >= AMCHA_OLLAMA_ANTI_DUP_MAX_TRIES:
+            log.info(
+                "factory_ollama_fallback_cloud_after_anti_dup",
+                strikes=ollama_dup_strikes,
+            )
 
     if api_key:
         try:
@@ -1003,6 +1215,7 @@ async def _generate_amcha_turn(
                 max_tokens=max_tokens,
                 frequency_penalty=frequency_penalty,
                 presence_penalty=presence_penalty,
+                top_p=top_p,
             )
             processed = _postprocess_llm_dict(out) if isinstance(out, dict) else None
             if processed is not None:
@@ -1023,6 +1236,7 @@ async def _generate_amcha_turn(
                     {"role": "user", "content": user_he},
                 ],
                 "temperature": temperature,
+                "top_p": top_p,
                 "max_tokens": max_tokens,
                 "frequency_penalty": frequency_penalty,
                 "presence_penalty": presence_penalty,
@@ -1588,6 +1802,10 @@ async def community_factory_bootstrap(parameters: dict[str, Any]) -> dict[str, A
         )
         await _redis_delete_keys_with_prefix(redis, THREAD_KEY_PREFIX)
         await _redis_delete_keys_with_prefix(redis, ACTIVE_TOPIC_KEY_PREFIX)
+        await _redis_delete_keys_with_prefix(redis, GROUP_RECENT_SENT_PREFIX)
+
+    if reset and not dry_run:
+        _factory_group_recent_sent_local.clear()
 
     roles_payload = {"owners": owners, "members": members}
 
@@ -1960,6 +2178,7 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
         }
 
     sent_n = 0
+    global_recent_burst = await _redis_recent_outgoing_fetch(redis)
     for burst_i in range(count):
         if burst_i > 0:
             await asyncio.sleep(random.uniform(2.0, 15.0))

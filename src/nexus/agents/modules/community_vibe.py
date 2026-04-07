@@ -13,6 +13,8 @@ from typing import Any
 
 import structlog
 
+from nexus.services.tg_message_text import strip_trailing_israeli_news_outlet
+
 log = structlog.get_logger(__name__)
 
 GEMINI_MODEL = "gemini-1.5-flash"
@@ -91,6 +93,7 @@ def _cap_words(text: str, max_words: int = 10) -> str:
 def _finalize_chatter_line(text: str) -> str:
     s = _strip_hashtags_and_cleanup(text)
     s = _strip_lazy_news_openers_he(s)
+    s = strip_trailing_israeli_news_outlet(s)
     s = _strip_trailing_news_attribution(s)
     s = _cap_words(s, 10)
     parts = s.split()

@@ -54,6 +54,7 @@ from io import BytesIO
 from typing import Any, Literal
 
 from nexus.services.recent_news_digest import append_article_link_to_text, telegram_image_filename_from_bytes
+from nexus.services.tg_message_text import strip_trailing_israeli_news_outlet
 
 log = logging.getLogger("hatan.israeli_swarm")
 _HEARTBEAT_REDIS_WARNED = False
@@ -511,6 +512,7 @@ def _redis_thread_key(group_link: str) -> str:
 
 def _finalize_swarm_llm_line(text: str) -> str:
     s = _strip_hashtags_and_cleanup(text)
+    s = strip_trailing_israeli_news_outlet(s)
     parts = s.split()
     if len(parts) > 10:
         parts = parts[:10]

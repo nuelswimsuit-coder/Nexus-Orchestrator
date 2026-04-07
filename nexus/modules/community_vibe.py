@@ -13,6 +13,8 @@ from typing import Any
 
 import structlog
 
+from nexus.services.tg_message_text import strip_trailing_israeli_news_outlet
+
 log = structlog.get_logger(__name__)
 
 GEMINI_MODEL = "gemini-1.5-flash"
@@ -91,6 +93,7 @@ def _cap_words(text: str, max_words: int = 10) -> str:
 def _finalize_chatter_line(text: str) -> str:
     s = _strip_hashtags_and_cleanup(text)
     s = _strip_lazy_news_openers_he(s)
+    s = strip_trailing_israeli_news_outlet(s)
     s = _strip_trailing_news_attribution(s)
     s = _cap_words(s, 10)
     parts = s.split()
@@ -128,6 +131,7 @@ async def _gemini_json(
     max_tokens: int = 1024,
     frequency_penalty: float | None = None,
     presence_penalty: float | None = None,
+    top_p: float | None = None,
 ) -> dict[str, Any]:
     import httpx
 
@@ -137,6 +141,8 @@ async def _gemini_json(
         "temperature": temperature,
         "maxOutputTokens": max_tokens,
     }
+    if top_p is not None:
+        gen_cfg["topP"] = float(top_p)
     if frequency_penalty is not None:
         gen_cfg["frequencyPenalty"] = frequency_penalty
     if presence_penalty is not None:

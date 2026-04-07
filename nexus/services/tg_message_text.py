@@ -19,12 +19,37 @@ _LAZY_HEBREW_SWARM_PREFIXES: tuple[str, ...] = (
     "ראיתם ש",
     "כותרת:",
 )
-_OUTLET_TAIL_RE = re.compile(
+# Trailing " - outlet" / em-dash variants; \s* allows "-גלובס", " - גלובס", etc.
+_TRAILING_ISRAELI_NEWS_OUTLET_RE = re.compile(
     r"\s*[-–—]\s*(?:"
-    r"ynet|n12|mako|calcalist|walla|הארץ|מעריב|ידיעות|channel\s*12|themarker|geektime|google-news"
+    r"\[[^\]]+\]|"
+    r"ynet|n\s*12|mako|calcalist|walla|וואלה|"
+    r"themarker|the\s*marker|geektime|google-news|channel\s*12|"
+    r"ידיעות|"
+    r"גלובס|הארץ|מעריב|כלכליסט|כאן|"
+    r"ערוץ\s*12|ערוץ\s*14|"
+    r"ישראל\s*היום|"
+    r"ספורט\s*5|"
+    r"one(?!\w)"
     r")\s*$",
-    re.IGNORECASE,
+    re.IGNORECASE | re.UNICODE,
 )
+_ORPHAN_TRAILING_DASH_RE = re.compile(r"\s*[-–—]+\s*$")
+
+
+def strip_trailing_israeli_news_outlet(text: str) -> str:
+    """
+    Remove repeated trailing dash + Israeli / common news-outlet labels (LLM attribution echo).
+    Normalizes spacing; drops hanging dashes left after stripping.
+    """
+    s = (text or "").strip()
+    prev = None
+    while prev != s:
+        prev = s
+        s = _TRAILING_ISRAELI_NEWS_OUTLET_RE.sub("", s)
+        s = _ORPHAN_TRAILING_DASH_RE.sub("", s)
+        s = s.strip()
+    return s
 
 
 def strip_swarm_llm_artifacts(text: str) -> str:
@@ -39,11 +64,7 @@ def strip_swarm_llm_artifacts(text: str) -> str:
                 break
         if not changed:
             break
-    prev = None
-    while prev != s:
-        prev = s
-        s = _OUTLET_TAIL_RE.sub("", s).strip()
-    return s
+    return strip_trailing_israeli_news_outlet(s)
 
 
 def telethon_media_kind_and_hint(m: Any) -> tuple[str | None, str]:

@@ -9254,3 +9254,37 @@ eded the max restart limit (3). Manual intervention required.
 [auto-worker] No worker heartbeats — auto-spawning local worker…
 [auto-worker] Worker spawned — pid=31100
 [launcher] received signal 2; kill_all()
+
+========================================================================
+[launcher] session start 2026-04-07 17:22:37
+[launcher] EXE=C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe  frozen=False
+========================================================================
+
+╔══════════════════════════════════════════════════════════════════════╗
+║   NEXUS OS — HATAN INDUSTRIES — UNIFIED TERMINAL MULTIPLEXER        ║
+║   Frontend  → http://localhost:3000                                  ║
+║   Deployer  → http://localhost:8002                                  ║
+║   API       → http://localhost:8001                                  ║
+╚══════════════════════════════════════════════════════════════════════╝
+✅ [HATAN INDUSTRIES] ISRAELI SWARM ACTIVE - 5,000 MEMBER SIMULATION RUNNING
+[launcher] spawn [core]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [monitor]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [deployer]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [api]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [israeli-swarm]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [polymarket]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [telegram-bot]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] spawn [frontend]: C:\Program Files\nodejs\npm.CMD ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator\frontend)
+[launcher] spawn [git-sync]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[auto-worker] No worker heartbeats — auto-spawning local worker…
+[auto-worker] Worker spawned — pid=28504
+[launcher] child process exited pid=28504 label=auto-worker returncode=1.
+[watchdog] Restarting [auto-worker] in 5s (attempt 1/3)…
+[watchdog] [auto-worker] restarted — pid=39208
+[launcher] child process exited pid=39208 label=auto-worker returncode=1.
+[watchdog] Restarting [auto-worker] in 10s (attempt 2/3)…
+[watchdog] [auto-worker] restarted — pid=13204
+[launcher] child process exited pid=13204 label=auto-worker returncode=1.
+[watchdog] Restarting [auto-worker] in 15s (attempt 3/3)…
+[watchdog] [auto-worker] restarted — pid=28560
+[launcher] received signal 2; kill_all()
