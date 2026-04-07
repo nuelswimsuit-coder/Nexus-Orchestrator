@@ -1074,7 +1074,14 @@ async def get_mass_join_status(
 
     def _sort_key(s: dict[str, Any]) -> tuple[int, str]:
         st = str(s.get("status") or "").lower()
-        order = {"joining": 0, "pending": 1, "failed": 2, "success": 3}.get(st, 9)
+        order = {
+            "joining": 0,
+            "pending": 1,
+            "failed": 2,
+            "skipped_already_member": 3,
+            "skipped_cached": 4,
+            "success": 5,
+        }.get(st, 9)
         return (order, str(s.get("stem") or ""))
 
     sessions.sort(key=_sort_key)

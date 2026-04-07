@@ -60,6 +60,66 @@ def _mass_join_sessions_key(task_id: str) -> str:
     return f"nexus:swarm:mass_join:{task_id}:sessions"
 
 
+def _hash_fallback_target(t: str) -> str:
+    return "h:" + hashlib.sha256(t.encode("utf-8")).hexdigest()[:40]
+
+
+def _public_username_from_mass_join_target(target: str) -> str | None:
+    s = (target or "").strip()
+    low = s.lower()
+    if "t.me/" in low:
+        idx = low.index("t.me/") + len("t.me/")
+        rest = s[idx:].split("/")[0].split("?")[0].strip()
+        if rest.startswith("+") or "joinchat" in low:
+            return None
+        return rest.lstrip("@") or None
+    if s.startswith("@"):
+        tail = s[1:].split("/")[0].split("?")[0].strip()
+        if tail.startswith("+") or not tail:
+            return None
+        return tail
+    if s and "/" not in s and not low.startswith("http"):
+        return s.lstrip("@") or None
+    return None
+
+
+def _normalize_mass_join_target(target: str) -> str:
+    t = (target or "").strip()
+    if not t:
+        return "empty"
+    if _is_invite_link(t):
+        h = _invite_hash(t)
+        return f"inv:{h}" if h else _hash_fallback_target(t)
+    u = _public_username_from_mass_join_target(t)
+    if u:
+        return f"pub:{u.lower()}"
+    return _hash_fallback_target(t)
+
+
+def _outcome_redis_key(norm_target: str) -> str:
+    nt = norm_target if len(norm_target) <= 200 else _hash_fallback_target(norm_target)
+    return f"{_MASS_JOIN_OUTCOME_PREFIX}{nt}"
+
+
+async def _get_stem_outcome(redis: Any, norm_target: str, stem: str) -> dict[str, Any] | None:
+    raw = await redis.hget(_outcome_redis_key(norm_target), stem)
+    if not raw:
+        return None
+    try:
+        txt = raw.decode("utf-8", errors="replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        d = json.loads(txt)
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+async def _set_stem_outcome(redis: Any, norm_target: str, stem: str, kind: str) -> None:
+    key = _outcome_redis_key(norm_target)
+    payload = {"kind": kind, "updated_at": datetime.now(timezone.utc).isoformat()}
+    await redis.hset(key, stem, json.dumps(payload, ensure_ascii=False))
+    await redis.expire(key, _MASS_JOIN_OUTCOME_TTL_S)
+
+
 async def _mass_join_write_stem(redis: Any, task_id: str, stem: str, payload: dict[str, Any]) -> None:
     key = _mass_join_sessions_key(task_id)
     await redis.hset(key, stem, json.dumps(payload, ensure_ascii=False))
@@ -73,22 +133,46 @@ async def _join_one_session_tracked(
     task_id: str,
 ) -> dict[str, Any]:
     stem = meta_json.stem
+    norm = _normalize_mass_join_target(target_link)
     now_iso = datetime.now(timezone.utc).isoformat()
+    cached = await _get_stem_outcome(redis, norm, stem)
+    if cached and str(cached.get("kind") or "") in _CACHE_KINDS_SKIP_CLIENT:
+        kind = str(cached.get("kind") or "")
+        await _mass_join_write_stem(
+            redis,
+            task_id,
+            stem,
+            {
+                "status": "skipped_cached",
+                "ok": True,
+                "reason": f"persisted:{kind}",
+                "updated_at": now_iso,
+            },
+        )
+        return {
+            "stem": stem,
+            "ok": True,
+            "reason": f"persisted:{kind}",
+            "display_status": "skipped_cached",
+            "from_cache": True,
+        }
+
     await _mass_join_write_stem(
         redis,
         task_id,
         stem,
         {"status": "joining", "updated_at": now_iso},
     )
-    res = await _join_one_session(meta_json, target_link, parameters, redis)
+    res = await _join_one_session(meta_json, target_link, parameters, redis, norm_target=norm)
     ok = bool(res.get("ok"))
     done_iso = datetime.now(timezone.utc).isoformat()
+    row_status = str(res.get("display_status") or ("success" if ok else "failed"))
     await _mass_join_write_stem(
         redis,
         task_id,
         stem,
         {
-            "status": "success" if ok else "failed",
+            "status": row_status,
             "ok": ok,
             "reason": str(res.get("reason") or ""),
             "updated_at": done_iso,
@@ -203,7 +287,7 @@ async def _scan_onboarding_targets(
     all_meta = discover_meta_paths_from_session_sqlite()
     missing_samples: list[dict[str, str]] = []
     diag: dict[str, Any] = {
-        "mass_join_code_tag": "app_id_pairing+session_scan_v3",
+        "mass_join_code_tag": "app_id_pairing+session_scan_v4+outcome_cache",
         "execution_hostname": socket.gethostname(),
         "session_vault_py": str(Path(session_vault_module.__file__).resolve()),
         "vault_telethon_session_files": _count_vault_telethon_session_files(),
@@ -308,24 +392,72 @@ async def _do_join(client: Any, target: str) -> None:
     await client(JoinChannelRequest(ent))
 
 
+async def _is_already_member_of_target(client: Any, target: str) -> bool:
+    from telethon import errors  # type: ignore[import-untyped]
+    from telethon.tl.functions.channels import GetParticipantRequest  # type: ignore[import-untyped]
+    from telethon.tl.functions.messages import CheckChatInviteRequest  # type: ignore[import-untyped]
+    from telethon.tl.types import Channel, ChatInviteAlready  # type: ignore[import-untyped]
+
+    t = (target or "").strip()
+    if _is_invite_link(t):
+        h = _invite_hash(t)
+        if not h:
+            return False
+        try:
+            res = await client(CheckChatInviteRequest(h))
+            return isinstance(res, ChatInviteAlready)
+        except Exception:
+            return False
+
+    try:
+        uname = _public_username_from_mass_join_target(t)
+        ent = await client.get_entity(uname or t)
+        if not isinstance(ent, Channel):
+            return False
+        me = await client.get_me()
+        inp_ch = await client.get_input_entity(ent)
+        inp_me = await client.get_input_entity(me)
+        await client(GetParticipantRequest(inp_ch, inp_me))
+        return True
+    except errors.UserNotParticipantError:
+        return False
+    except Exception:
+        return False
+
+
 async def _join_one_session(
     meta_json: Path,
     target_link: str,
     parameters: dict[str, Any],
     redis: Any,
+    *,
+    norm_target: str | None = None,
 ) -> dict[str, Any]:
     from telethon.errors import (  # type: ignore[import-untyped]
         AuthKeyDuplicatedError,
         AuthKeyUnregisteredError,
         FloodWaitError,
+        UserAlreadyParticipantError,
         UserDeactivatedBanError,
         UserDeactivatedError,
     )
 
     stem = meta_json.stem
+    norm = norm_target if norm_target is not None else _normalize_mass_join_target(target_link)
+    if redis is not None:
+        cached = await _get_stem_outcome(redis, norm, stem)
+        if cached and str(cached.get("kind") or "") in _CACHE_KINDS_SKIP_CLIENT:
+            return {
+                "stem": stem,
+                "ok": True,
+                "reason": f"persisted:{cached.get('kind')}",
+                "display_status": "skipped_cached",
+                "from_cache": True,
+            }
+
     session_base = _session_base_str(meta_json)
     if not session_base:
-        return {"stem": stem, "ok": False, "reason": "missing_session_file"}
+        return {"stem": stem, "ok": False, "reason": "missing_session_file", "display_status": "failed"}
     flood_sleep: int | None = None
     async with _JOIN_SEM:
         try:
@@ -337,11 +469,38 @@ async def _join_one_session(
                         banned=False,
                         detail="swarm_onboarding: not authorized",
                     )
-                    return {"stem": stem, "ok": False, "reason": "not_authorized"}
+                    return {"stem": stem, "ok": False, "reason": "not_authorized", "display_status": "failed"}
 
-                await _do_join(client, target_link)
+                if await _is_already_member_of_target(client, target_link):
+                    if redis is not None:
+                        await _set_stem_outcome(redis, norm, stem, "already_member")
+                    return {
+                        "stem": stem,
+                        "ok": True,
+                        "reason": "already_member",
+                        "display_status": "skipped_already_member",
+                    }
 
-            return {"stem": stem, "ok": True}
+                try:
+                    await _do_join(client, target_link)
+                except UserAlreadyParticipantError:
+                    if redis is not None:
+                        await _set_stem_outcome(redis, norm, stem, "already_member")
+                    return {
+                        "stem": stem,
+                        "ok": True,
+                        "reason": "already_member",
+                        "display_status": "skipped_already_member",
+                    }
+
+            if redis is not None:
+                await _set_stem_outcome(redis, norm, stem, "join_ok")
+            return {
+                "stem": stem,
+                "ok": True,
+                "reason": "joined",
+                "display_status": "success",
+            }
 
         except (UserDeactivatedError, UserDeactivatedBanError) as exc:
             await _mark_dead_session(redis, meta_json, banned=True, detail=type(exc).__name__)

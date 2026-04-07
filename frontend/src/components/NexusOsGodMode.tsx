@@ -7303,6 +7303,8 @@ const MASS_JOIN_STATUS_HE: Record<string, string> = {
   joining: "מצטרף…",
   success: "הצטרף",
   failed: "נכשל",
+  skipped_already_member: "כבר בקבוצה",
+  skipped_cached: "נשמר — דולג",
   unknown: "לא ידוע",
 };
 
@@ -8286,7 +8288,15 @@ function LiveSwarmView() {
             {(() => {
               const sessions = massJoinStatus.sessions ?? [];
               const total = massJoinStatus.meta?.total ?? sessions.length;
-              const done = sessions.filter((s) => s.status === "success" || s.status === "failed").length;
+              const done = sessions.filter((s) => {
+                const st = (s.status || "").toLowerCase();
+                return (
+                  st === "success" ||
+                  st === "failed" ||
+                  st === "skipped_cached" ||
+                  st === "skipped_already_member"
+                );
+              }).length;
               const pct =
                 total > 0 ? Math.min(100, Math.round((done / total) * 100)) : massJoinStatus.meta?.status === "completed"
                   ? 100
@@ -8330,11 +8340,13 @@ function LiveSwarmView() {
                             ? "border-emerald-500/45 text-emerald-300 bg-emerald-950/35"
                             : st === "failed"
                               ? "border-rose-500/45 text-rose-300 bg-rose-950/35"
-                              : st === "joining"
-                                ? "border-cyan-500/45 text-cyan-300 bg-cyan-950/35 animate-pulse"
-                                : st === "pending"
-                                  ? "border-slate-600 text-slate-500 bg-slate-900/60"
-                                  : "border-slate-700 text-slate-400 bg-slate-900/50";
+                              : st === "skipped_already_member" || st === "skipped_cached"
+                                ? "border-sky-500/40 text-sky-200/95 bg-sky-950/30"
+                                : st === "joining"
+                                  ? "border-cyan-500/45 text-cyan-300 bg-cyan-950/35 animate-pulse"
+                                  : st === "pending"
+                                    ? "border-slate-600 text-slate-500 bg-slate-900/60"
+                                    : "border-slate-700 text-slate-400 bg-slate-900/50";
                         let timeLabel = "—";
                         if (row.updated_at) {
                           try {
