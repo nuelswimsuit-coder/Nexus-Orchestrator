@@ -875,6 +875,83 @@ async def stop_swarm(request: Request, redis: RedisDep) -> dict[str, Any]:
     return {"ok": True, "status": "stopped"}
 
 
+@router.post(
+    "/join-all-sessions",
+    summary="Enqueue mass join of all eligible vault Telethon sessions to the target group",
+)
+async def join_all_sessions_to_target(
+    request: Request,
+    body: SwarmStartBody,
+    redis: RedisDep,
+) -> dict[str, Any]:
+    """
+    Runs ``swarm.onboarding.mass_join`` on the worker queue so every eligible
+    ``.session`` in the vault attempts to join ``target_group`` before or
+    independently of Live Swarm chatter.
+    """
+    if _api_redis_is_degraded(request):
+        log.warning("swarm_mass_join_rejected_redis_degraded")
+        raise HTTPException(status_code=503, detail=_SWARM_DEGRADED_MSG)
+
+    tg = (body.target_group or "").strip()
+    if not tg:
+        raise HTTPException(status_code=400, detail="target_group is required")
+
+    await redis.set("nexus:swarm:israeli:target_group", tg)
+
+    tg_preview = (tg[:48] + "…") if len(tg) > 48 else tg
+    await _append_swarm_feed_line(
+        redis,
+        f"[דשבורד] נשלחה משימת צירוף המוני ל-worker — כל הסשנים הכשרים ב-vault ינסו להצטרף ליעד: {tg_preview}",
+        topic="mass_join_enqueue",
+    )
+
+    try:
+        import arq
+        from arq.connections import RedisSettings
+
+        from nexus.shared.schemas import TaskPayload
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=f"ARQ not available: {exc}") from exc
+
+    task_id = str(uuid.uuid4())
+    task = TaskPayload(
+        task_id=task_id,
+        task_type="swarm.onboarding.mass_join",
+        parameters={"target_link": tg},
+        project_id="live-swarm",
+        priority=3,
+        job_expires_seconds=7200,
+    )
+
+    try:
+        arq_pool = await arq.create_pool(
+            RedisSettings.from_dsn(settings.redis_url),
+            default_queue_name="nexus:tasks",
+        )
+        job_ttl = int(task.job_expires_seconds or 7200)
+        job = await arq_pool.enqueue_job(
+            "execute_task",
+            task_payload=task.model_dump_for_wire(),
+            _job_id=task_id,
+            _queue_name="nexus:tasks",
+            _expires=job_ttl,
+        )
+        await arq_pool.aclose()
+    except Exception as exc:
+        log.error("swarm_mass_join_enqueue_failed", error=str(exc))
+        raise HTTPException(status_code=502, detail=f"Failed to enqueue task: {exc}") from exc
+
+    log.info("swarm_mass_join_enqueued", task_id=task_id, job_id=getattr(job, "job_id", None))
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "job_id": getattr(job, "job_id", None),
+        "task_type": task.task_type,
+        "target_preview": tg_preview,
+    }
+
+
 def _telegram_api_creds() -> tuple[int, str]:
     api_id = int(os.getenv("TELEGRAM_API_ID", "0") or os.getenv("TELEFIX_API_ID", "0") or "0")
     api_hash = (os.getenv("TELEGRAM_API_HASH", "") or os.getenv("TELEFIX_API_HASH", "")).strip()

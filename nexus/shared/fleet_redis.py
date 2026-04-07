@@ -11,6 +11,7 @@ from typing import Any
 
 import structlog
 
+from nexus.shared.memory_cache import TTLMemoryCache
 from nexus.shared.schemas import (
     FleetAuditResults,
     FleetScanEvent,
@@ -18,6 +19,14 @@ from nexus.shared.schemas import (
 )
 
 log = structlog.get_logger(__name__)
+
+_FLEET_COUNTER_MEM = TTLMemoryCache[dict[str, int]](max_entries=8)
+_FLEET_COUNTER_MEM_TTL_S = 2.0
+_FLEET_COUNTER_MEM_KEY = "nexus:fleet:counter_snapshot:mem"
+
+_FLEET_AUDIT_MEM = TTLMemoryCache[FleetAuditResults](max_entries=4)
+_FLEET_AUDIT_MEM_TTL_S = 12.0
+_FLEET_AUDIT_MEM_KEY = "nexus:fleet:audit:latest:mem"
 
 # Redis keys (global counters — reset when a fleet scan task is dispatched from Master).
 # Unprefixed aliases exist for external tooling that expects the literal names from the spec.
@@ -46,6 +55,7 @@ async def reset_fleet_member_counters(redis: Any) -> None:
     """Zero global member counters at the start of a master-dispatched fleet scan."""
     if redis is None:
         return
+    _FLEET_COUNTER_MEM.delete(_FLEET_COUNTER_MEM_KEY)
     await redis.set(REDIS_TOTAL_MANAGED_MEMBERS, "0")
     await redis.set(REDIS_TOTAL_PREMIUM_MEMBERS, "0")
     await redis.set(REDIS_ALIAS_TOTAL_MANAGED_MEMBERS, "0")
@@ -71,6 +81,7 @@ async def fleet_mapper_record_group(
     premium = int(await redis.incrby(REDIS_TOTAL_PREMIUM_MEMBERS, p))
     await redis.set(REDIS_ALIAS_TOTAL_MANAGED_MEMBERS, str(managed))
     await redis.set(REDIS_ALIAS_TOTAL_PREMIUM_MEMBERS, str(premium))
+    _FLEET_COUNTER_MEM.delete(_FLEET_COUNTER_MEM_KEY)
     return (managed, premium)
 
 
@@ -98,6 +109,7 @@ async def persist_fleet_audit_latest(redis: Any, results: FleetAuditResults) -> 
         results.model_dump_json(),
         ex=FLEET_AUDIT_LATEST_TTL_S,
     )
+    _FLEET_AUDIT_MEM.set(_FLEET_AUDIT_MEM_KEY, results, _FLEET_AUDIT_MEM_TTL_S)
 
 
 def parse_fleet_audit_from_task_output(output: Any) -> FleetAuditResults | None:
@@ -129,13 +141,18 @@ async def persist_fleet_audit_sqlite(results: FleetAuditResults) -> None:
 async def load_latest_fleet_audit(redis: Any) -> FleetAuditResults | None:
     if redis is None:
         return None
+    hit = _FLEET_AUDIT_MEM.get(_FLEET_AUDIT_MEM_KEY)
+    if hit is not None:
+        return hit
     raw = await redis.get(REDIS_FLEET_AUDIT_LATEST)
     if not raw:
         return None
     try:
         if isinstance(raw, bytes):
             raw = raw.decode()
-        return FleetAuditResults.model_validate_json(raw)
+        parsed = FleetAuditResults.model_validate_json(raw)
+        _FLEET_AUDIT_MEM.set(_FLEET_AUDIT_MEM_KEY, parsed, _FLEET_AUDIT_MEM_TTL_S)
+        return parsed
     except Exception:
         return None
 
@@ -144,13 +161,18 @@ async def get_fleet_counter_snapshot(redis: Any) -> dict[str, int]:
     """Return current Redis totals for managed / premium member counters."""
     if redis is None:
         return {"total_managed_members": 0, "total_premium_members": 0}
+    snap_hit = _FLEET_COUNTER_MEM.get(_FLEET_COUNTER_MEM_KEY)
+    if snap_hit is not None:
+        return snap_hit
     m = await redis.get(REDIS_TOTAL_MANAGED_MEMBERS)
     if m is None:
         m = await redis.get(REDIS_ALIAS_TOTAL_MANAGED_MEMBERS)
     p = await redis.get(REDIS_TOTAL_PREMIUM_MEMBERS)
     if p is None:
         p = await redis.get(REDIS_ALIAS_TOTAL_PREMIUM_MEMBERS)
-    return {
+    out = {
         "total_managed_members": int(m or 0),
         "total_premium_members": int(p or 0),
     }
+    _FLEET_COUNTER_MEM.set(_FLEET_COUNTER_MEM_KEY, out, _FLEET_COUNTER_MEM_TTL_S)
+    return out

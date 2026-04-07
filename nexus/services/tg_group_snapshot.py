@@ -10,6 +10,9 @@ from typing import Any, Awaitable, Callable
 
 from nexus.services.session_vault import discover_meta_paths_from_session_sqlite, vault_candidate_roots
 from nexus.services.tg_message_text import telethon_display_text, telethon_media_kind_and_hint
+from nexus.shared.memory_cache import TTLMemoryCache
+
+_TG_GROUP_MESSAGES_MEM = TTLMemoryCache[list[dict[str, Any]]](max_entries=512)
 
 
 def first_authorized_session_path_stem() -> str | None:
@@ -147,13 +150,20 @@ async def fetch_group_messages_cached(
     producer: Callable[[], Awaitable[list[dict[str, Any]]]],
 ) -> tuple[list[dict[str, Any]], bool]:
     """Return (messages, from_cache)."""
+    mem_ttl = float(max(5, min(ttl_seconds, 120)))
+    hit = _TG_GROUP_MESSAGES_MEM.get(cache_key)
+    if hit is not None:
+        return list(hit), True
+
     try:
         raw = await redis.get(cache_key)
         if raw:
             txt = raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
             data = json.loads(txt)
             if isinstance(data, dict) and isinstance(data.get("messages"), list):
-                return data["messages"], True
+                msgs = data["messages"]
+                _TG_GROUP_MESSAGES_MEM.set(cache_key, list(msgs), mem_ttl)
+                return msgs, True
     except Exception:
         pass
 
@@ -162,8 +172,9 @@ async def fetch_group_messages_cached(
         await redis.set(
             cache_key,
             json.dumps({"messages": messages}, ensure_ascii=False),
-            ex=max(5, min(ttl_seconds, 120)),
+            ex=int(mem_ttl),
         )
     except Exception:
         pass
+    _TG_GROUP_MESSAGES_MEM.set(cache_key, list(messages), mem_ttl)
     return messages, False

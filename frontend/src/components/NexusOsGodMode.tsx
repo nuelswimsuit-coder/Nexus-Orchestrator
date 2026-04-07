@@ -7308,9 +7308,11 @@ function LiveSwarmView() {
   const [feed, setFeed] = useState<SwarmFeedData | null>(null);
   const [swarmRunning, setSwarmRunning] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [joinAllLoading, setJoinAllLoading] = useState(false);
   const [startCooldown, setStartCooldown] = useState(false);
   const startCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startInFlightRef = useRef(false);
+  const joinAllInFlightRef = useRef(false);
   const presetSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [targetGroup, setTargetGroup] = useState("");
   const [groupPresets, setGroupPresets] = useState<string[]>([]);
@@ -7509,6 +7511,53 @@ function LiveSwarmView() {
     }
   }
 
+  async function handleJoinAllSessions() {
+    if (!targetGroup.trim()) {
+      setStatusMsg("⚠️ הכנס קישור לקבוצה לפני צירוף המוני");
+      return;
+    }
+    if (joinAllInFlightRef.current) return;
+    joinAllInFlightRef.current = true;
+    setJoinAllLoading(true);
+    setStatusMsg("שולח משימת צירוף לכל הסשנים…");
+    try {
+      const res = await fetch(`${API_BASE}/api/swarm/join-all-sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_group: targetGroup }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        detail?: string | { msg?: string }[];
+        task_id?: string;
+      };
+      if (!res.ok) {
+        const det = Array.isArray(data.detail)
+          ? data.detail.map((x) => (typeof x === "object" && x && "msg" in x ? String(x.msg) : JSON.stringify(x))).join(" ")
+          : typeof data.detail === "string"
+            ? data.detail
+            : res.statusText;
+        setStatusMsg(`❌ ${det}`);
+        void fetchFeed();
+        return;
+      }
+      if (data.ok) {
+        const tid = typeof data.task_id === "string" && data.task_id ? ` · task ${data.task_id.slice(0, 8)}…` : "";
+        setStatusMsg(
+          `✅ צירוף המוני נשלח לתור ה-worker — כל הסשנים הכשרים ינסו להצטרף לקבוצה לפני/מקביל להפעלת הנחיל${tid}`,
+        );
+        void fetchFeed();
+      } else {
+        setStatusMsg(`❌ שגיאה: ${typeof data.detail === "string" ? data.detail : "unknown"}`);
+      }
+    } catch (e) {
+      setStatusMsg(`❌ שגיאת רשת: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setJoinAllLoading(false);
+      joinAllInFlightRef.current = false;
+    }
+  }
+
   async function handleStopSwarm() {
     try {
       const res = await fetch(`${API_BASE}/api/swarm/stop`, { method: "POST" });
@@ -7685,21 +7734,34 @@ function LiveSwarmView() {
       {/* Control panel */}
       <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 sm:p-5 space-y-3">
         <div className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">הפעלת נחיל</div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3 items-stretch">
           <input
             type="text"
             value={targetGroup}
             onChange={(e) => setTargetGroup(e.target.value)}
             placeholder="קישור לקבוצה (https://t.me/...)"
-            className="flex-grow bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-purple-500/60 font-mono"
+            className="flex-grow min-w-[12rem] bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-purple-500/60 font-mono"
             dir="ltr"
           />
+          <button
+            type="button"
+            onClick={handleJoinAllSessions}
+            disabled={
+              joinAllLoading ||
+              !targetGroup.trim() ||
+              !!feed?.redis_degraded
+            }
+            title="מזניק משימת worker שמצרפת את כל חשבונות הטלגרם מה-vault לקבוצת היעד. מומלץ לפני Start Swarm; דורש worker פעיל."
+            className="px-4 py-2.5 shrink-0 bg-indigo-600/15 hover:bg-indigo-600/25 border border-indigo-500/45 text-indigo-200 font-black text-sm rounded-xl transition disabled:opacity-45 disabled:cursor-not-allowed uppercase tracking-wider"
+          >
+            {joinAllLoading ? "שולח…" : "👥 צרף כל הסשנים"}
+          </button>
           {!swarmRunning ? (
             <button
               type="button"
               onClick={handleStartSwarm}
               disabled={starting || startCooldown}
-              className="px-6 py-2.5 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-black text-sm rounded-xl transition shadow-[0_0_20px_rgba(168,85,247,0.4)] disabled:opacity-50 disabled:cursor-not-allowed uppercase tracking-wider"
+              className="px-6 py-2.5 shrink-0 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-black text-sm rounded-xl transition shadow-[0_0_20px_rgba(168,85,247,0.4)] disabled:opacity-50 disabled:cursor-not-allowed uppercase tracking-wider"
             >
               {starting ? "מפעיל..." : startCooldown ? "המתן… (2.5ש׳)" : "🚀 Start Swarm"}
             </button>
@@ -7707,7 +7769,7 @@ function LiveSwarmView() {
             <button
               type="button"
               onClick={handleStopSwarm}
-              className="px-6 py-2.5 bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-400 font-black text-sm rounded-xl transition uppercase tracking-wider"
+              className="px-6 py-2.5 shrink-0 bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-400 font-black text-sm rounded-xl transition uppercase tracking-wider"
             >
               ⏹ עצור נחיל
             </button>

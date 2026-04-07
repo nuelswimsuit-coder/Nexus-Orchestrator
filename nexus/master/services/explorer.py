@@ -45,6 +45,7 @@ from typing import Any, Dict, List
 import psutil
 import structlog
 
+from nexus.shared.memory_cache import TTLMemoryCache
 from nexus.shared.paths import get_telefix_path
 
 log = structlog.get_logger(__name__)
@@ -63,6 +64,8 @@ MONITORED_PROJECTS = [
 
 # Redis keys
 EXPLORER_PROJECTS_KEY = "nexus:explorer:projects"
+EXPLORER_PROJECTS_MEMORY_KEY = "nexus:explorer:projects:mem"
+EXPLORER_PROJECTS_MEMORY_TTL_S = 15.0
 EXPLORER_LAST_SCAN_KEY = "nexus:explorer:last_scan"
 EXPLORER_SCAN_STATE_KEY = "nexus:explorer:scan_state"
 EXPLORER_TTL = 24 * 3600  # 24 hours
@@ -324,6 +327,9 @@ class ProjectInfo:
         }
 
 
+_EXPLORER_PROJECTS_MEM = TTLMemoryCache[Dict[str, ProjectInfo]](max_entries=4)
+
+
 # ── ExplorerService ────────────────────────────────────────────────────────────
 
 class ExplorerService:
@@ -406,6 +412,10 @@ class ExplorerService:
         Return all project metadata from Redis cache.
         If cache is stale/empty, triggers a fresh scan.
         """
+        mem_hit = _EXPLORER_PROJECTS_MEM.get(EXPLORER_PROJECTS_MEMORY_KEY)
+        if mem_hit is not None:
+            return mem_hit
+
         raw = await self._redis.get(EXPLORER_PROJECTS_KEY)
         if raw:
             try:
@@ -425,12 +435,23 @@ class ExplorerService:
                     project.last_modified = proj_dict["last_modified"]
                     project.size_mb = proj_dict["size_mb"]
                     projects[name] = project
+                _EXPLORER_PROJECTS_MEM.set(
+                    EXPLORER_PROJECTS_MEMORY_KEY,
+                    projects,
+                    EXPLORER_PROJECTS_MEMORY_TTL_S,
+                )
                 return projects
             except Exception as exc:
                 log.warning("explorer_cache_decode_error", error=str(exc))
 
         # Cache miss — fresh scan
-        return await self.scan_all_projects()
+        projects = await self.scan_all_projects()
+        _EXPLORER_PROJECTS_MEM.set(
+            EXPLORER_PROJECTS_MEMORY_KEY,
+            projects,
+            EXPLORER_PROJECTS_MEMORY_TTL_S,
+        )
+        return projects
 
     async def get_budget_tracker_stats(self) -> Dict[str, Any]:
         """Extract live budget stats for the dashboard widget."""
@@ -457,6 +478,11 @@ class ExplorerService:
         payload = json.dumps(data, indent=None)
         
         await self._redis.set(EXPLORER_PROJECTS_KEY, payload, ex=EXPLORER_TTL)
+        _EXPLORER_PROJECTS_MEM.set(
+            EXPLORER_PROJECTS_MEMORY_KEY,
+            projects,
+            EXPLORER_PROJECTS_MEMORY_TTL_S,
+        )
         await self._redis.set(EXPLORER_LAST_SCAN_KEY, 
                              datetime.now(timezone.utc).isoformat())
 

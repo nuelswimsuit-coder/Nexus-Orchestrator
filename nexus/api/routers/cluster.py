@@ -48,6 +48,7 @@ from nexus.api.schemas import (
 )
 from nexus.api.services.telefix_bridge import get_fleet_group_assets
 from nexus.shared.config import settings
+from nexus.shared.memory_cache import TTLMemoryCache
 from nexus.shared.redis_util import LINUX_FLEET_REDIS_HOST, redis_host_is_loopback
 from nexus.shared.fleet_redis import (
     FLEET_SCAN_CHANNEL,
@@ -67,6 +68,9 @@ HEARTBEAT_KEY_PREFIX = "nexus:heartbeat:"
 WAR_ROOM_CACHE_KEY = "nexus:war_room:intel"
 # ARQ queue sorted-set key pattern
 ARQ_QUEUE_KEY = "arq:queue:nexus:tasks"
+
+_WAR_ROOM_HEAT_MEM = TTLMemoryCache[tuple[float, float]](max_entries=8)
+_WAR_ROOM_HEAT_MEM_TTL_S = 10.0
 
 
 @router.get("/status", response_model=None, summary="Cluster topology and health")
@@ -199,6 +203,11 @@ async def _load_target_heatmap(redis: Redis) -> list[TargetHeatCell]:
         TargetHeatCell(id="btc_regulation", label="BTC Regulation", intensity=12.0),
         TargetHeatCell(id="whale_alerts", label="Whale Alerts", intensity=8.0),
     ]
+    hit = _WAR_ROOM_HEAT_MEM.get(WAR_ROOM_CACHE_KEY)
+    if hit is not None:
+        cells[0].intensity = hit[0]
+        cells[1].intensity = hit[1]
+        return cells
     try:
         raw = await redis.get(WAR_ROOM_CACHE_KEY)
         if not raw:
@@ -210,6 +219,11 @@ async def _load_target_heatmap(redis: Redis) -> list[TargetHeatCell]:
         whale_hits = int(data.get("swarm_whale_hits", 0) or 0)
         cells[0].intensity = round(max(0.0, min(100.0, conf * 0.9)), 1)
         cells[1].intensity = round(max(0.0, min(100.0, min(whale_hits * 6.5, 100.0))), 1)
+        _WAR_ROOM_HEAT_MEM.set(
+            WAR_ROOM_CACHE_KEY,
+            (cells[0].intensity, cells[1].intensity),
+            _WAR_ROOM_HEAT_MEM_TTL_S,
+        )
     except Exception:
         pass
     return cells

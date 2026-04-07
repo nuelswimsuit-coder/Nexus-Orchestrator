@@ -21,6 +21,8 @@ from typing import Any
 import httpx
 import structlog
 
+from nexus.shared.memory_cache import TTLMemoryCache
+
 log = structlog.get_logger(__name__)
 
 _BROWSER_HEADERS = {
@@ -476,6 +478,10 @@ def tick_news_bundle_from_dict(data: dict[str, Any]) -> TickNewsBundle:
     )
 
 
+_NEWS_DIGEST_BUNDLE_MEM = TTLMemoryCache[TickNewsBundle](max_entries=8)
+_NEWS_DIGEST_MEMORY_TTL_S = min(90.0, max(30.0, NEWS_DIGEST_CACHE_TTL_SEC / 10))
+
+
 async def refresh_central_news_digest_cache(redis: Any) -> dict[str, Any]:
     """
     One HTTP pass (Ynet/N12/Google + optional Telegram RSS + GNews), write Redis,
@@ -499,6 +505,11 @@ async def refresh_central_news_digest_cache(redis: Any) -> dict[str, Any]:
         await redis.set(NEWS_DIGEST_CACHE_KEY, payload_json, ex=NEWS_DIGEST_CACHE_TTL_SEC)
         await redis.set(NEWS_DIGEST_UPDATED_AT_KEY, ts, ex=NEWS_DIGEST_CACHE_TTL_SEC)
         await redis.set(NEWS_DIGEST_HASH_KEY, digest_hash, ex=NEWS_DIGEST_CACHE_TTL_SEC)
+        _NEWS_DIGEST_BUNDLE_MEM.set(
+            NEWS_DIGEST_CACHE_KEY,
+            bundle,
+            min(300.0, float(NEWS_DIGEST_CACHE_TTL_SEC)),
+        )
         changed = prev != digest_hash
         if changed:
             pub = {
@@ -543,17 +554,25 @@ async def get_tick_news_bundle_for_consumer(redis: Any | None) -> TickNewsBundle
     if redis is None:
         log.debug("news_digest_consumer_no_redis_fallback_live")
         return await build_tick_news_bundle()
+    mem_k = NEWS_DIGEST_CACHE_KEY
+    hit = _NEWS_DIGEST_BUNDLE_MEM.get(mem_k)
+    if hit is not None:
+        return hit
     raw = await redis.get(NEWS_DIGEST_CACHE_KEY)
     if raw:
         try:
-            return tick_news_bundle_from_dict(json.loads(raw))
+            bundle = tick_news_bundle_from_dict(json.loads(raw))
+            _NEWS_DIGEST_BUNDLE_MEM.set(mem_k, bundle, _NEWS_DIGEST_MEMORY_TTL_S)
+            return bundle
         except Exception as exc:
             log.debug("news_digest_cache_parse_failed", error=str(exc))
     await refresh_central_news_digest_cache(redis)
     raw2 = await redis.get(NEWS_DIGEST_CACHE_KEY)
     if raw2:
         try:
-            return tick_news_bundle_from_dict(json.loads(raw2))
+            bundle = tick_news_bundle_from_dict(json.loads(raw2))
+            _NEWS_DIGEST_BUNDLE_MEM.set(mem_k, bundle, _NEWS_DIGEST_MEMORY_TTL_S)
+            return bundle
         except Exception:
             pass
     return TickNewsBundle(digest_text="", anchor_title="", anchor_link="", image_url=None)
