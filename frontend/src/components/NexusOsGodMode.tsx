@@ -7029,6 +7029,15 @@ interface MassJoinStatusPayload {
 
 function _massJoinDiagHintHe(diag: Record<string, unknown> | null | undefined): string | null {
   if (!diag || typeof diag !== "object") return null;
+  if (diag.likely_stale_worker_or_remote_queue === true) {
+    const vtf = typeof diag.vault_telethon_session_files === "number" ? diag.vault_telethon_session_files : "?";
+    const dcnt = typeof diag.discovered_meta_json_files === "number" ? diag.discovered_meta_json_files : "?";
+    const host = typeof diag.execution_hostname === "string" ? diag.execution_hostname : "?";
+    return `במחשב שבו רץ ה־worker (${host}) נספרו ${String(vtf)} קבצי ‎.session ב־vault, אבל נמצאו רק ${String(dcnt)} זוגות meta תקינים — כמעט תמיד זה אומר ש־worker ישן (לפני תמיכה ב־app_id), או ש־worker מרוחק בלי ה־vault שלך בולע את משימות ה־ARQ. עצור את כל תהליכי ה־worker, הפעל מחדש את ה־launcher מה־repo המעודכן, או נתק workers מרוחקים זמנית.`;
+  }
+  if (diag.mass_join_code_tag == null && diag.discovered_meta_json_files != null) {
+    return "הדיאגנוסטיקה מה־worker לא כוללת סימון גרסה (mass_join_code_tag) — כנראה רץ קוד ישן. עצור worker והפעל מחדש אחרי git pull; ודא ש־scripts/start_worker.py מעדכן את sys.path ל־repo.";
+  }
   const num = (k: string) => {
     const v = diag[k];
     return typeof v === "number" && Number.isFinite(v) ? v : 0;
@@ -7039,6 +7048,7 @@ function _massJoinDiagHintHe(diag: Record<string, unknown> | null | undefined): 
   const statBan = num("skipped_redis_status_offline_or_banned");
   const banned = num("skipped_redis_banned");
   const noSess = num("skipped_missing_session_sqlite");
+  const vtf = num("vault_telethon_session_files");
   const missingStems = Array.isArray(diag.missing_session_stems)
     ? (diag.missing_session_stems as unknown[]).filter((s): s is string => typeof s === "string")
     : [];
@@ -7065,7 +7075,11 @@ function _massJoinDiagHintHe(diag: Record<string, unknown> | null | undefined): 
         firstPath.length > 0
           ? ` נתיב לדוגמה (קובץ ‎.json ללא ‎.session לידו): ${firstPath.length > 140 ? `${firstPath.slice(0, 137)}…` : firstPath}`
           : "";
-      return `בדיסק ה־worker נמצאו ${disc} קבצי ‎.json מתאימים לטלגרם, ולכולם חסר קובץ ‎.session באותה תיקייה — לרוב זה אומר שה־worker רץ בלי תיקיית ה־vault האמיתית (רק שריד/קובץ יתום).${pathHint} הרץ את ה־worker על המחשב שבו יושבים כל זוגות ‎.session+‎.json, או הגדר משתנה סביבה NEXUS_SESSION_VAULT_DIR לנתיב המלא של תיקיית הסשנים.`;
+      const staleHint =
+        vtf >= 80 && disc <= 3
+          ? ` בנוסף: בדיסק יש ${vtf} קבצי ‎.session — אם אתה רואה הודעה זו, סביר שמשימת הצירוף רצה על worker ישן או על מכונה אחרת בתור Redis.`
+          : "";
+      return `בדיסק ה־worker נמצאו ${disc} קבצי ‎.json מתאימים לטלגרם, ולכולם חסר קובץ ‎.session באותה תיקייה — לרוב זה אומר שה־worker רץ בלי תיקיית ה־vault האמיתית (רק שריד/קובץ יתום).${pathHint}${staleHint} הרץ את ה־worker על המחשב שבו יושבים כל זוגות ‎.session+‎.json, או הגדר NEXUS_SESSION_VAULT_DIR. אם מדובר בקובץ יתום (למשל רק ‎.json) — אפשר למחוק אותו או להוסיף את ה־‎.session המתאים.`;
     }
     if (noSess > 0) {
       const preview = missingStems.slice(0, 5).join(", ");

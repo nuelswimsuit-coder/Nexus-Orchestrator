@@ -1,5 +1,9 @@
 {
   "first_name": "Erez9319",
   "last_name": "",
-  "profile_applied": true
+  "profile_applied": true,
+  "device_model": "Samsung Galaxy S22",
+  "system_version": "SDK 33",
+  "app_version": "10.11.5",
+  "device_profile_version": 1
 }

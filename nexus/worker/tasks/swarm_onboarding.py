@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,7 @@ from typing import Any
 
 import structlog
 
+import nexus.services.session_vault as session_vault_module
 from nexus.services.session_vault import (
     SessionHealth,
     SessionStatus,
@@ -126,6 +128,25 @@ def _vault_roots_for_diagnostics() -> list[dict[str, Any]]:
     return out
 
 
+def _count_vault_telethon_session_files() -> int:
+    n = 0
+    for root in vault_candidate_roots():
+        if not root.is_dir():
+            continue
+        try:
+            for p in root.rglob("*.session"):
+                if p.name.endswith("-journal"):
+                    continue
+                try:
+                    if p.is_file():
+                        n += 1
+                except OSError:
+                    pass
+        except OSError:
+            pass
+    return n
+
+
 def _paired_session_file(meta_json: Path) -> Path | None:
     """
     Telethon sqlite next to ``*.json``: ``<stem>.session`` (case-insensitive on Windows).
@@ -177,6 +198,10 @@ async def _scan_onboarding_targets(
     all_meta = discover_meta_paths_from_session_sqlite()
     missing_samples: list[dict[str, str]] = []
     diag: dict[str, Any] = {
+        "mass_join_code_tag": "app_id_pairing+session_scan_v3",
+        "execution_hostname": socket.gethostname(),
+        "session_vault_py": str(Path(session_vault_module.__file__).resolve()),
+        "vault_telethon_session_files": _count_vault_telethon_session_files(),
         "discovered_meta_json_files": len(all_meta),
         "skipped_allow_list": 0,
         "skipped_missing_session_sqlite": 0,
@@ -226,6 +251,16 @@ async def _scan_onboarding_targets(
             continue
         diag["eligible"] += 1
         eligible.append(meta_json)
+    # Contradiction: many .session files on disk but almost no paired meta → stale code or wrong host
+    vtf = int(diag.get("vault_telethon_session_files") or 0)
+    dcnt = int(diag.get("discovered_meta_json_files") or 0)
+    if vtf >= 80 and dcnt <= 3:
+        diag["likely_stale_worker_or_remote_queue"] = True
+        diag["hint"] = (
+            f"This host sees {vtf} *.session files but only {dcnt} paired meta.json with "
+            "api_id/api_hash or app_id/app_hash — stop all workers, restart from this repo, "
+            "or a remote worker with an empty vault may be consuming jobs."
+        )
     return eligible, diag
 
 

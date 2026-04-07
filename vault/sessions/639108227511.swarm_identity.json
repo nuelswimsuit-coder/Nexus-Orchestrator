@@ -2,5 +2,9 @@
   "first_name": "אורי",
   "last_name": "לוי",
   "avatar_seed": "639108227511",
-  "profile_applied": false
+  "profile_applied": false,
+  "device_model": "iPhone 14 Pro",
+  "system_version": "iOS 17.3",
+  "app_version": "10.13.2",
+  "device_profile_version": 1
 }

@@ -1,5 +1,9 @@
 {
   "first_name": "Ben",
   "last_name": "A.",
-  "profile_applied": true
+  "profile_applied": true,
+  "device_model": "OnePlus 12",
+  "system_version": "SDK 34",
+  "app_version": "10.13.8",
+  "device_profile_version": 1
 }

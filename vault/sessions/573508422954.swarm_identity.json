@@ -2,5 +2,9 @@
   "first_name": "רועי",
   "last_name": "שפירא",
   "avatar_seed": "573508422954",
-  "profile_applied": false
+  "profile_applied": false,
+  "device_model": "iPhone 15",
+  "system_version": "iOS 17.4",
+  "app_version": "10.14.3",
+  "device_profile_version": 1
 }

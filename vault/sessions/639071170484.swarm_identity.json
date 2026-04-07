@@ -1,5 +1,9 @@
 {
   "first_name": "רועי",
   "last_name": "א.",
-  "profile_applied": true
+  "profile_applied": true,
+  "device_model": "iPhone 15",
+  "system_version": "iOS 17.4",
+  "app_version": "10.14.3",
+  "device_profile_version": 1
 }

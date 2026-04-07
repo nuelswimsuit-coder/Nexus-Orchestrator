@@ -2,5 +2,9 @@
   "first_name": "הילה",
   "last_name": "משה",
   "avatar_seed": "639093032605",
-  "profile_applied": false
+  "profile_applied": false,
+  "device_model": "iPhone 15 Pro",
+  "system_version": "iOS 17.5",
+  "app_version": "10.14.4",
+  "device_profile_version": 1
 }

@@ -1,5 +1,9 @@
 {
   "first_name": "ענת",
   "last_name": "ת.",
-  "profile_applied": true
+  "profile_applied": true,
+  "device_model": "Motorola Edge 40",
+  "system_version": "SDK 33",
+  "app_version": "10.11.2",
+  "device_profile_version": 1
 }

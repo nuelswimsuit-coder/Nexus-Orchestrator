@@ -2,5 +2,9 @@
   "first_name": "מור",
   "last_name": "יוסף",
   "avatar_seed": "573508364525",
-  "profile_applied": true
+  "profile_applied": true,
+  "device_model": "Xiaomi 14",
+  "system_version": "SDK 34",
+  "app_version": "10.13.7",
+  "device_profile_version": 1
 }

@@ -31,6 +31,13 @@ import sys
 import warnings
 from pathlib import Path
 
+# Prefer this repo's ``nexus/`` over any older ``nexus`` installed in site-packages
+# (otherwise mass_join / vault discovery fixes never load on the worker).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_repo_root_s = str(_REPO_ROOT)
+if _repo_root_s not in sys.path:
+    sys.path.insert(0, _repo_root_s)
+
 
 def _apply_windows_selector_event_loop_policy() -> None:
     """ProactorEventLoop is unstable with long-lived Redis on Windows (WinError 121/64)."""
