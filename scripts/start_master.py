@@ -633,6 +633,15 @@ async def run() -> None:
     dispatcher.cron.add(hour=2, minute=0, task=nightly_scrape, name="nightly-scrape")
     log.info("cron_nightly_scrape_registered", at="02:00 local")
 
+    nightly_lore = TaskPayload(
+        task_type="swarm.lore_nightly",
+        parameters={},
+        project_id="community-factory",
+        priority=3,
+    )
+    dispatcher.cron.add(hour=2, minute=0, task=nightly_lore, name="nightly-swarm-lore")
+    log.info("cron_nightly_swarm_lore_registered", at="02:00 local")
+
     if os.getenv("NEXUS_SPAMBOT_WEEKLY_CRON_ENABLED", "").strip().lower() in {
         "1",
         "true",
@@ -663,6 +672,52 @@ async def run() -> None:
             at=f"{sp_h:02d}:{sp_m:02d} local",
             note="task self-gates to 7d unless parameters.force=true",
         )
+
+    if os.getenv("NEXUS_POLL_GENERATOR_CRON_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        chat_raw = (os.getenv("POLL_GENERATOR_CHAT") or "").strip()
+        if not chat_raw:
+            log.warning(
+                "cron_poll_generator_skipped",
+                reason="POLL_GENERATOR_CHAT is not set",
+            )
+        else:
+            try:
+                pg_h = int((os.getenv("NEXUS_POLL_GENERATOR_CRON_HOUR") or "12").strip() or "12")
+                pg_m = int((os.getenv("NEXUS_POLL_GENERATOR_CRON_MINUTE") or "0").strip() or "0")
+            except ValueError:
+                pg_h, pg_m = 12, 0
+            pg_h = max(0, min(23, pg_h))
+            pg_m = max(0, min(59, pg_m))
+            poll_gen_params: dict[str, Any] = {"chat": chat_raw}
+            for key, env_name in (
+                ("poster_session", "POLL_GENERATOR_POSTER_SESSION"),
+                ("sessions_dir", "VAULT_SESSIONS_DIR"),
+            ):
+                raw = (os.getenv(env_name) or "").strip()
+                if raw:
+                    poll_gen_params[key] = raw
+            poll_generator_task = TaskPayload(
+                task_type="swarm.poll_generator",
+                parameters=poll_gen_params,
+                project_id="swarm-poll",
+                priority=3,
+            )
+            dispatcher.cron.add(
+                hour=pg_h,
+                minute=pg_m,
+                task=poll_generator_task,
+                name="swarm-poll-generator-daily",
+            )
+            log.info(
+                "cron_poll_generator_registered",
+                at=f"{pg_h:02d}:{pg_m:02d} local",
+                note="uses POLL_GENERATOR_POSTER_SESSION or parameters.poster_session",
+            )
 
     if os.getenv("SEO_WATCHDOG_CRON_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
         raw_shards = (os.getenv("SEO_WATCHDOG_SHARDS") or "1").strip() or "1"

@@ -70,3 +70,8 @@ try:
     from nexus.worker.tasks import lurkers as _lurkers  # noqa: F401 — swarm.lurkers.tick
 except Exception:
     pass
+
+try:
+    from nexus.worker.tasks import poll_generator as _poll_generator  # noqa: F401 — swarm.poll*
+except Exception:
+    pass

@@ -59,6 +59,7 @@ import nexus.worker.tasks.lurkers  # noqa: F401 — registers swarm.lurkers.tick
 import nexus.worker.tasks.moltbot  # noqa: F401 — registers bot.moltbot
 import nexus.worker.tasks.news_digest_refresh  # noqa: F401 — swarm.news_digest.refresh
 import nexus.worker.tasks.openclaw  # noqa: F401 — registers scraper.openclaw/openclaw.browser_scrape
+import nexus.worker.tasks.poll_generator  # noqa: F401 — swarm.poll_generator / swarm.poll.cast_vote
 import nexus.worker.tasks.polymarket_bot  # noqa: F401 — trading.polymarket_bot_tick / trading.polymarket_bot_session / polymarket_bot
 import nexus.worker.tasks.prediction  # noqa: F401 — registers prediction.cross_exchange
 import nexus.worker.tasks.reactions  # noqa: F401 — registers swarm.passive_reaction

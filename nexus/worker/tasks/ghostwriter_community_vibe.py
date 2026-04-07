@@ -21,6 +21,10 @@ from nexus.agents.ghostwriter.community_manager import (
     generate_israeli_ghost_message,
     join_group_auto,
 )
+from nexus.shared.telethon_human_hesitation import (
+    await_human_hesitation_tasks,
+    schedule_post_send_human_hesitation,
+)
 from nexus.worker.task_registry import registry
 
 log = structlog.get_logger(__name__)
@@ -164,88 +168,102 @@ async def ghostwriter_community_vibe(parameters: dict[str, Any]) -> dict[str, An
         limiter = JoinHourLimiter(max_per_hour=2)
 
         async with TelegramClient(session_path, api_id, api_hash) as client:
-            entity = None
+            setattr(client, "_nexus_human_hesitation_tasks", [])
             try:
-                if group_id is not None:
-                    entity = await client.get_entity(int(group_id))
-                else:
-                    entity = await client.get_entity(username)
-            except Exception:
                 entity = None
+                try:
+                    if group_id is not None:
+                        entity = await client.get_entity(int(group_id))
+                    else:
+                        entity = await client.get_entity(username)
+                except Exception:
+                    entity = None
 
-            if entity is None and join_if_needed and invite:
-                ok = await join_group_auto(
-                    client,
-                    invite,
-                    session_key,
-                    limiter,
-                    redis=redis,
+                if entity is None and join_if_needed and invite:
+                    ok = await join_group_auto(
+                        client,
+                        invite,
+                        session_key,
+                        limiter,
+                        redis=redis,
+                    )
+                    if ok:
+                        try:
+                            if group_id is not None:
+                                entity = await client.get_entity(int(group_id))
+                            else:
+                                entity = await client.get_entity(username)
+                        except Exception:
+                            entity = None
+
+                if entity is None:
+                    return {"status": "failed", "error": "could not resolve Telegram entity"}
+
+                msgs = await client.get_messages(entity, limit=40)
+                me = await client.get_me()
+                my_id = getattr(me, "id", None)
+                ctx = _context_from_messages([m for m in msgs if m])
+                topic = random.choice(
+                    [
+                        "מה הולך",
+                        "מישהו עוקב אחרי הדברים פה?",
+                        "דיון משוגע פה",
+                        "מטורף מה שקורה פה",
+                    ]
                 )
-                if ok:
-                    try:
-                        if group_id is not None:
-                            entity = await client.get_entity(int(group_id))
-                        else:
-                            entity = await client.get_entity(username)
-                    except Exception:
-                        entity = None
+                text = await generate_israeli_ghost_message(
+                    ctx,
+                    group_title=group_title,
+                    topic_hint=topic,
+                    provider="gemini",
+                    gemini_api_key=api_key,
+                )
+                text = (text or "").strip()
+                if not text:
+                    return {"status": "failed", "error": "empty AI line"}
 
-            if entity is None:
-                return {"status": "failed", "error": "could not resolve Telegram entity"}
-
-            msgs = await client.get_messages(entity, limit=40)
-            me = await client.get_me()
-            my_id = getattr(me, "id", None)
-            ctx = _context_from_messages([m for m in msgs if m])
-            topic = random.choice(
-                [
-                    "מה הולך",
-                    "מישהו עוקב אחרי הדברים פה?",
-                    "וואלה איזה דיון",
-                    "מטורף מה שקורה פה",
+                await asyncio.sleep(random.uniform(2.0, 8.0))
+                reply_mid: int | None = None
+                candidates = [
+                    m
+                    for m in msgs
+                    if m
+                    and getattr(m, "id", None)
+                    and not getattr(m, "out", False)
+                    and (getattr(m, "message", None) or "").strip()
+                    and (my_id is None or getattr(m, "sender_id", None) != my_id)
                 ]
-            )
-            text = await generate_israeli_ghost_message(
-                ctx,
-                group_title=group_title,
-                topic_hint=topic,
-                provider="gemini",
-                gemini_api_key=api_key,
-            )
-            text = (text or "").strip()
-            if not text:
-                return {"status": "failed", "error": "empty AI line"}
+                if candidates:
+                    pick = random.choice(candidates[:12])
+                    reply_mid = int(pick.id)
+                sent = await client.send_message(
+                    entity, text, reply_to=reply_mid if reply_mid else None
+                )
+                schedule_post_send_human_hesitation(client, entity, sent)
+                sent_id = int(sent.id) if sent else None
 
-            await asyncio.sleep(random.uniform(2.0, 8.0))
-            sent = await client.send_message(entity, text)
-            sent_id = int(sent.id) if sent else None
+                if candidates:
+                    react_pick = (
+                        random.choice(candidates[:12])
+                        if len(candidates) > 1
+                        else candidates[0]
+                    )
+                    if int(react_pick.id) != int(reply_mid or 0):
+                        await _send_reaction(client, entity, int(react_pick.id))
 
-            candidates: list[Any] = []
-            for m in msgs:
-                if not m or not getattr(m, "id", None):
-                    continue
-                if getattr(m, "out", False):
-                    continue
-                sid = getattr(m, "sender_id", None)
-                if my_id is not None and sid == my_id:
-                    continue
-                if (getattr(m, "message", None) or "").strip():
-                    candidates.append(m)
-            if candidates:
-                pick = random.choice(candidates[:12])
-                await _send_reaction(client, entity, int(pick.id))
+                delay_s = _next_vibe_delay_seconds()
+                next_run = datetime.now(timezone.utc).timestamp() + delay_s
+                state["next_run_at"] = datetime.fromtimestamp(next_run, tz=timezone.utc).isoformat()
+                state["last_vibe_at"] = _iso_now()
+                state["last_message_id"] = sent_id
+                await _redis_json_set(redis, state_key, state, ex=86400 * 30)
 
-            delay_s = _next_vibe_delay_seconds()
-            next_run = datetime.now(timezone.utc).timestamp() + delay_s
-            state["next_run_at"] = datetime.fromtimestamp(next_run, tz=timezone.utc).isoformat()
-            state["last_vibe_at"] = _iso_now()
-            state["last_message_id"] = sent_id
-            await _redis_json_set(redis, state_key, state, ex=86400 * 30)
-
-            return {
-                "status": "completed",
-                "message_id": sent_id,
-                "next_delay_s": delay_s,
-            }
+                return {
+                    "status": "completed",
+                    "message_id": sent_id,
+                    "next_delay_s": delay_s,
+                }
+            finally:
+                await await_human_hesitation_tasks(client)
     finally:
         await release_lock()

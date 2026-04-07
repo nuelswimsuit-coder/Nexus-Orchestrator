@@ -66,8 +66,7 @@ def is_time_in_sleep_window(now_minutes: int, sleep_window: SleepWindow) -> bool
 PERSONA_ARCHETYPES: list[PersonaArchetype] = [
     PersonaArchetype(
         prompt=(
-            "ARCHETYPE Ars/פרח: עצבני, סלנג אגרסיבי, 'אחי' 'נודר' 'בדוק', טעויות כתיב מכוונות "
-            "('ניראה' במקום 'נראה'). קצר וחד."
+            "ARCHETYPE Ars/פרח: עצבני, סלנג אגרסיבי, 'אחי' 'נודר' 'בדוק'. קצר וחד."
         ),
         sleep_window=((3, 0), (12, 0)),
     ),

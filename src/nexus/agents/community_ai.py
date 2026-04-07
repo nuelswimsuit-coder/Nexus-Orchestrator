@@ -511,7 +511,9 @@ class IsraeliSwarm:
         except Exception:
             pass
 
-    def _send_message(self, bot: SwarmBotState, message: str) -> bool:
+    def _send_message(
+        self, bot: SwarmBotState, message: str, reply_to: int | None = None
+    ) -> bool:
         """
         Attempt to send a message via Telethon using the bot's session file.
         Returns True on success.  Falls back gracefully if Telethon is not
@@ -547,7 +549,11 @@ class IsraeliSwarm:
                             "[%s] Join failed for %s: %s",
                             self.SERVICE_NAME, bot.phone, join_exc,
                         )
-                client.send_message(self.target_group, message)
+                client.send_message(
+                    self.target_group,
+                    message,
+                    reply_to=reply_to if reply_to else None,
+                )
             return True
         except ImportError:
             logger.debug("[%s] Telethon not installed — simulating send.", self.SERVICE_NAME)

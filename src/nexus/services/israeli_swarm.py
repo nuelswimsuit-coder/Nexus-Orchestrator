@@ -59,11 +59,15 @@ from typing import Any, Literal
 
 from nexus.services.anti_parrot_shield import MAX_REGENERATION_RETRIES, is_too_similar_to_recent
 from nexus.services.recent_news_digest import append_article_link_to_text, telegram_image_filename_from_bytes
-from nexus.services.tg_message_text import strip_trailing_israeli_news_outlet
+from nexus.services.tg_message_text import (
+    purge_absolute_news_source_blacklist,
+    strip_trailing_israeli_news_outlet,
+)
 from nexus.shared.swarm_pacing import (
     is_quiet_hours,
     news_response_jitter_s,
     resolve_major_news,
+    wait_global_media_send_turn,
     wait_global_telegram_send_turn,
 )
 
@@ -461,16 +465,15 @@ _NEWS_ANGLES = [
 ]
 
 _FALLBACK_CHAT_LINES = [
-    "וואלה הזייה",
-    "אמאלה רצח",
+    "מטורף לגמרי",
     "אין מצב אחי",
     "פיגוע פלילי",
     "מטורף מה שקורה",
-    "תכלס וואלה",
     "זה לא נורמלי",
     "אני בלי מילים",
     "הם באמת רציניים?",
     "נו באמת",
+    "לא מאמין בכלל",
 ]
 
 ISRAELI_NEWS_SYSTEM_PROMPT = (
@@ -478,25 +481,25 @@ ISRAELI_NEWS_SYSTEM_PROMPT = (
     "You are NOT a journalist, NOT a news anchor, and NOT summarizing articles.\n"
     "STRICT OUTPUT RULES (Hebrew only in JSON \"text\"):\n"
     "1. LENGTH: exactly 2–10 words. Not one word; not a sentence; bursts like real chat.\n"
-    "2. NAMES & @MENTIONS: You MUST include at least one @-tag addressing someone from "
-    "required_at_mention / mention_targets in the JSON context — like "
-    "\"מה אתה אומר @יוסי?\" or \"צודק @הילה זה ביזיון\". Use the exact @token given when present.\n"
+    "2. NO @ EVER: NEVER use the @ symbol. NEVER type a username manually. "
+    "The client sends your line as a native Telegram reply when you are the replier — "
+    "just write the conversational words.\n"
     "3. NO COPY-PASTE: Never output the raw headline or any long phrase from real_news / preferred_anchor. "
     "Read internally, then react in your own words (reaction, swear, joke, cynicism).\n"
     "4. NO SOURCES: Never print outlet names or patterns like \"- Ynet\", \"- מעריב\", \"- calcalist\", \"- N12\", "
-    "or \"[ynet]\". The digest has no outlet labels — do not invent them.\n"
+    "or \"[ynet]\", or substrings גלובס, וואלה, ערוץ 12, N12. The digest has no outlet labels — do not invent them.\n"
     "5. NO LAZY OPENERS: Forbidden starts include \"שמעתם כבר\", \"שמעתם על\", \"דיווח:\", \"לפי כותרות\", "
-    "\"ראיתם ש\", \"חדשות:\" — jump straight into the vibe.\n"
+    "\"ראיתם ש\", \"חדשות:\", \"תכלס וואלה\", \"אמאלה רצח\" — start mid-thought like a real human.\n"
     "6. ROLE=replier: Do NOT repeat or paraphrase facts from message_you_reply_to. "
     "Only opinion, joke, complaint, or disagreement matching your persona — zero recap.\n"
-    "7. NO hashtags (#). Minor typos OK. Casual slang (אחי, וואלה, תכלס, אמאלה, הזייה).\n"
+    "7. NO hashtags (#). Minor typos OK. Casual slang (אחי, תכלס, הזייה).\n"
     "Grounding: pick ONE event implied by the digest, but your line must sound like a person texting, not citing news."
 )
 
 ISRAELI_NEWS_PRIVILEGED_REPLY_PROMPT = (
     "You are a casual Israeli Telegram user. The message you reply to was sent by a group OWNER or ADMIN.\n"
     "Write 2–10 words in polite casual Hebrew. Do not repeat what they said; brief agreement, thanks, or light follow-up only.\n"
-    "Include a natural @name toward someone from mention_targets when the JSON provides it; stay respectful.\n"
+    "NEVER use @ or manual usernames — native reply threading handles context.\n"
     "No arguing, insults, or profanity. No hashtags. Never paste headlines or outlet names."
 )
 
@@ -730,24 +733,15 @@ def _redis_thread_key(group_link: str) -> str:
 def _finalize_swarm_llm_line(text: str) -> str:
     s = _strip_hashtags_and_cleanup(text)
     s = strip_trailing_israeli_news_outlet(s)
+    s = purge_absolute_news_source_blacklist(s)
+    s = re.sub(r"@[\w\d_]+", "", s)
+    s = re.sub(r"\s{2,}", " ", s).strip()
     parts = s.split()
     if len(parts) > 10:
         parts = parts[:10]
     if len(parts) == 1 and parts[0]:
-        parts.append(random.choice(["אחי", "תכלס", "וואלה", "נו"]))
+        parts.append(random.choice(["אחי", "תכלס", "נו", "רצח"]))
     return " ".join(parts).strip()
-
-
-def _ensure_swarm_line_has_mention(text: str, mention_token: str) -> str:
-    """Prefix @token when the model omitted any @ (keeps word cap via finalize)."""
-    t = (text or "").strip()
-    tok = (mention_token or "").strip().lstrip("@")
-    if not tok:
-        return _finalize_swarm_llm_line(t)
-    if "@" in t:
-        return _finalize_swarm_llm_line(t)
-    merged = f"@{tok} {t}".strip()
-    return _finalize_swarm_llm_line(merged)
 
 
 def _display_name_is_non_israeli(first: str, last: str) -> bool:
@@ -1025,17 +1019,10 @@ async def _generate_community_message(
 
     if not _GEMINI_KEY:
         text = random.choice(_FALLBACK_CHAT_LINES)
-        tok = (required_mention_token or "").strip().lstrip("@") or _pick_required_mention_token(
-            mention_targets or _swarm_mention_pool(meta_newest_first, display),
-            display,
-        )
-        text = _ensure_swarm_line_has_mention(text, tok)
-        return text, reply_out
+        return _finalize_swarm_llm_line(text), reply_out
 
     nd = (news_digest or "").strip()
     ah = (anchor_headline or "").strip()
-    mt = list(mention_targets) if mention_targets else _swarm_mention_pool(meta_newest_first, display)
-    rmt = (required_mention_token or "").strip().lstrip("@") or _pick_required_mention_token(mt, display)
 
     if role == "opener":
         user_obj: dict[str, Any] = {
@@ -1072,8 +1059,6 @@ async def _generate_community_message(
             "ההודעה שאתה משיב לה נשלחה על ידי מנהל או בעלים של הקבוצה. "
             "היה מנומס, קצר, בלי ויכוח, בלי קללות ובלי התנגדות אגרסיבית."
         )
-    user_obj["mention_targets"] = mt
-    user_obj["required_at_mention"] = f"@{rmt}"
     if interaction_tone:
         user_obj["interaction_tone"] = interaction_tone
     if regeneration_attempt == 1:
@@ -1129,14 +1114,13 @@ async def _generate_community_message(
         )
         parsed = _extract_json_object(raw) or {}
         text = _finalize_swarm_llm_line(str(parsed.get("text") or "").strip())
-        text = _ensure_swarm_line_has_mention(text, rmt)
         if text:
             return text, reply_out
     except Exception as exc:
         log.debug("[GEMINI] Community message failed (%s) — fallback", exc)
 
     text_fb = random.choice(_FALLBACK_CHAT_LINES)
-    return _ensure_swarm_line_has_mention(text_fb, rmt), reply_out
+    return _finalize_swarm_llm_line(text_fb), reply_out
 
 
 async def _generate_unique_community_message(
@@ -1638,6 +1622,12 @@ class CommunityEngine:
                 photo_bytes: bytes | None = None
                 if shared_photo and random.random() < 0.82:
                     photo_bytes = shared_photo
+                if photo_bytes and not (message or "").strip():
+                    fb = (news_anchor_str or news_digest_str or "").strip()[:1024]
+                    if fb:
+                        message = fb
+                    else:
+                        photo_bytes = None
                 try:
                     maj = await resolve_major_news(r_redis) if r_redis is not None else False
                     if (news_digest_str or news_anchor_str).strip():
@@ -1656,6 +1646,7 @@ class CommunityEngine:
                     reply_to=reply_to,
                     photo_bytes=photo_bytes,
                     parse_mode=msg_parse_mode,
+                    redis_client=r_redis,
                 )
                 if sent:
                     any_sent = True
@@ -1735,6 +1726,7 @@ class CommunityEngine:
         reply_to: int | None = None,
         photo_bytes: bytes | None = None,
         parse_mode: str | None = None,
+        redis_client: Any | None = None,
     ) -> tuple[bool, int | None]:
         if not group_link:
             return False, None
@@ -1786,7 +1778,8 @@ class CommunityEngine:
                         target = await _ensure_swarm_target_entity(client, group_link)
                         async with client.action(target, "typing"):
                             await asyncio.sleep(random.uniform(2.0, 8.0))
-                        if photo_bytes:
+                        cap_msg = (message or "").strip()
+                        if photo_bytes and cap_msg:
                             from nexus.services.media_opsec import (
                                 make_image_upload_salt_seed,
                                 prepare_jpeg_png_for_telegram_upload,
@@ -1798,11 +1791,12 @@ class CommunityEngine:
                             )
                             fname = telegram_image_filename_from_bytes(_pb)
                             bio = BytesIO(_pb)
+                            await wait_global_media_send_turn(redis_client)
                             try:
                                 sent = await client.send_file(
                                     target,
                                     file=(fname, bio),
-                                    caption=message[:1024],
+                                    caption=cap_msg[:1024],
                                     reply_to=reply_to if reply_to else None,
                                     force_document=False,
                                     parse_mode=parse_mode,
@@ -1814,7 +1808,7 @@ class CommunityEngine:
                                 )
                                 sent = await client.send_message(
                                     target,
-                                    message,
+                                    cap_msg,
                                     reply_to=reply_to if reply_to else None,
                                     parse_mode=parse_mode,
                                 )

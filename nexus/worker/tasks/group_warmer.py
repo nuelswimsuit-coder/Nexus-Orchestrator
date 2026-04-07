@@ -35,8 +35,12 @@ from nexus.services.recent_news_digest import (
 )
 from nexus.services.tg_message_text import llm_media_prefix_for_message, telethon_display_text
 from nexus.services.tg_participant_privilege import sender_of_message_is_owner_or_admin
-from nexus.worker.task_registry import registry
 from nexus.shared.swarm_pacing import wait_global_media_send_turn
+from nexus.shared.telethon_human_hesitation import (
+    await_human_hesitation_tasks,
+    schedule_post_send_human_hesitation,
+)
+from nexus.worker.task_registry import registry
 
 log = structlog.get_logger(__name__)
 
@@ -146,6 +150,32 @@ def _intra_turn_delay_bounds(engagement_mode: str, parameters: dict[str, Any]) -
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _pick_peer_reply_id(
+    id_map: list[dict[str, Any]],
+    peer_handles: list[str],
+) -> int | None:
+    """Telegram message id of a recent @username peer (native reply target)."""
+    want = {str(h).lstrip("@").strip() for h in peer_handles if str(h).strip()}
+    if not want:
+        return None
+    peer_ids: list[int] = []
+    for m in id_map:
+        if not isinstance(m, dict):
+            continue
+        sdr = str(m.get("sender", "")).strip()
+        if not sdr.startswith("@"):
+            continue
+        uname = (sdr[1:].split() or [""])[0].strip()
+        if uname in want:
+            try:
+                peer_ids.append(int(m["id"]))
+            except (TypeError, ValueError, KeyError):
+                continue
+    if not peer_ids:
+        return None
+    return int(random.choice(peer_ids))
 
 
 async def _redis_json_get(redis: Any, key: str) -> dict[str, Any]:
@@ -430,7 +460,7 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                     if turn_i == 0:
                         drama_directive = (
                             "BOT_A_HOT_TAKE: Drop a bold Hebrew opinion on the topic (spicy, group-chat energy). "
-                            "Provoke reactions; you may @mention someone from the list."
+                            "Provoke reactions; use reply_to_id to a peer if you engage them — never @ in text."
                         )
                     elif turn_i == 1:
                         prev_mid = message_ids[0] if message_ids else None
@@ -448,8 +478,9 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                             forced_rid = int(target)
                         if chain_root_handle:
                             drama_directive = (
-                                f"BOT_C_DEFENDER: Defend @{chain_root_handle} against the cynic — push back, take their side. "
-                                "Use @ in the text if that handle is in other_participant_handles."
+                                "BOT_C_DEFENDER: Defend the hot-take opener against the cynic — push back, take their side. "
+                                f"Opener handle in context: {chain_root_handle}. "
+                                "Use reply_to_id to their message id from the map; never type @ in the line."
                             )
                         else:
                             drama_directive = (
@@ -479,8 +510,13 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                         forced_rid = int(prev_bot_mid)
                         drama_directive = (
                             "DISAGREE_PREV: You MUST disagree with or challenge what the previous bot implied — "
-                            "no agreeing; blunt Hebrew @mention them if you see their handle in the thread map."
+                            "no agreeing; use reply_to_id to their message; never @ in text."
                         )
+
+                if forced_rid is None and other_handles and id_map:
+                    peer_mid = _pick_peer_reply_id(id_map, other_handles)
+                    if peer_mid is not None and random.random() < 0.42:
+                        forced_rid = peer_mid
 
                 nd = news_bundle.digest_text if turn_i == 0 else ""
                 ah = news_bundle.anchor_title if turn_i == 0 else ""
@@ -491,7 +527,7 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                     hooks=hooks,
                     transcript=transcript,
                     speaker=speaker,
-                    other_handles=[f"@{h}" for h in other_handles],
+                    other_handles=list(other_handles),
                     message_index_map=id_map,
                     news_digest=nd,
                     anchor_headline=ah,
@@ -530,7 +566,7 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                                 hooks=hooks,
                                 transcript=transcript,
                                 speaker=speaker,
-                                other_handles=[f"@{h}" for h in other_handles],
+                                other_handles=list(other_handles),
                                 message_index_map=id_map,
                                 news_digest=nd,
                                 anchor_headline=ah,
@@ -571,64 +607,77 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                                 url=(news_bundle.image_url or "")[:160],
                             )
                     async with TelegramClient(session_path, api_id, api_hash) as poster:
-                        post_entity = await poster.get_entity(int(group_id))
+                        setattr(poster, "_nexus_human_hesitation_tasks", [])
                         try:
-                            if photo_bytes:
-                                if not (caption_for_media or "").strip():
-                                    log.info(
-                                        "warmer_media_skipped_no_caption",
-                                        group_key=group_key,
+                            post_entity = await poster.get_entity(int(group_id))
+                            try:
+                                if photo_bytes:
+                                    if not (caption_for_media or "").strip():
+                                        log.info(
+                                            "warmer_media_skipped_no_caption",
+                                            group_key=group_key,
+                                        )
+                                        photo_bytes = None
+                                if photo_bytes:
+                                    salt = make_image_upload_salt_seed(Path(session_path).stem)
+                                    photo_bytes, _ = prepare_jpeg_png_for_telegram_upload(
+                                        photo_bytes, salt_seed=salt
                                     )
-                                    photo_bytes = None
-                            if photo_bytes:
-                                await wait_global_media_send_turn(redis)
-                                salt = make_image_upload_salt_seed(Path(session_path).stem)
-                                photo_bytes, _ = prepare_jpeg_png_for_telegram_upload(
-                                    photo_bytes, salt_seed=salt
-                                )
-                                fname = telegram_image_filename_from_bytes(photo_bytes)
-                                bio = BytesIO(photo_bytes)
-                                try:
-                                    sent = await poster.send_file(
-                                        post_entity,
-                                        file=(fname, bio),
-                                        caption=caption_for_media[:1024],
-                                        reply_to=reply_id if reply_id else None,
-                                        force_document=False,
-                                        parse_mode=link_parse_mode,
-                                    )
-                                    sent_media = True
-                                except Exception as photo_exc:
-                                    log.warning("warmer_send_file_failed", error=str(photo_exc))
+                                    fname = telegram_image_filename_from_bytes(photo_bytes)
+                                    bio = BytesIO(photo_bytes)
+                                    await wait_global_media_send_turn(redis)
+                                    try:
+                                        sent = await poster.send_file(
+                                            post_entity,
+                                            file=(fname, bio),
+                                            caption=caption_for_media[:1024],
+                                            reply_to=reply_id if reply_id else None,
+                                            force_document=False,
+                                            parse_mode=link_parse_mode,
+                                        )
+                                        sent_media = True
+                                    except Exception as photo_exc:
+                                        log.warning("warmer_send_file_failed", error=str(photo_exc))
+                                        sent = await poster.send_message(
+                                            post_entity,
+                                            body,
+                                            reply_to=reply_id if reply_id else None,
+                                            parse_mode=link_parse_mode,
+                                        )
+                                        schedule_post_send_human_hesitation(
+                                            poster, post_entity, sent
+                                        )
+                                        message_id = int(sent.id) if sent else None
+                                    else:
+                                        message_id = int(sent.id) if sent else None
+                                else:
                                     sent = await poster.send_message(
                                         post_entity,
                                         body,
                                         reply_to=reply_id if reply_id else None,
                                         parse_mode=link_parse_mode,
                                     )
+                                    schedule_post_send_human_hesitation(
+                                        poster, post_entity, sent
+                                    )
                                     message_id = int(sent.id) if sent else None
-                                else:
+                            except Exception as exc:
+                                log.warning("warmer_send_failed", error=str(exc))
+                                try:
+                                    sent = await poster.send_message(
+                                        post_entity,
+                                        body,
+                                        reply_to=reply_id if reply_id else None,
+                                        parse_mode=link_parse_mode,
+                                    )
+                                    schedule_post_send_human_hesitation(
+                                        poster, post_entity, sent
+                                    )
                                     message_id = int(sent.id) if sent else None
-                            else:
-                                sent = await poster.send_message(
-                                    post_entity,
-                                    body,
-                                    reply_to=reply_id if reply_id else None,
-                                    parse_mode=link_parse_mode,
-                                )
-                                message_id = int(sent.id) if sent else None
-                        except Exception as exc:
-                            log.warning("warmer_send_failed", error=str(exc))
-                            try:
-                                sent = await poster.send_message(
-                                    post_entity,
-                                    body,
-                                    reply_to=reply_id if reply_id else None,
-                                    parse_mode=link_parse_mode,
-                                )
-                                message_id = int(sent.id) if sent else None
-                            except Exception as exc2:
-                                log.warning("warmer_send_fallback_failed", error=str(exc2))
+                                except Exception as exc2:
+                                    log.warning("warmer_send_fallback_failed", error=str(exc2))
+                        finally:
+                            await await_human_hesitation_tasks(poster)
                 message_ids.append(message_id)
 
             message_id = message_ids[0] if message_ids else None

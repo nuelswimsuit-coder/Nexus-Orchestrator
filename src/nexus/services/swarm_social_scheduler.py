@@ -2,7 +2,14 @@
 Swarm Social Synthesis — master-side scheduler for ``swarm.group_warmer``.
 
 Polls Redis every minute, dispatches a tick when ``next_run_at`` is due (or
-missing on first run). Uses a short-lived Redis lock to avoid duplicate jobs.
+missing on first run). Uses a Redis lock to avoid duplicate jobs (TTL covers
+long ``pre_tick_sleep_s`` when digest-driven stagger is active).
+
+When several groups are due in the same sweep **and** the central news digest
+was updated recently (see ``SWARM_WARMER_DIGEST_STAGGER_WINDOW_S``), each job
+gets a random ``pre_tick_sleep_s`` between 10 and 45 minutes so workers do not
+all post at once.
+
 Optional one-time seed from ``SWARM_WARMER_CONFIG`` (path to JSON file).
 """
 
@@ -144,24 +151,28 @@ class SwarmSocialScheduler:
         pre_tick_sleep_s: int = 0,
     ) -> None:
         lock_key = f"{SWARM_LOCK_PREFIX}{group_key}"
-        got = await self._redis.set(lock_key, "1", nx=True, ex=900)
+        got = await self._redis.set(lock_key, "1", nx=True, ex=4500)
         if not got:
             return
 
+        params: dict[str, Any] = {
+            "group_key": str(group_key),
+            "group_id": gid,
+            "sessions": sessions,
+            "timezone": str(cfg.get("timezone", "UTC") or "UTC"),
+            "action": "tick",
+            "group_title": str(cfg.get("group_title", "") or ""),
+            "engagement_mode": str(cfg.get("engagement_mode", "") or ""),
+            "turns_per_tick": cfg.get("turns_per_tick"),
+            "intra_turn_min_s": cfg.get("intra_turn_min_s"),
+            "intra_turn_max_s": cfg.get("intra_turn_max_s"),
+        }
+        if pre_tick_sleep_s > 0:
+            params["pre_tick_sleep_s"] = float(pre_tick_sleep_s)
+
         task = TaskPayload(
             task_type="swarm.group_warmer",
-            parameters={
-                "group_key": str(group_key),
-                "group_id": gid,
-                "sessions": sessions,
-                "timezone": str(cfg.get("timezone", "UTC") or "UTC"),
-                "action": "tick",
-                "group_title": str(cfg.get("group_title", "") or ""),
-                "engagement_mode": str(cfg.get("engagement_mode", "") or ""),
-                "turns_per_tick": cfg.get("turns_per_tick"),
-                "intra_turn_min_s": cfg.get("intra_turn_min_s"),
-                "intra_turn_max_s": cfg.get("intra_turn_max_s"),
-            },
+            parameters=params,
             project_id="swarm-social",
         )
         try:

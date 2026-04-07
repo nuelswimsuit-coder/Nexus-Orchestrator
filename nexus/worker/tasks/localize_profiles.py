@@ -656,6 +656,11 @@ async def run_localize_profiles(
             random.shuffle(paths)
         if limit is not None and limit > 0:
             paths = paths[:limit]
+        if not flat_sessions_dir.is_dir():
+            log.warning(
+                "localize_profiles_flat_dir_missing",
+                dir=str(flat_sessions_dir.resolve()),
+            )
         log.info(
             "localize_profiles_flat_scan",
             dir=str(flat_sessions_dir.resolve()),

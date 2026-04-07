@@ -32,7 +32,9 @@ from nexus.services.tg_message_text import (
     telethon_display_text,
 )
 from nexus.services.tg_participant_privilege import sender_of_message_is_owner_or_admin
+from nexus.shared.personas import PERSONA_ARCHETYPE_PROMPTS, session_is_asleep_jerusalem
 from nexus.worker.services.israeli_telegram_profile import ensure_israeli_factory_profile
+from nexus.shared.telethon_human_hesitation import schedule_post_send_human_hesitation
 from nexus.worker.services.tg_session import (
     async_telegram_client,
     classify_telethon_account_error,
@@ -57,6 +59,37 @@ KEY_FACTORY_POOL_UIDS = "nexus:swarm:factory:pool_user_ids"
 KEY_MEDIA_SLOT_PREFIX = "nexus:swarm:factory:media_slot:"
 THREAD_KEY_PREFIX = "nexus:swarm:factory:thread:"
 ACTIVE_TOPIC_KEY_PREFIX = "nexus:swarm:factory:active_topic:"
+# Global ADHD derailment: count every factory bot Telegram send, arm at 40, seed + 3 contagion replies.
+KEY_GLOBAL_SWARM_MESSAGE_COUNT = "nexus:swarm:global_message_count"
+KEY_DERAIL_STATE = "nexus:swarm:derail_state"
+KEY_DERAIL_CONTAGION_LEFT = "nexus:swarm:derail_contagion_left"
+KEY_DERAIL_ANCHOR = "nexus:swarm:derail_anchor_text"
+GLOBAL_SWARM_DERAIL_THRESHOLD = 40
+DERAIL_SEED_SYSTEM_OVERRIDE = (
+    "IGNORE the news. You just remembered something else. Ask the group a random, everyday Israeli question. "
+    "Examples: traffic on Ayalon highway, a recommendation for a Netflix show, complaining about the heat, "
+    "or asking if anyone knows a good plumber in Petah Tikva."
+)
+DERAIL_CONTAGION_SYSTEM_SUFFIX = (
+    "DERAILMENT (contagion): IGNORE the news digest. The group is on an everyday side-topic question below. "
+    "Reply to that question in casual Israeli Hebrew — not politics, not headlines, no news parroting."
+)
+_DERAIL_CLAIM_LUA = """
+local st = redis.call('GET', KEYS[1])
+if st == false then st = 'idle' end
+if st == 'need_seed' then
+  redis.call('SET', KEYS[1], 'awaiting_anchor')
+  return 'seed'
+end
+if st == 'contagion' then
+  local rem = tonumber(redis.call('GET', KEYS[2]) or '0')
+  if rem > 0 then
+    local after = redis.call('DECR', KEYS[2])
+    return 'contagion:' .. tostring(after)
+  end
+end
+return 'none'
+"""
 THREAD_ID_CAP = 5
 RECENT_GROUP_MSG_CAP = 15
 RECENT_GROUP_MSG_MAX_CHARS = 180
@@ -115,46 +148,8 @@ EXAMPLES OF GOOD, AUTHENTIC OUTPUTS (DO THIS):
 'הזייה מה שהולך פה'
 'אין מצב אחי'"""
 
-# Twelve fixed archetypes — index chosen deterministically from MD5(session path).
-PERSONA_ARCHETYPES: list[str] = [
-    (
-        "ARCHETYPE Ars/פרח: עצבני, סלנג אגרסיבי, 'אחי' 'נודר' 'בדוק'. קצר וחד."
-    ),
-    (
-        "ARCHETYPE Boomer: בן/בת 60+, נקודות '...' ואימוג'ים 🙏🌹, מתלונן על ממשלה/צעירים, "
-        "סגנון ווטסאפ משפחתי."
-    ),
-    (
-        "ARCHETYPE Religious: מילים נקיות יותר אבל עדיין יומיומי, 'בעזה\"ש' לפעמים, לא פורמלי."
-    ),
-    (
-        "ARCHETYPE Cynic: לא מאמין לחדשות, 2–6 מילים, 'חארטה' 'פייק' 'שוב עובדים עלינו'."
-    ),
-    (
-        "ARCHETYPE Anxious: נלחץ מחדשות, 'אמאלה' 'איזה פחד' 'מה נסגר'."
-    ),
-    (
-        "ARCHETYPE Tech-bro: סטארטאפים, 'דיסרפשן' בציניות, מעורבב עברית-אנגלית קז'ואל."
-    ),
-    (
-        "ARCHETYPE Student: חצי ישן, 'אני במבחן' 'אין כסף', סלנג קצת צעיר."
-    ),
-    (
-        "ARCHETYPE Mizrahi uncle: חום, 'מאל'ס' 'יאללה', בדיחות משפחה, לא מנומס מדי."
-    ),
-    (
-        "ARCHETYPE Ashkenazi grandma: 'אוי ואבוי' 'נו באמת', קצת יידיש בעברית, תלונה חמה."
-    ),
-    (
-        "ARCHETYPE Russian-mix: עברית עם שיבושים רוסיים קלים, 'נורמלי?' 'בסדר' הרבה."
-    ),
-    (
-        "ARCHETYPE Periphery: עיר פיתוח/פריפריה, ריאליזם כלכלי, 'אין עבודה' 'המחירים'."
-    ),
-    (
-        "ARCHETYPE Beach-chill: אילתי/חוף בראש, רגוע, 'נשבע' 'וואלה כיף', פחות זעם."
-    ),
-]
+# Twelve fixed archetypes — prompts + sleep windows: ``nexus.shared.personas``.
+PERSONA_ARCHETYPES: list[str] = list(PERSONA_ARCHETYPE_PROMPTS)
 
 # Twelve geo anchors — second index from same MD5 digest (different byte range).
 GEO_ANCHORS: list[str] = [
@@ -340,6 +335,40 @@ async def _redis_json_set(redis: Any, key: str, data: Any) -> None:
     await redis.set(key, json.dumps(data, ensure_ascii=False))
 
 
+async def _redis_sample_lore_fact(redis: Any) -> str | None:
+    """Return one random stored lore line (uniform over the Redis list)."""
+    if redis is None:
+        return None
+    try:
+        facts = await redis.lrange(KEY_LORE_FACTS, 0, -1)
+    except Exception as exc:
+        log.debug("lore_redis_lrange_failed", error=str(exc))
+        return None
+    decoded: list[str] = []
+    for raw in facts or []:
+        s = raw.decode() if isinstance(raw, (bytes, bytearray)) else str(raw)
+        s = s.strip()
+        if s:
+            decoded.append(s)
+    if not decoded:
+        return None
+    return random.choice(decoded)
+
+
+async def _maybe_sample_lore_for_amcha(redis: Any, *, privileged_anchor: bool) -> str | None:
+    if privileged_anchor or redis is None:
+        return None
+    raw_prob = (os.getenv("NEXUS_SWARM_LORE_INJECT_PROB") or "1").strip()
+    try:
+        prob = float(raw_prob)
+    except ValueError:
+        prob = 1.0
+    prob = max(0.0, min(1.0, prob))
+    if prob < 1.0 and random.random() >= prob:
+        return None
+    return await _redis_sample_lore_fact(redis)
+
+
 def _resolve_api_key(parameters: dict[str, Any]) -> str:
     secrets = parameters.get("__secrets__", {})
     return (
@@ -442,6 +471,14 @@ def _inject_hebrew_typo(text: str) -> tuple[str, str | None]:
         return s, None
     new_text = s[: m.start()] + new_word + s[m.end() :]
     return new_text, orig_word
+
+
+async def _telethon_send_text_schedule_hesitation(
+    client: Any, entity: Any, text: str, **kwargs: Any
+) -> Any:
+    msg = await client.send_message(entity, text, **kwargs)
+    schedule_post_send_human_hesitation(client, entity, msg)
+    return msg
 
 
 async def _send_factory_plain_text_with_hebrew_typo(
@@ -893,6 +930,88 @@ def _factory_turn_antiparrot_compare_text(
     return out if out.strip() else None
 
 
+def _parse_derail_claim_result(raw: Any) -> tuple[str | None, int | None]:
+    s = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw or "")
+    s = s.strip()
+    if s == "seed":
+        return "seed", None
+    if s.startswith("contagion:"):
+        tail = s.split(":", 1)[1].strip()
+        try:
+            return "contagion", int(tail)
+        except ValueError:
+            return "contagion", None
+    return None, None
+
+
+async def _derail_claim_for_turn(redis: Any) -> tuple[str | None, int | None]:
+    if redis is None:
+        return None, None
+    try:
+        raw = await redis.eval(_DERAIL_CLAIM_LUA, 2, KEY_DERAIL_STATE, KEY_DERAIL_CONTAGION_LEFT)
+        return _parse_derail_claim_result(raw)
+    except Exception as exc:
+        log.debug("derail_claim_failed", error=str(exc))
+        return None, None
+
+
+async def _derail_restore_claim(
+    redis: Any, kind: str | None, contagion_after: int | None
+) -> None:
+    if redis is None or not kind:
+        return
+    try:
+        if kind == "seed":
+            st = await redis.get(KEY_DERAIL_STATE)
+            if st == "awaiting_anchor":
+                await redis.set(KEY_DERAIL_STATE, "need_seed")
+        elif kind == "contagion":
+            await redis.incr(KEY_DERAIL_CONTAGION_LEFT)
+    except Exception as exc:
+        log.debug("derail_restore_failed", error=str(exc))
+
+
+async def _derail_maybe_arm(redis: Any, new_count: int) -> None:
+    if redis is None or new_count < GLOBAL_SWARM_DERAIL_THRESHOLD:
+        return
+    try:
+        st = await redis.get(KEY_DERAIL_STATE)
+        if st in (None, "", "idle"):
+            await redis.set(KEY_DERAIL_STATE, "need_seed")
+    except Exception as exc:
+        log.debug("derail_arm_failed", error=str(exc))
+
+
+async def _global_swarm_bump_after_send(
+    redis: Any,
+    *,
+    n_bot_messages: int,
+    derail_kind: str | None,
+    contagion_after: int | None,
+    seed_anchor_text: str | None,
+) -> None:
+    if redis is None or n_bot_messages <= 0:
+        return
+    try:
+        latest = 0
+        for _ in range(n_bot_messages):
+            latest = int(await redis.incr(KEY_GLOBAL_SWARM_MESSAGE_COUNT))
+            await _derail_maybe_arm(redis, latest)
+        if derail_kind == "seed":
+            anchor = (seed_anchor_text or "").strip()[:900] or "שאלה יומיומית"
+            await redis.set(KEY_DERAIL_STATE, "contagion")
+            await redis.set(KEY_DERAIL_CONTAGION_LEFT, 3)
+            await redis.set(KEY_DERAIL_ANCHOR, anchor)
+            log.info("swarm_derail_seed_sent", anchor_preview=anchor[:120])
+        if derail_kind == "contagion" and contagion_after == 0:
+            await redis.set(KEY_DERAIL_STATE, "idle")
+            await redis.delete(KEY_DERAIL_ANCHOR, KEY_DERAIL_CONTAGION_LEFT)
+            await redis.set(KEY_GLOBAL_SWARM_MESSAGE_COUNT, 0)
+            log.info("swarm_derail_cycle_complete_reset")
+    except Exception as exc:
+        log.debug("global_swarm_bump_failed", error=str(exc))
+
+
 async def _generate_unique_amcha_turn(redis: Any, group_id: int, **kwargs: Any) -> dict[str, Any] | None:
     """Up to 1 + MAX_REGENERATION_RETRIES generations; None => skip send (too similar to recent group lines)."""
     kwargs.pop("regeneration_attempt", None)
@@ -1259,6 +1378,8 @@ async def _generate_amcha_turn(
     privileged_anchor: bool = False,
     community_lore_line: str | None = None,
     regeneration_attempt: int = 0,
+    derail_mode: str | None = None,
+    derail_anchor_text: str | None = None,
 ) -> dict[str, Any]:
     anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
     anti += _global_outgoing_prompt_suffix(list(global_recent_outgoing or []))
@@ -1289,6 +1410,10 @@ async def _generate_amcha_turn(
             json_schema += (
                 " חובה: action_type חייב להיות text או text_with_emoji בלבד (בלי sticker/gif/image)."
             )
+        if derail_mode in ("seed", "contagion"):
+            json_schema += (
+                " חובה (שוליים): action_type חייב להיות text או text_with_emoji בלבד; article_url ו-link_label ריקים."
+            )
     else:
         json_schema = (
             "החזר אך ורק JSON תקף (בלי טקסט נוסף) במבנה: "
@@ -1312,7 +1437,29 @@ async def _generate_amcha_turn(
                 " חובה: action_type חייב להיות text או text_with_emoji בלבד (לא sticker/gif/image)."
             )
 
-    if role == "opener" and not news_opener:
+    if derail_mode == "seed":
+        system_prompt = f"{DERAIL_SEED_SYSTEM_OVERRIDE}\n\n---\n\n{system_prompt}"
+        user_he = (
+            f"{last_five_block}\n\n{effective_stance}\n\n"
+            "שכח מהחדשות ומהדאיג'סט. שאל את הקבוצה שאלה יומיומית אחת בעברית — קצר, עממי, לא פוליטיקה.\n"
+            f"{typo_rule}\n{anti}\n{json_schema}"
+        )
+    elif derail_mode == "contagion":
+        system_prompt = f"{system_prompt}\n\n{DERAIL_CONTAGION_SYSTEM_SUFFIX}"
+        aq = (derail_anchor_text or "").strip()[:800] or "(שאלה יומיומית בקבוצה)"
+        replier_media_ban = ""
+        if rich_media_mode:
+            replier_media_ban = (
+                "חובה: אסור sticker/gif/image; רק text או text_with_emoji.\n"
+            )
+        user_he = (
+            f"{last_five_block}\n\n{effective_stance}\n\n"
+            f"{replier_media_ban}"
+            f'מישהו שאל בקבוצה (שוליים, לא חדשות): "{aq}"\n'
+            "תגיב לזה בקצרה — 2–10 מילים, טבעי, בלי כותרות ולא חדשות.\n"
+            f"{typo_rule}\n{anti}\n{json_schema}"
+        )
+    elif role == "opener" and not news_opener:
         ctx = (active_topic_line or "").strip()[:400] or topic
         user_he = (
             f"{last_five_block}\n\n{effective_stance}\n\n"
@@ -2751,6 +2898,11 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
             until = await _cooldown_until(redis, session_base)
             if until and datetime.now(timezone.utc) < until:
                 continue
+            if session_is_asleep_jerusalem(session_base):
+                continue
+            derail_kind_b: str | None = None
+            derail_cont_after_b: int | None = None
+            burst_derail_committed = False
             try:
                 async with async_telegram_client(session_base, parameters) as client:
                     if not await client.is_user_authorized():
@@ -2788,6 +2940,10 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         )
                     except Exception:
                         privileged_burst = False
+                    derail_kind_b, derail_cont_after_b = await _derail_claim_for_turn(redis)
+                    derail_anchor_b = ""
+                    if derail_kind_b == "contagion" and redis is not None:
+                        derail_anchor_b = str(await redis.get(KEY_DERAIL_ANCHOR) or "")
                     lore_line = await _maybe_sample_lore_for_amcha(
                         redis, privileged_anchor=privileged_burst
                     )
@@ -2810,10 +2966,25 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         privileged_anchor=privileged_burst,
                         community_lore_line=lore_line,
                         global_recent_outgoing=global_recent_burst,
+                        derail_mode=derail_kind_b,
+                        derail_anchor_text=derail_anchor_b or None,
                     )
                     if turn is None:
+                        await _derail_restore_claim(redis, derail_kind_b, derail_cont_after_b)
                         log.debug("factory_burst_antiparrot_skip", group_id=gid_int)
                         continue
+                    if derail_kind_b == "seed":
+                        mtb = str(turn.get("primary_message") or turn.get("text") or "").strip() or (
+                            "מישהו יודע סדרה טובה בנטפליקס"
+                        )
+                        turn = {
+                            **turn,
+                            "primary_message": mtb,
+                            "text": mtb,
+                            "needs_correction": False,
+                            "correction_message": "",
+                            "correction": "",
+                        }
                     body = _finalize_primary_message(turn["primary_message"])
                     await asyncio.sleep(
                         _reading_delay_before_typing_seconds(last_five, anchor_preview or "", active_topic_line or "")
@@ -2829,6 +3000,17 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         reply_to_id=reply_mid,
                         parse_mode=None,
                     )
+                    if derail_kind_b and not msgs:
+                        await _derail_restore_claim(redis, derail_kind_b, derail_cont_after_b)
+                    elif msgs:
+                        burst_derail_committed = True
+                        await _global_swarm_bump_after_send(
+                            redis,
+                            n_bot_messages=len(msgs),
+                            derail_kind=derail_kind_b,
+                            contagion_after=derail_cont_after_b,
+                            seed_anchor_text=body if derail_kind_b == "seed" else None,
+                        )
                     sent_n += len(msgs)
                     await _bump_metric(redis, "messages_sent", len(msgs))
                     ap_frag = _factory_turn_antiparrot_compare_text(
@@ -2841,6 +3023,8 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                     break
             except ValueError as exc:
                 log.warning("factory_burst_creds_missing", error=str(exc))
+                if derail_kind_b and not burst_derail_committed:
+                    await _derail_restore_claim(redis, derail_kind_b, derail_cont_after_b)
             except Exception as exc:
                 kind = classify_telethon_account_error(exc)
                 if kind == "ban":
@@ -2852,6 +3036,8 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                     await _bump_metric(redis, "flood_waits", 1)
                 else:
                     log.debug("factory_burst_send_failed", error=str(exc))
+                if derail_kind_b and not burst_derail_committed:
+                    await _derail_restore_claim(redis, derail_kind_b, derail_cont_after_b)
         if not picked:
             log.debug("factory_burst_skipped_no_session")
 
@@ -2881,15 +3067,6 @@ async def _factory_converse_slot(
         return {**base_out, "status": "skipped", "reason": "group_id missing"}
 
     gid_int = int(group_id)
-    persona = _session_persona_seed(session_base)
-    global_recent = await _redis_recent_outgoing_fetch(redis)
-
-    if await _is_session_banned(redis, session_base):
-        return {**base_out, "status": "skipped", "reason": "banned"}
-
-    until = await _cooldown_until(redis, session_base)
-    if until and datetime.now(timezone.utc) < until:
-        return {**base_out, "status": "deferred", "reason": "cooldown"}
 
     try:
         import telethon  # noqa: F401
@@ -2916,8 +3093,46 @@ async def _factory_converse_slot(
     elif role == "replier" and active_record:
         active_topic_line = str(active_record.get("text") or "").strip() or None
 
+    news_opener = role == "opener" and opener_fresh_event
+
     if role == "lurk":
+        if await _is_session_banned(redis, session_base):
+            return {**base_out, "status": "skipped", "reason": "banned"}
+        until = await _cooldown_until(redis, session_base)
+        if until and datetime.now(timezone.utc) < until:
+            return {**base_out, "status": "deferred", "reason": "cooldown"}
         return {**base_out, "status": "completed", "action": "lurk"}
+
+    if news_opener:
+        rotated = all_sessions[si:] + all_sessions[:si]
+        picked_news: str | None = None
+        for cand in rotated:
+            if await _is_session_banned(redis, cand):
+                continue
+            until_c = await _cooldown_until(redis, cand)
+            if until_c and datetime.now(timezone.utc) < until_c:
+                continue
+            if session_is_asleep_jerusalem(cand):
+                continue
+            picked_news = cand
+            break
+        if picked_news is None:
+            return {
+                **base_out,
+                "status": "skipped",
+                "reason": "news_opener_all_sleeping_or_busy",
+            }
+        session_base = picked_news
+        base_out = {**base_out, "session": session_base[:48]}
+    else:
+        if await _is_session_banned(redis, session_base):
+            return {**base_out, "status": "skipped", "reason": "banned"}
+        until = await _cooldown_until(redis, session_base)
+        if until and datetime.now(timezone.utc) < until:
+            return {**base_out, "status": "deferred", "reason": "cooldown"}
+
+    persona = _session_persona_seed(session_base)
+    global_recent = await _redis_recent_outgoing_fetch(redis)
 
     if role == "reactor":
         anchor_id = thread_ids[-1]
@@ -2950,8 +3165,10 @@ async def _factory_converse_slot(
 
     reply_to_id: int | None = None
     stance = random.choice(AMCHA_STANCES_HE)
-    news_opener = role == "opener" and opener_fresh_event
 
+    derail_kind: str | None = None
+    derail_cont_after: int | None = None
+    derail_send_done = False
     sent_list: list[Any] = []
     try:
         async with async_telegram_client(session_base, parameters) as client:
@@ -3005,6 +3222,10 @@ async def _factory_converse_slot(
                         }
                 except Exception as exc:
                     log.debug("factory_bot_chain_check_failed", error=str(exc))
+            derail_kind, derail_cont_after = await _derail_claim_for_turn(redis)
+            if derail_kind:
+                news_opener = False
+                opener_fresh_event = False
             last_five_block = _last_five_prompt_block(refs_newest_first)
             pick_pool = refs_newest_first[:5]
             if pick_pool and random.random() < 0.6:
@@ -3033,6 +3254,9 @@ async def _factory_converse_slot(
             lore_line = await _maybe_sample_lore_for_amcha(
                 redis, privileged_anchor=privileged_anchor
             )
+            derail_anchor = ""
+            if derail_kind == "contagion" and redis is not None:
+                derail_anchor = str(await redis.get(KEY_DERAIL_ANCHOR) or "")
             turn = await _generate_unique_amcha_turn(
                 redis,
                 gid_int,
@@ -3053,9 +3277,26 @@ async def _factory_converse_slot(
                 community_lore_line=lore_line,
                 global_recent_outgoing=global_recent,
                 privileged_anchor=privileged_anchor,
+                derail_mode=derail_kind,
+                derail_anchor_text=derail_anchor or None,
             )
             if turn is None:
+                await _derail_restore_claim(redis, derail_kind, derail_cont_after)
                 return {**base_out, "status": "skipped", "reason": "antiparrot_group_recent"}
+            if derail_kind == "seed":
+                mt_seed = str(turn.get("primary_message") or turn.get("message_text") or "").strip()
+                if not mt_seed:
+                    mt_seed = "מישהו מכיר שרברב טוב בפתח תקווה בלי עקיצות"
+                turn = {
+                    **turn,
+                    "action_type": "text",
+                    "message_text": mt_seed,
+                    "primary_message": mt_seed,
+                    "article_url": "",
+                    "link_label": "",
+                    "needs_correction": False,
+                    "correction_message": "",
+                }
             original_action = str(turn.get("action_type") or "text").strip().lower()
             media_slot_acquired = False
             if original_action in ("sticker", "gif", "image"):
@@ -3124,11 +3365,22 @@ async def _factory_converse_slot(
                 news_opener=news_opener,
                 use_md=use_md,
             )
+            if derail_kind and not sent_list:
+                await _derail_restore_claim(redis, derail_kind, derail_cont_after)
+            elif sent_list:
+                derail_send_done = True
+                await _global_swarm_bump_after_send(
+                    redis,
+                    n_bot_messages=len(sent_list),
+                    derail_kind=derail_kind,
+                    contagion_after=derail_cont_after,
+                    seed_anchor_text=summary_line if derail_kind == "seed" else None,
+                )
             sent = sent_list[0] if sent_list else None
             mid = getattr(sent, "id", None) if sent is not None else None
             if mid is not None and role == "opener":
                 await _thread_ids_push(redis, gid_int, int(mid))
-            if role == "opener" and opener_fresh_event:
+            if role == "opener" and opener_fresh_event and not derail_kind:
                 await _active_topic_write(redis, gid_int, summary_line)
             if mid is not None and news_opener:
                 burst_carry = dict(carry)
@@ -3165,6 +3417,8 @@ async def _factory_converse_slot(
         await _bump_metric(redis, "messages_sent", len(sent_list))
     except ValueError as exc:
         log.warning("factory_converse_creds_missing", error=str(exc))
+        if derail_kind and not derail_send_done:
+            await _derail_restore_claim(redis, derail_kind, derail_cont_after)
     except Exception as exc:
         kind = classify_telethon_account_error(exc)
         if kind == "ban":
@@ -3176,6 +3430,8 @@ async def _factory_converse_slot(
             await _bump_metric(redis, "flood_waits", 1)
         else:
             log.warning("factory_converse_send_failed", error=str(exc))
+        if derail_kind and not derail_send_done:
+            await _derail_restore_claim(redis, derail_kind, derail_cont_after)
 
     return {**base_out, "status": "completed", "action": role}
 

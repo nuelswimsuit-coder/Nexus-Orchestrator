@@ -2,7 +2,14 @@
 Swarm Social Synthesis — master-side scheduler for ``swarm.group_warmer``.
 
 Polls Redis every minute, dispatches a tick when ``next_run_at`` is due (or
-missing on first run). Uses a short-lived Redis lock to avoid duplicate jobs.
+missing on first run). Uses a Redis lock to avoid duplicate jobs (TTL covers
+long ``pre_tick_sleep_s`` when digest-driven stagger is active).
+
+When several groups are due in the same sweep **and** the central news digest
+was updated recently (see ``SWARM_WARMER_DIGEST_STAGGER_WINDOW_S``), each job
+gets a random ``pre_tick_sleep_s`` between 10 and 45 minutes so workers do not
+all post at once.
+
 Optional one-time seed from ``SWARM_WARMER_CONFIG`` (path to JSON file).
 """
 
@@ -11,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 from datetime import datetime, timezone
 from typing import Any
 
@@ -74,7 +82,7 @@ class SwarmSocialScheduler:
             return
 
         now = datetime.now(timezone.utc)
-        pending: list[Any] = []
+        to_queue: list[tuple[str, dict[str, Any], int, list[Any]]] = []
         for group_key, cfg in groups.items():
             if not isinstance(cfg, dict):
                 continue
@@ -105,7 +113,31 @@ class SwarmSocialScheduler:
                 except Exception:
                     pass
 
-            pending.append(self._dispatch_group_warmer(group_key, cfg, int(gid), sessions))
+            to_queue.append((str(group_key), cfg, int(gid), sessions))
+
+        digest_stagger = False
+        if len(to_queue) > 1:
+            try:
+                from nexus.services.recent_news_digest import NEWS_DIGEST_UPDATED_AT_KEY
+
+                win = float(os.getenv("SWARM_WARMER_DIGEST_STAGGER_WINDOW_S", "900") or "900")
+                win = max(60.0, min(7200.0, win))
+                raw_ts = await self._redis.get(NEWS_DIGEST_UPDATED_AT_KEY)
+                if raw_ts:
+                    du = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+                    if du.tzinfo is None:
+                        du = du.replace(tzinfo=timezone.utc)
+                    age = (now - du).total_seconds()
+                    digest_stagger = 0.0 <= age <= win
+            except Exception:
+                digest_stagger = False
+
+        pending: list[Any] = []
+        for gk, cfg, gid, sessions in to_queue:
+            pre_s = random.randint(600, 2700) if digest_stagger else 0
+            pending.append(
+                self._dispatch_group_warmer(gk, cfg, gid, sessions, pre_tick_sleep_s=pre_s)
+            )
 
         if pending:
             await asyncio.gather(*pending)
@@ -116,26 +148,31 @@ class SwarmSocialScheduler:
         cfg: dict[str, Any],
         gid: int,
         sessions: list[Any],
+        pre_tick_sleep_s: int = 0,
     ) -> None:
         lock_key = f"{SWARM_LOCK_PREFIX}{group_key}"
-        got = await self._redis.set(lock_key, "1", nx=True, ex=900)
+        got = await self._redis.set(lock_key, "1", nx=True, ex=4500)
         if not got:
             return
 
+        params: dict[str, Any] = {
+            "group_key": str(group_key),
+            "group_id": gid,
+            "sessions": sessions,
+            "timezone": str(cfg.get("timezone", "UTC") or "UTC"),
+            "action": "tick",
+            "group_title": str(cfg.get("group_title", "") or ""),
+            "engagement_mode": str(cfg.get("engagement_mode", "") or ""),
+            "turns_per_tick": cfg.get("turns_per_tick"),
+            "intra_turn_min_s": cfg.get("intra_turn_min_s"),
+            "intra_turn_max_s": cfg.get("intra_turn_max_s"),
+        }
+        if pre_tick_sleep_s > 0:
+            params["pre_tick_sleep_s"] = float(pre_tick_sleep_s)
+
         task = TaskPayload(
             task_type="swarm.group_warmer",
-            parameters={
-                "group_key": str(group_key),
-                "group_id": gid,
-                "sessions": sessions,
-                "timezone": str(cfg.get("timezone", "UTC") or "UTC"),
-                "action": "tick",
-                "group_title": str(cfg.get("group_title", "") or ""),
-                "engagement_mode": str(cfg.get("engagement_mode", "") or ""),
-                "turns_per_tick": cfg.get("turns_per_tick"),
-                "intra_turn_min_s": cfg.get("intra_turn_min_s"),
-                "intra_turn_max_s": cfg.get("intra_turn_max_s"),
-            },
+            parameters=params,
             project_id="swarm-social",
         )
         try:

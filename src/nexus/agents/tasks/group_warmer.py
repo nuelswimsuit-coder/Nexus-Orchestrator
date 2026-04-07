@@ -148,6 +148,32 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _pick_peer_reply_id(
+    id_map: list[dict[str, Any]],
+    peer_handles: list[str],
+) -> int | None:
+    """Telegram message id of a recent @username peer (native reply target)."""
+    want = {str(h).lstrip("@").strip() for h in peer_handles if str(h).strip()}
+    if not want:
+        return None
+    peer_ids: list[int] = []
+    for m in id_map:
+        if not isinstance(m, dict):
+            continue
+        sdr = str(m.get("sender", "")).strip()
+        if not sdr.startswith("@"):
+            continue
+        uname = (sdr[1:].split() or [""])[0].strip()
+        if uname in want:
+            try:
+                peer_ids.append(int(m["id"]))
+            except (TypeError, ValueError, KeyError):
+                continue
+    if not peer_ids:
+        return None
+    return int(random.choice(peer_ids))
+
+
 async def _redis_json_get(redis: Any, key: str) -> dict[str, Any]:
     if redis is None:
         return {}
@@ -430,7 +456,7 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                     if turn_i == 0:
                         drama_directive = (
                             "BOT_A_HOT_TAKE: Drop a bold Hebrew opinion on the topic (spicy, group-chat energy). "
-                            "Provoke reactions; you may @mention someone from the list."
+                            "Provoke reactions; use reply_to_id to a peer if you engage them — never @ in text."
                         )
                     elif turn_i == 1:
                         prev_mid = message_ids[0] if message_ids else None
@@ -448,8 +474,9 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                             forced_rid = int(target)
                         if chain_root_handle:
                             drama_directive = (
-                                f"BOT_C_DEFENDER: Defend @{chain_root_handle} against the cynic — push back, take their side. "
-                                "Use @ in the text if that handle is in other_participant_handles."
+                                "BOT_C_DEFENDER: Defend the hot-take opener against the cynic — push back, take their side. "
+                                f"Opener handle in context: {chain_root_handle}. "
+                                "Use reply_to_id to their message id from the map; never type @ in the line."
                             )
                         else:
                             drama_directive = (
@@ -479,8 +506,13 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                         forced_rid = int(prev_bot_mid)
                         drama_directive = (
                             "DISAGREE_PREV: You MUST disagree with or challenge what the previous bot implied — "
-                            "no agreeing; blunt Hebrew @mention them if you see their handle in the thread map."
+                            "no agreeing; use reply_to_id to their message; never @ in text."
                         )
+
+                if forced_rid is None and other_handles and id_map:
+                    peer_mid = _pick_peer_reply_id(id_map, other_handles)
+                    if peer_mid is not None and random.random() < 0.42:
+                        forced_rid = peer_mid
 
                 nd = news_bundle.digest_text if turn_i == 0 else ""
                 ah = news_bundle.anchor_title if turn_i == 0 else ""
@@ -491,7 +523,7 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                     hooks=hooks,
                     transcript=transcript,
                     speaker=speaker,
-                    other_handles=[f"@{h}" for h in other_handles],
+                    other_handles=list(other_handles),
                     message_index_map=id_map,
                     news_digest=nd,
                     anchor_headline=ah,
@@ -530,7 +562,7 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                                 hooks=hooks,
                                 transcript=transcript,
                                 speaker=speaker,
-                                other_handles=[f"@{h}" for h in other_handles],
+                                other_handles=list(other_handles),
                                 message_index_map=id_map,
                                 news_digest=nd,
                                 anchor_headline=ah,
@@ -581,13 +613,13 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                                     )
                                     photo_bytes = None
                             if photo_bytes:
-                                await wait_global_media_send_turn(redis)
                                 salt = make_image_upload_salt_seed(Path(session_path).stem)
                                 photo_bytes, _ = prepare_jpeg_png_for_telegram_upload(
                                     photo_bytes, salt_seed=salt
                                 )
                                 fname = telegram_image_filename_from_bytes(photo_bytes)
                                 bio = BytesIO(photo_bytes)
+                                await wait_global_media_send_turn(redis)
                                 try:
                                     sent = await poster.send_file(
                                         post_entity,

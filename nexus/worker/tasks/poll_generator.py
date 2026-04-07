@@ -280,6 +280,7 @@ async def poll_generator(parameters: dict[str, Any]) -> dict[str, Any]:
 @registry.register("swarm.poll.cast_vote")
 async def poll_cast_vote(parameters: dict[str, Any]) -> dict[str, Any]:
     """Cast one Telethon vote using ``functions.messages.SendVoteRequest``."""
+    from telethon.errors import FloodWaitError  # type: ignore[import-untyped]
     from telethon.tl.functions.messages import SendVoteRequest  # type: ignore[import-untyped]
 
     base = str(parameters.get("session_base") or "").strip()
@@ -297,8 +298,13 @@ async def poll_cast_vote(parameters: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         return {"status": "failed", "error": "bad_option_b64"}
 
-    async with async_telegram_client(base, parameters) as client:
-        peer = await client.get_input_entity(chat)
-        await client(SendVoteRequest(peer=peer, msg_id=msg_id, options=[opt]))
+    try:
+        async with async_telegram_client(base, parameters) as client:
+            peer = await client.get_input_entity(chat)
+            await client(SendVoteRequest(peer=peer, msg_id=msg_id, options=[opt]))
+    except FloodWaitError as exc:
+        sec = int(getattr(exc, "seconds", 60) or 60)
+        log.warning("poll_cast_vote_flood_wait", seconds=sec)
+        return {"status": "deferred", "reason": "flood_wait", "seconds": sec, "message_id": msg_id}
 
     return {"status": "ok", "message_id": msg_id}

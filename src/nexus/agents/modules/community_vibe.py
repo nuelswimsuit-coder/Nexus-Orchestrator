@@ -20,7 +20,10 @@ import httpx
 import structlog
 import ujson
 
-from nexus.services.tg_message_text import strip_trailing_israeli_news_outlet
+from nexus.services.tg_message_text import (
+    purge_absolute_news_source_blacklist,
+    strip_trailing_israeli_news_outlet,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -50,6 +53,7 @@ _JSON_HEADERS = {"Content-Type": "application/json; charset=utf-8"}
 
 _RE_HASHTAG = re.compile(r"#\S+")
 _RE_SPACES = re.compile(r"\s{2,}")
+_RE_AT_HANDLE = re.compile(r"@[\w\d_]+")
 _RE_MD_FENCE_OPEN = re.compile(r"^```(?:json)?\s*", re.IGNORECASE)
 _RE_MD_FENCE_CLOSE = re.compile(r"\s*```$")
 
@@ -69,6 +73,12 @@ _LAZY_NEWS_PREFIXES_HE: tuple[str, ...] = (
     "עכשיו ב",
     "מתפרסם ש",
     "פורסם ש",
+)
+_BANNED_SLACK_OPENERS_HE: tuple[str, ...] = (
+    "תכלס וואלה",
+    "תכלס, וואלה",
+    "אמאלה רצח",
+    "אמאלה, רצח",
 )
 _CHATTER_OUTLET_TAIL_RE = re.compile(
     r"\s*[-–—]\s*("
@@ -129,6 +139,28 @@ def _strip_lazy_news_openers_he(text: str) -> str:
     return (t.strip() or s).strip()
 
 
+def _strip_banned_slack_openers_he(text: str) -> str:
+    s = (text or "").strip()
+    if not s:
+        return s
+    t = s
+    for _ in range(4):
+        hit = False
+        for p in _BANNED_SLACK_OPENERS_HE:
+            if t.startswith(p):
+                t = t[len(p) :].lstrip(" ,.:;!?")
+                hit = True
+                break
+        if not hit:
+            break
+    return (t.strip() or s).strip()
+
+
+def _strip_at_mentions(text: str) -> str:
+    s = _RE_AT_HANDLE.sub("", text or "")
+    return _RE_SPACES.sub(" ", s).strip()
+
+
 def _strip_trailing_news_attribution(text: str) -> str:
     s = (text or "").rstrip()
     for _ in range(5):
@@ -150,8 +182,11 @@ def _cap_words(text: str, max_words: int = 10) -> str:
 def _finalize_chatter_line(text: str) -> str:
     s = _strip_hashtags_and_cleanup(text)
     s = _strip_lazy_news_openers_he(s)
+    s = _strip_banned_slack_openers_he(s)
     s = strip_trailing_israeli_news_outlet(s)
     s = _strip_trailing_news_attribution(s)
+    s = purge_absolute_news_source_blacklist(s)
+    s = _strip_at_mentions(s)
     s = _cap_words(s, 10)
     if s and " " not in s:
         s = f"{s} אחי"
@@ -335,22 +370,27 @@ async def compose_chatter_line(
     require_peer_mention: bool = False,
 ) -> dict[str, Any]:
     """
-    Produce one chat line with optional reply and @mentions.
+    Produce one chat line; threading uses Telegram reply_to only (no @ in text).
 
     ``message_index_map``: [{\"id\": telegram int, \"sender\": str}, ...] newest first.
     """
     sys_prompt = (
         "One Telegram line: impatient Israeli, not newsreader. 2–10 words. "
-        "If other_participant_handles non-empty, @mention one peer in text; "
-        "mention_usernames = handles without @.\n"
+        "NEVER use the @ symbol. NEVER type a username or handle manually. "
+        "Just write your conversational response. To engage someone, set reply_to_id to "
+        "their message id from message_ids_newest_first; leave mention_usernames always [].\n"
         "If news_from_last_24h set: one casual reaction, own words — no headline paste, "
-        "no [source], no '- ynet' / outlets.\n"
-        "Forbidden openers: שמעתם כבר, דיווח:, ראיתם מה, לפי דיווח.\n"
+        "no [source], no '- ynet' / '- מעריב' / outlet names (גלובס, וואלה, N12, ערוץ 12, etc.).\n"
+        "Forbidden openers: שמעתם כבר, דיווח:, ראיתם מה, לפי דיווח, תכלס וואלה, אמאלה רצח — "
+        "start mid-thought like a real human (no generic filler prefix).\n"
         "If reply_to_id set: no repeating their facts — reaction only.\n"
-        'JSON only: {"text":"...","reply_to_id":null|int,"mention_usernames":["..."]}'
+        'JSON only: {"text":"...","reply_to_id":null|int,"mention_usernames":[]}'
     )
     if require_peer_mention and other_handles and not privileged_reply_target:
-        sys_prompt += " MANDATORY: @mention from other_participant_handles."
+        sys_prompt += (
+            " MANDATORY: set reply_to_id to a recent message from other_participant_handles "
+            "(pick an id from the map); still no @ in text."
+        )
     if drama_directive and not privileged_reply_target:
         sys_prompt += f"\nScene: {drama_directive.strip()}"
     if privileged_reply_target:
@@ -381,12 +421,33 @@ async def compose_chatter_line(
     if ah:
         user_obj["preferred_anchor_headline"] = ah[:_ANCHOR_HEADLINE_MAX]
     user = ujson.dumps(user_obj, ensure_ascii=False)
+    base_instruction = sys_prompt
     try:
-        out = await _gemini_json(
-            api_key, sys_prompt, user, temperature=0.92, max_tokens=_TOK_CHATTER
-        )
-        if isinstance(out, dict):
-            out["text"] = _finalize_chatter_line(str(out.get("text") or ""))
+        out: dict[str, Any] = {"text": "", "reply_to_id": None, "mention_usernames": []}
+        for attempt in range(3):
+            regen_note = ""
+            if attempt:
+                regen_note = (
+                    "\nREGEN: Previous line was rejected (empty after safety filter). "
+                    "Again: no @, no outlets, mid-thought opener only."
+                )
+            raw_out = await _gemini_json(
+                api_key,
+                base_instruction + regen_note,
+                user,
+                temperature=min(1.0, 0.88 + 0.05 * attempt),
+                max_tokens=_TOK_CHATTER,
+            )
+            if not isinstance(raw_out, dict):
+                raw_out = {}
+            finalized = _finalize_chatter_line(str(raw_out.get("text") or ""))
+            out = {
+                **raw_out,
+                "text": finalized,
+                "mention_usernames": [],
+            }
+            if finalized or attempt == 2:
+                return out
         return out
     except Exception as exc:
         log.warning("compose_chatter_failed", error=str(exc))
