@@ -2226,10 +2226,12 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         )
                     except Exception:
                         privileged_burst = False
-                    turn = await _generate_amcha_turn(
-                        api_key,
-                        topic,
-                        openai_key,
+                    turn = await _generate_unique_amcha_turn(
+                        redis,
+                        gid_int,
+                        api_key=api_key,
+                        topic=topic,
+                        openai_key=openai_key,
                         session_base=session_base,
                         role="replier",
                         stance_he=stance,
@@ -2242,7 +2244,11 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         news_opener=False,
                         persona_seed=_session_persona_seed(session_base),
                         privileged_anchor=privileged_burst,
+                        global_recent_outgoing=global_recent_burst,
                     )
+                    if turn is None:
+                        log.debug("factory_burst_antiparrot_skip", group_id=gid_int)
+                        continue
                     body = _finalize_primary_message(turn["primary_message"])
                     await asyncio.sleep(
                         _reading_delay_before_typing_seconds(last_five, anchor_preview or "", active_topic_line or "")
@@ -2260,6 +2266,12 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                     )
                     sent_n += len(msgs)
                     await _bump_metric(redis, "messages_sent", len(msgs))
+                    ap_frag = _factory_turn_antiparrot_compare_text(
+                        turn, news_opener=False, rich_media_mode=False
+                    )
+                    push_body = (ap_frag or body).strip()[:600]
+                    if push_body:
+                        await _factory_group_recent_sent_push(redis, gid_int, push_body)
                     picked = True
                     break
             except ValueError as exc:
@@ -2440,10 +2452,12 @@ async def _factory_converse_slot(
                 except Exception:
                     privileged_anchor = False
 
-            turn = await _generate_amcha_turn(
-                api_key,
-                topic,
-                openai_key,
+            turn = await _generate_unique_amcha_turn(
+                redis,
+                gid_int,
+                api_key=api_key,
+                topic=topic,
+                openai_key=openai_key,
                 session_base=session_base,
                 role="opener" if role == "opener" else "replier",
                 stance_he=stance,
@@ -2459,6 +2473,8 @@ async def _factory_converse_slot(
                 global_recent_outgoing=global_recent,
                 privileged_anchor=privileged_anchor,
             )
+            if turn is None:
+                return {**base_out, "status": "skipped", "reason": "antiparrot_group_recent"}
             turn["_persona_seed"] = persona
             turn["_media_salt_seed"] = make_image_upload_salt_seed(session_base)
 
@@ -2512,6 +2528,13 @@ async def _factory_converse_slot(
 
             recent_frag = summary_line or str(turn.get("message_text") or turn.get("primary_message") or "")
             await _redis_recent_outgoing_push(redis, recent_frag)
+            if sent_list:
+                ap_frag = _factory_turn_antiparrot_compare_text(
+                    turn, news_opener=news_opener, rich_media_mode=True
+                )
+                push_body = (ap_frag or summary_line or recent_frag).strip()[:600]
+                if push_body:
+                    await _factory_group_recent_sent_push(redis, gid_int, push_body)
 
         await _bump_metric(redis, "messages_sent", len(sent_list))
     except ValueError as exc:

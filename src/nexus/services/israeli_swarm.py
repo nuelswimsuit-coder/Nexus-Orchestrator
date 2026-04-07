@@ -53,6 +53,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any, Literal
 
+from nexus.services.anti_parrot_shield import MAX_REGENERATION_RETRIES, is_too_similar_to_recent
 from nexus.services.recent_news_digest import append_article_link_to_text, telegram_image_filename_from_bytes
 from nexus.services.tg_message_text import strip_trailing_israeli_news_outlet
 
@@ -115,6 +116,59 @@ _REDIS_POKE_KEY = "nexus:swarm:israeli:poke"
 _ISRAELI_HEARTBEAT_KEY = "nexus:swarm:israeli:heartbeat"
 _ISRAELI_ENGINE_PID_KEY = "nexus:swarm:israeli:engine_pid"
 _ISRAELI_SCHEDULE_KEY = "nexus:swarm:israeli:schedule"
+
+# Per-target-group last sent Hebrew lines (Redis list; local fallback if broker fails).
+_israeli_group_recent_sent_local: dict[str, list[str]] = {}
+
+
+def _israeli_group_recent_sent_redis_key(group_link: str) -> str:
+    d = hashlib.sha256(group_link.strip().encode("utf-8")).hexdigest()[:16]
+    return f"nexus:swarm:israeli:group_recent_sent:{d}"
+
+
+async def _israeli_group_recent_sent_fetch(group_link: str) -> list[str]:
+    from nexus.services.anti_parrot_shield import RECENT_SENT_CAP
+
+    rk = _israeli_group_recent_sent_redis_key(group_link)
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import]
+
+        r = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            raw = await r.lrange(rk, 0, RECENT_SENT_CAP - 1)
+        finally:
+            await r.aclose()
+        out: list[str] = []
+        for x in raw or []:
+            s = str(x).strip()
+            if s:
+                out.append(s)
+        return out
+    except Exception:
+        return list(_israeli_group_recent_sent_local.get(rk, []))
+
+
+async def _israeli_group_recent_sent_push(group_link: str, fragment: str) -> None:
+    from nexus.services.anti_parrot_shield import RECENT_SENT_CAP
+
+    frag = (fragment or "").strip()[:600]
+    if not frag:
+        return
+    rk = _israeli_group_recent_sent_redis_key(group_link)
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import]
+
+        r = await aioredis.from_url(_REDIS_URL, decode_responses=True)
+        try:
+            await r.lpush(rk, frag)
+            await r.ltrim(rk, 0, RECENT_SENT_CAP - 1)
+            await r.expire(rk, 1209600)
+        finally:
+            await r.aclose()
+    except Exception:
+        cur = _israeli_group_recent_sent_local.setdefault(rk, [])
+        cur.insert(0, frag)
+        del cur[RECENT_SENT_CAP:]
 
 
 def _write_israeli_schedule_sync(payload: dict[str, Any]) -> None:
@@ -782,6 +836,7 @@ async def _generate_community_message(
     news_digest: str = "",
     anchor_headline: str = "",
     privileged_reply_target: bool = False,
+    regeneration_attempt: int = 0,
 ) -> tuple[str, int | None]:
     """Short colloquial Hebrew line; reply_to is forced for replier role (Redis thread)."""
     angle = random.choice(_NEWS_ANGLES)
@@ -830,6 +885,16 @@ async def _generate_community_message(
             "ההודעה שאתה משיב לה נשלחה על ידי מנהל או בעלים של הקבוצה. "
             "היה מנומס, קצר, בלי ויכוח, בלי קללות ובלי התנגדות אגרסיבית."
         )
+    if regeneration_attempt == 1:
+        user_obj["anti_parrot_regen"] = (
+            "דחייה טכנית: שורה קודמת דומה מדי להודעות שכבר נשלחו בקבוצה. "
+            "חובה: משפט אחר לגמרי — מילים ומבנה שונים, בלי לשכפל ניסוח קודם."
+        )
+    elif regeneration_attempt >= 2:
+        user_obj["anti_parrot_regen"] = (
+            "ניסיון אחרון לפני דילוג: אסור דמיון לשורות שנשלחו לאחרונה בקבוצה. "
+            "זווית חדשה לגמרי — בדיחה, רגש אחר, או נושא אחר."
+        )
     user_payload = json.dumps(user_obj, ensure_ascii=False)
 
     try:
@@ -845,10 +910,11 @@ async def _generate_community_message(
             else ISRAELI_NEWS_SYSTEM_PROMPT
         )
         prompt = f"{base_sys}\n\nהקשר JSON:\n{user_payload}"
+        temp = min(1.0, 0.9 + 0.05 * max(0, regeneration_attempt))
         body = json.dumps(
             {
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"maxOutputTokens": 120, "temperature": 0.9},
+                "generationConfig": {"maxOutputTokens": 120, "temperature": temp},
             }
         ).encode("utf-8")
         req = urllib.request.Request(
@@ -879,6 +945,49 @@ async def _generate_community_message(
 
     text_fb = random.choice(_FALLBACK_CHAT_LINES)
     return _finalize_swarm_llm_line(text_fb), reply_out
+
+
+async def _generate_unique_community_message(
+    group_link: str,
+    transcript: str,
+    meta_newest_first: list[dict[str, Any]],
+    speaker_first: str,
+    speaker_last: str,
+    *,
+    role: Literal["opener", "replier"] = "opener",
+    anchor_preview: str | None = None,
+    forced_reply_to: int | None = None,
+    news_digest: str = "",
+    anchor_headline: str = "",
+    privileged_reply_target: bool = False,
+) -> tuple[str, int | None] | None:
+    """
+    Up to 1 + MAX_REGENERATION_RETRIES Gemini attempts vs last 15 lines sent in this group.
+    None => skip this bot's turn (do not send a parrot line).
+    """
+    recent = await _israeli_group_recent_sent_fetch(group_link)
+    for attempt in range(1 + MAX_REGENERATION_RETRIES):
+        text, reply_out = await _generate_community_message(
+            transcript,
+            meta_newest_first,
+            speaker_first,
+            speaker_last,
+            role=role,
+            anchor_preview=anchor_preview,
+            forced_reply_to=forced_reply_to,
+            news_digest=news_digest,
+            anchor_headline=anchor_headline,
+            privileged_reply_target=privileged_reply_target,
+            regeneration_attempt=attempt,
+        )
+        if not is_too_similar_to_recent(text, recent):
+            return text, reply_out
+        log.debug(
+            "[COMMUNITY] anti-parrot reject attempt=%s sample=%s",
+            attempt + 1,
+            (text or "")[:72],
+        )
+    return None
 
 
 # ── Session Harvester ─────────────────────────────────────────────────────────
@@ -1179,7 +1288,8 @@ class CommunityEngine:
                     privileged_reply = await _anchor_sender_is_privileged(
                         session_file, api_id, api_hash, group_link, forced_reply
                     )
-                message, reply_to = await _generate_community_message(
+                gen_pair = await _generate_unique_community_message(
+                    group_link,
                     transcript,
                     meta_nf,
                     sf,
@@ -1191,8 +1301,11 @@ class CommunityEngine:
                     anchor_headline=news_anchor_str,
                     privileged_reply_target=privileged_reply,
                 )
+                if gen_pair is None:
+                    continue
+                core_line, reply_to = gen_pair
                 message, msg_parse_mode = append_article_link_to_text(
-                    message,
+                    core_line,
                     news_anchor_link,
                     title=news_anchor_str or None,
                 )
@@ -1219,6 +1332,7 @@ class CommunityEngine:
                 if sent:
                     any_sent = True
                     self.messages_sent += 1
+                    await _israeli_group_recent_sent_push(group_link, core_line)
                     if new_mid is not None:
                         await _async_thread_ids_push(group_link, int(new_mid))
                         thread_ids = await _async_thread_ids_read(group_link)
