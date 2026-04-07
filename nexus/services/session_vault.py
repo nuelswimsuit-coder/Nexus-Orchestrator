@@ -93,10 +93,33 @@ def lease_key(stem: str) -> str:
     return f"{LEASE_PREFIX}{stem}"
 
 
+def vault_meta_resolve_api_credentials(data: dict[str, Any]) -> tuple[int, str] | None:
+    """
+    Telethon needs numeric api_id + api_hash string.
+
+    Vault exports often use ``app_id`` / ``app_hash`` (same semantics); official
+    Telethon templates use ``api_id`` / ``api_hash``. Accept either pair.
+    """
+    try:
+        if data.get("api_id") is not None and data.get("api_hash") not in (None, ""):
+            return int(data["api_id"]), str(data["api_hash"]).strip()
+        if data.get("app_id") is not None and data.get("app_hash") not in (None, ""):
+            return int(data["app_id"]), str(data["app_hash"]).strip()
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def vault_meta_has_api_credentials(data: object) -> bool:
+    if not isinstance(data, dict):
+        return False
+    return vault_meta_resolve_api_credentials(data) is not None
+
+
 def discover_meta_paths_from_session_sqlite() -> list[Path]:
     """
     Every Telethon ``*.session`` (sqlite) under the vault must be indexed; pair
-    with ``<stem>.json`` containing ``api_id`` / ``api_hash``.
+    with ``<stem>.json`` containing ``api_id`` / ``api_hash`` or ``app_id`` / ``app_hash``.
     """
     seen: set[Path] = set()
     out: list[Path] = []
@@ -113,7 +136,7 @@ def discover_meta_paths_from_session_sqlite() -> list[Path]:
                 data = json.loads(meta.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            if not isinstance(data, dict) or "api_id" not in data or "api_hash" not in data:
+            if not isinstance(data, dict) or not vault_meta_has_api_credentials(data):
                 continue
             rp = meta.resolve()
             if rp in seen:
@@ -134,12 +157,14 @@ def discover_all_meta_json_files() -> list[Path]:
     for root in vault_candidate_roots():
         if not root.is_dir():
             continue
-        for path in sorted(root.rglob("*.json")):
+        # Only root-level *.json: rglob would pull thousands of copies under
+        # subfolders while Telethon *.session pairs live next to stem.json in practice.
+        for path in sorted(root.glob("*.json")):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            if not isinstance(data, dict) or "api_id" not in data or "api_hash" not in data:
+            if not isinstance(data, dict) or not vault_meta_has_api_credentials(data):
                 continue
             rp = path.resolve()
             if rp in seen:
@@ -189,17 +214,16 @@ def check_session_health_sync(meta_json: Path) -> dict[str, Any]:
         }
 
     phone = meta.get("phone")
-    try:
-        api_id = int(meta["api_id"])
-        api_hash = str(meta["api_hash"])
-    except (KeyError, TypeError, ValueError) as exc:
+    creds = vault_meta_resolve_api_credentials(meta)
+    if creds is None:
         return {
             "session_stem": stem,
             "phone": phone,
             "status": SessionStatus.OFFLINE.value,
             "health": SessionHealth.RED.value,
-            "detail": f"invalid api_id/api_hash: {exc}",
+            "detail": "missing or invalid api_id/api_hash (or app_id/app_hash)",
         }
+    api_id, api_hash = creds
 
     session_base = _session_path_base(meta_json)
     t_kwargs = telethon_connect_kwargs_for_meta_json(meta_json)
@@ -287,8 +311,12 @@ def export_string_session_sync(meta_json: Path) -> dict[str, Any]:
     from telethon.sync import TelegramClient  # type: ignore[import-untyped]
 
     meta = json.loads(meta_json.read_text(encoding="utf-8"))
-    api_id = int(meta["api_id"])
-    api_hash = str(meta["api_hash"])
+    if not isinstance(meta, dict):
+        raise ValueError("meta json is not an object")
+    creds = vault_meta_resolve_api_credentials(meta)
+    if creds is None:
+        raise ValueError("missing api_id/api_hash or app_id/app_hash in meta json")
+    api_id, api_hash = creds
     session_base = _session_path_base(meta_json)
     t_kwargs = telethon_connect_kwargs_for_meta_json(meta_json)
     client = TelegramClient(session_base, api_id, api_hash, **t_kwargs)

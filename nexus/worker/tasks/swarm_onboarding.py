@@ -29,7 +29,7 @@ import structlog
 from nexus.services.session_vault import (
     SessionHealth,
     SessionStatus,
-    discover_all_meta_json_files,
+    discover_meta_paths_from_session_sqlite,
     merge_meta_row,
     meta_key,
     vault_candidate_roots,
@@ -170,8 +170,11 @@ async def _scan_onboarding_targets(
 ) -> tuple[list[Path], dict[str, Any]]:
     """
     Returns eligible meta paths plus counts explaining skips (vault on worker disk vs Redis flags).
+
+    Uses only ``*.session``-paired meta paths (not every ``*.json`` under the vault) so large
+    export trees and orphan JSON files do not slow down or confuse mass join.
     """
-    all_meta = discover_all_meta_json_files()
+    all_meta = discover_meta_paths_from_session_sqlite()
     missing_samples: list[dict[str, str]] = []
     diag: dict[str, Any] = {
         "discovered_meta_json_files": len(all_meta),

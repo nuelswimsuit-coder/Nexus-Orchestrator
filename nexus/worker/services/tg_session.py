@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 import structlog
 
+from nexus.services.session_vault import vault_meta_resolve_api_credentials
 from nexus.shared.tg_connection import (
     telegram_network_slot,
     telethon_connect_kwargs_for_session_base,
@@ -41,8 +42,10 @@ def resolve_telethon_creds(session_base: str, parameters: dict[str, Any]) -> tup
     if meta.is_file():
         try:
             data = json.loads(meta.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and data.get("api_id") and data.get("api_hash"):
-                return int(data["api_id"]), str(data["api_hash"])
+            if isinstance(data, dict):
+                creds = vault_meta_resolve_api_credentials(data)
+                if creds:
+                    return creds[0], creds[1]
         except (OSError, ValueError, TypeError) as exc:
             log.debug("tg_session_meta_read_failed", path=str(meta), error=str(exc))
     return _global_telethon_creds(parameters)
