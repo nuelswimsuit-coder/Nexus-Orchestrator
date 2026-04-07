@@ -8,6 +8,7 @@ debug-*.log
 launcher_debug.txt
 dump.rdb
 watchdog_api.log
+.openclaw_backups/
 src/logs/
 Nexus_Launcher.exe
 Nexus_Master.exe

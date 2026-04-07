@@ -145,6 +145,24 @@ class Settings(BaseSettings):
     # Telefix sessions directory. Override with TELEFIX_SESSIONS_DIR env var.
     telefix_sessions_dir: str = Field(default="")
 
+    # OpenClaw / Moltbot — directory where POST /api/openclaw/settings writes JSON.
+    # Set NEXUS_OPENCLAW_CONTROL_DIR or OPENCLAW_CONTROL_DIR to an absolute path.
+    openclaw_control_dir: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "NEXUS_OPENCLAW_CONTROL_DIR",
+            "OPENCLAW_CONTROL_DIR",
+        ),
+    )
+    # Basename only (no path separators). Moltbot should read this file from openclaw_control_dir.
+    openclaw_settings_filename: str = Field(
+        default="openclaw_settings.json",
+        validation_alias=AliasChoices(
+            "NEXUS_OPENCLAW_SETTINGS_FILENAME",
+            "OPENCLAW_SETTINGS_FILENAME",
+        ),
+    )
+
     # When False, Nexus hides legacy TeleFix bot control (AHU start/stop, etc.).
     legacy_telefix_bot_enabled: bool = Field(default=True)
 

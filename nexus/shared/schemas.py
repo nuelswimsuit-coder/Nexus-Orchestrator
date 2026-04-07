@@ -191,6 +191,7 @@ class NodeHeartbeat(BaseModel):
     local_ip          : LAN IP address of the node (for the dashboard HUD).
     cpu_model         : Human-readable CPU model string (e.g. "AMD Ryzen 9 5900X").
     gpu_model         : GPU model string, or "N/A" if no GPU / detection failed.
+    gpu_mem_used_pct  : GPU VRAM utilisation 0–100 for the primary GPU, or -1 if unknown.
     ram_total_mb      : Total installed RAM in MB.
     active_tasks_count: Number of tasks currently executing on this node.
     os_info           : OS platform string (e.g. "Windows 11", "Ubuntu 22.04").
@@ -215,6 +216,10 @@ class NodeHeartbeat(BaseModel):
     local_ip: str = Field(default="unknown")
     cpu_model: str = Field(default="unknown")
     gpu_model: str = Field(default="N/A")
+    gpu_mem_used_pct: float = Field(
+        default=-1.0,
+        description="GPU framebuffer memory utilisation 0–100; -1 = unavailable",
+    )
     ram_total_mb: float = Field(default=0.0)
     active_tasks_count: int = Field(default=0)
     os_info: str = Field(default="unknown")

@@ -72,6 +72,47 @@ def get_cpu_temperature() -> float:
     return _detect_cpu_temperature()
 
 
+def get_gpu_memory_used_percent() -> float:
+    """
+    Return primary NVIDIA GPU framebuffer utilisation as 0–100, or -1.0 if unknown.
+
+    Not cached — callers may throttle (e.g. once per heartbeat interval).
+    """
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            line = (result.stdout or "").strip().splitlines()
+            if line:
+                parts = [p.strip() for p in line[0].split(",")]
+                if len(parts) >= 2:
+                    used = float(parts[0])
+                    total = float(parts[1])
+                    if total > 0:
+                        return round(100.0 * used / total, 2)
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, IndexError, Exception):
+        pass
+
+    try:
+        import GPUtil  # type: ignore[import-untyped]
+
+        gpus = GPUtil.getGPUs()
+        if gpus:
+            return round(float(gpus[0].memoryUtil) * 100.0, 2)
+    except Exception:
+        pass
+
+    return -1.0
+
+
 # ── Individual detectors ───────────────────────────────────────────────────────
 
 def _detect_local_ip() -> str:

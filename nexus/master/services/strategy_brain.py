@@ -20,6 +20,7 @@ from typing import Any
 import structlog
 
 from nexus.shared.fleet_redis import get_fleet_counter_snapshot
+from nexus.shared.health_monitor import load_openclaw_nexus_sync_status
 from nexus.shared.operator_targets import load_operator_target_patterns
 from nexus.shared.swarm_signals import SWARM_SIGNAL_KEY
 from nexus.worker.tasks.prediction import BINANCE_VELOCITY_KEY
@@ -184,6 +185,8 @@ async def compute_war_room_payload(redis: Any) -> dict[str, Any]:
     if fusion and fusion.get("confidence_pct") is not None:
         confidence = float(fusion["confidence_pct"])
 
+    openclaw_nexus_sync = await load_openclaw_nexus_sync_status(redis)
+
     return {
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "master_confidence_pct": confidence,
@@ -203,6 +206,7 @@ async def compute_war_room_payload(redis: Any) -> dict[str, Any]:
         "strategy_fusion": fusion,
         "fleet_sentiment_cells": await load_sentiment_heatmap(redis),
         "alpha_source_feed": await load_alpha_feed(redis, 16),
+        "openclaw_nexus_sync": openclaw_nexus_sync,
     }
 
 

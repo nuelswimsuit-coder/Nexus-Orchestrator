@@ -96,6 +96,7 @@ from nexus.shared.config import settings  # noqa: E402
 from nexus.shared.logging_config import configure_logging  # noqa: E402
 from nexus.shared.notifications.providers.telegram import TelegramProvider  # noqa: E402
 from nexus.shared.notifications.providers.whatsapp import WhatsAppProvider  # noqa: E402
+from nexus.shared.health_monitor import run_openclaw_health_monitor_loop  # noqa: E402
 from nexus.shared.paths import get_telefix_path  # noqa: E402
 from nexus.shared.reporting import DailyHustleReporter  # noqa: E402
 from nexus.shared.system_settings import sync_runtime_from_system_settings  # noqa: E402
@@ -524,6 +525,21 @@ async def run() -> None:
     strategy_brain = StrategyBrainService(redis=dispatcher._arq)
     asyncio.create_task(strategy_brain.run_loop(), name="strategy-brain")
     log.info("strategy_brain_registered", hint="War-room intel + Kelly / swarm strike logic")
+
+    if os.getenv("NEXUS_OPENCLAW_SYNC_MONITOR", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        asyncio.create_task(
+            run_openclaw_health_monitor_loop(dispatcher._arq, notifier),
+            name="openclaw-sync-health-monitor",
+        )
+        log.info(
+            "openclaw_sync_monitor_registered",
+            hint="Listens for OpenClaw test heartbeat; War Room red alert + admin notify if stale >60m",
+        )
 
     daily_hustle = DailyHustleReporter(notifier=notifier, redis=dispatcher._arq)
     asyncio.create_task(daily_hustle.run_loop(), name="daily-hustle-telegram")

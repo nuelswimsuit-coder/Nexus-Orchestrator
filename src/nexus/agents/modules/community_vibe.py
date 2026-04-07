@@ -20,6 +20,11 @@ import httpx
 import structlog
 import ujson
 
+from nexus.services.conversation_summary_context import (
+    reply_target_ids_newest_first,
+    speaker_persona_for_paid_api,
+    summarize_transcript_for_paid_api,
+)
 from nexus.services.tg_message_text import (
     purge_absolute_news_source_blacklist,
     strip_trailing_israeli_news_outlet,
@@ -378,7 +383,9 @@ async def compose_chatter_line(
         "One Telegram line: impatient Israeli, not newsreader. 2–10 words. "
         "NEVER use the @ symbol. NEVER type a username or handle manually. "
         "Just write your conversational response. To engage someone, set reply_to_id to "
-        "their message id from message_ids_newest_first; leave mention_usernames always [].\n"
+        "a Telegram message id from reply_target_ids_newest_first (newest first); leave mention_usernames always [].\n"
+        "Context is state_of_conversation only (3-line summary of recent chat) plus optional news_from_last_24h — "
+        "not full raw history.\n"
         "If news_from_last_24h set: one casual reaction, own words — no headline paste, "
         "no [source], no '- ynet' / '- מעריב' / outlet names (גלובס, וואלה, N12, ערוץ 12, etc.).\n"
         "Forbidden openers: שמעתם כבר, דיווח:, ראיתם מה, לפי דיווח, תכלס וואלה, אמאלה רצח — "
@@ -388,8 +395,8 @@ async def compose_chatter_line(
     )
     if require_peer_mention and other_handles and not privileged_reply_target:
         sys_prompt += (
-            " MANDATORY: set reply_to_id to a recent message from other_participant_handles "
-            "(pick an id from the map); still no @ in text."
+            " MANDATORY: set reply_to_id to one of the ids in reply_target_ids_newest_first "
+            "(prefer engaging another participant over talking into the void); still no @ in text."
         )
     if drama_directive and not privileged_reply_target:
         sys_prompt += f"\nScene: {drama_directive.strip()}"
@@ -400,14 +407,17 @@ async def compose_chatter_line(
     if forced_reply_to_id is not None:
         sys_prompt += f" reply_to_id must be {int(forced_reply_to_id)}."
 
+    state_of_conversation = await summarize_transcript_for_paid_api(transcript)
+    target_ids = reply_target_ids_newest_first(
+        message_index_map, cap=_MSG_INDEX_MAP_MAX
+    )
     user_obj: dict[str, Any] = {
         "emerging_identity": emerging_identity,
         "discussion_topic": topic,
         "in_universe_hooks": hooks[:_HOOKS_MAX],
-        "recent_transcript": transcript[-_TRANSCRIPT_CHATTER_MAX:],
-        "speaker_persona": speaker,
-        "other_participant_handles": other_handles,
-        "message_ids_newest_first": message_index_map[:_MSG_INDEX_MAP_MAX],
+        "state_of_conversation": state_of_conversation,
+        "speaker_persona": speaker_persona_for_paid_api(speaker),
+        "reply_target_ids_newest_first": target_ids,
     }
     if forced_reply_to_id is not None:
         user_obj["required_reply_to_id"] = int(forced_reply_to_id)

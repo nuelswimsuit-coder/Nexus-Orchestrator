@@ -483,6 +483,7 @@ class Dispatcher:
         """
         import os as _os
         from nexus.agents.hardware import get_hardware_info
+        from nexus.worker.hardware import get_gpu_memory_used_percent
         hw = get_hardware_info()
 
         heartbeat_key = f"{HEARTBEAT_KEY_PREFIX}{self.node_id}"
@@ -499,6 +500,7 @@ class Dispatcher:
             from nexus.shared.system_stats import get_cpu_temp_celsius  # noqa: PLC0415
             raw_temp = get_cpu_temp_celsius()
             cpu_temp_c = raw_temp if raw_temp is not None else -1.0
+            gpu_mem_pct = get_gpu_memory_used_percent()
 
             heartbeat = NodeHeartbeat(
                 node_id=self.node_id,
@@ -511,6 +513,7 @@ class Dispatcher:
                 local_ip=hw["local_ip"],
                 cpu_model=hw["cpu_model"],
                 gpu_model=hw["gpu_model"],
+                gpu_mem_used_pct=gpu_mem_pct,
                 ram_total_mb=hw["ram_total_mb"],
                 active_tasks_count=len(self._in_flight),
                 os_info=hw["os_info"],

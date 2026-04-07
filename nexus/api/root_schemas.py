@@ -33,6 +33,7 @@ class NodeStatus(BaseModel):
     local_ip: str = "unknown"
     cpu_model: str = "unknown"
     gpu_model: str = "N/A"
+    gpu_mem_used_pct: float = -1.0
     ram_total_mb: float = 0.0
     active_tasks_count: int = 0
     os_info: str = "unknown"
@@ -77,6 +78,7 @@ class ClusterHealthNode(BaseModel):
     local_ip: str = "unknown"
     cpu_model: str = "unknown"
     gpu_model: str = "N/A"
+    gpu_mem_used_pct: float = -1.0
     ram_total_mb: float = 0.0
     os_info: str = "unknown"
     display_label: str = Field(

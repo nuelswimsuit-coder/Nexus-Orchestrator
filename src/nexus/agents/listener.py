@@ -485,6 +485,7 @@ async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
 
     from nexus.shared.schemas import NodeHeartbeat, NodeRole
     from nexus.agents.hardware import get_hardware_info
+    from nexus.worker.hardware import get_gpu_memory_used_percent
 
     redis = ctx.get("redis")
     if redis is None:
@@ -500,6 +501,7 @@ async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
     cpu_temp_c = raw_temp if raw_temp is not None else -1.0
 
     display_name = _os.getenv("NODE_DISPLAY_NAME", "")
+    gpu_mem_pct = get_gpu_memory_used_percent()
 
     heartbeat = NodeHeartbeat(
         node_id=WORKER_ID,
@@ -511,6 +513,7 @@ async def _publish_heartbeat(ctx: dict[str, Any]) -> None:
         local_ip=hw["local_ip"],
         cpu_model=hw["cpu_model"],
         gpu_model=hw["gpu_model"],
+        gpu_mem_used_pct=gpu_mem_pct,
         ram_total_mb=hw["ram_total_mb"],
         active_tasks_count=0,
         os_info=hw["os_info"],

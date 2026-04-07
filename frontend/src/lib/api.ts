@@ -311,6 +311,15 @@ export interface FleetAssetsResponse {
   mapper_generated_at?: string | null;
 }
 
+export interface OpenclawNexusSyncStatus {
+  healthy: boolean;
+  last_heartbeat_at: string | null;
+  seconds_since_heartbeat: number | null;
+  alert_level: "ok" | "critical";
+  message: string;
+  stale_threshold_s: number;
+}
+
 export interface WarRoomIntelResponse {
   updated_at: string;
   master_confidence_pct: number;
@@ -333,6 +342,7 @@ export interface WarRoomIntelResponse {
   aggressive_strike: boolean;
   strike_reinvest_pct: number;
   sentiment_heatmap: number[][];
+  openclaw_nexus_sync?: OpenclawNexusSyncStatus;
 }
 
 export function getWarRoomIntel(): Promise<WarRoomIntelResponse> {

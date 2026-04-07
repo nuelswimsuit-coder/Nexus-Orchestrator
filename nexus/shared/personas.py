@@ -9,6 +9,7 @@ with wrap across midnight when start > end (e.g. 22:00–06:00).
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone as dt_timezone
 
@@ -153,3 +154,37 @@ def session_is_asleep_jerusalem(session_base: str, when: datetime | None = None)
 
 # Prompt strings only (for LLM), same order as PERSONA_ARCHETYPES.
 PERSONA_ARCHETYPE_PROMPTS: list[str] = [a.prompt for a in PERSONA_ARCHETYPES]
+
+# OpenClaw self-correction merges extra negative constraints per archetype index (JSON object).
+# Keys are string decimal indices; values are strings or lists of strings. Managed by
+# ``nexus.services.openclaw_self_improve``; edit via that pipeline or carefully by hand.
+OPENCLAW_ARCHETYPE_EXTRA_JSON = "{}"
+
+
+def openclaw_extra_constraint_lines_for_index(ai: int) -> list[str]:
+    try:
+        m = json.loads(OPENCLAW_ARCHETYPE_EXTRA_JSON)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(m, dict):
+        return []
+    raw = m.get(str(int(ai))) or m.get(int(ai))
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw.strip()] if raw.strip() else []
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    return []
+
+
+def effective_persona_prompt_for_archetype_index(ai: int) -> str:
+    """Base archetype prompt plus any OpenClaw-injected negative constraints for ``ai``."""
+    n = len(PERSONA_ARCHETYPES)
+    idx = int(ai) % n if n else 0
+    base = PERSONA_ARCHETYPES[idx].prompt
+    extras = openclaw_extra_constraint_lines_for_index(idx)
+    if not extras:
+        return base
+    joined = " ".join(f"NEGATIVE CONSTRAINT: {x}" for x in extras)
+    return f"{base}\n{joined}"

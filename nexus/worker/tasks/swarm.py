@@ -28,6 +28,7 @@ from nexus.services.anti_parrot_shield import MAX_REGENERATION_RETRIES, is_too_s
 from nexus.services.media_opsec import make_image_upload_salt_seed, prepare_jpeg_png_for_telegram_upload
 from nexus.services.tg_message_text import (
     llm_media_prefix_for_message,
+    purge_absolute_news_source_blacklist,
     strip_trailing_israeli_news_outlet,
     telethon_display_text,
 )
@@ -731,6 +732,178 @@ def _resolve_ollama_model() -> str:
     return (os.getenv("NEXUS_OLLAMA_MODEL") or "llama3").strip() or "llama3"
 
 
+def _resolve_ollama_gatekeeper_model() -> str:
+    """Tiny classifier on the Mac Mini (e.g. Llama-3-8B); defaults to main Ollama model."""
+    return (
+        (os.getenv("NEXUS_OLLAMA_GATEKEEPER_MODEL") or "").strip()
+        or _resolve_ollama_model()
+    )
+
+
+def _ollama_quality_gate_enabled() -> bool:
+    raw = (os.getenv("NEXUS_OLLAMA_QUALITY_GATE") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _turn_blob_for_quality_gate(turn: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in (
+        "primary_message",
+        "message_text",
+        "text",
+        "link_label",
+        "correction_message",
+        "correction",
+    ):
+        v = str(turn.get(key) or "").strip()
+        if v:
+            parts.append(v)
+    return "\n".join(parts).strip()
+
+
+def _parse_gatekeeper_yes_no(raw: str | None) -> bool | None:
+    """
+    Interpret gatekeeper output. True = YES (gibberish or contains '- Ynet' — reject).
+    False = NO (ok). None = unclear — treat as ok to avoid mangling good lines.
+    """
+    s = (raw or "").strip().upper()
+    if not s:
+        return None
+    line = s.split("\n", 1)[0].strip()
+    if line.startswith("YES"):
+        return True
+    if line.startswith("NO"):
+        return False
+    m = re.search(r"\b(YES|NO)\b", line)
+    if m:
+        return m.group(1) == "YES"
+    return None
+
+
+def _scrub_turn_news_leakage(turn: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic cleanup when local repair JSON fails."""
+    out = dict(turn)
+    for k in (
+        "primary_message",
+        "message_text",
+        "text",
+        "link_label",
+        "correction_message",
+        "correction",
+    ):
+        if k not in out:
+            continue
+        v = str(out.get(k) or "").strip()
+        if not v:
+            continue
+        v2 = purge_absolute_news_source_blacklist(v)
+        v2 = strip_trailing_israeli_news_outlet(v2)
+        out[k] = v2
+    return out
+
+
+def _merge_ollama_text_fix_into_turn(
+    turn: dict[str, Any], fix: dict[str, Any]
+) -> dict[str, Any]:
+    out = dict(turn)
+    pm = str(fix.get("primary_message") or fix.get("text") or "").strip()
+    if pm:
+        mt = str(fix.get("message_text") or pm).strip() or pm
+        out["primary_message"] = pm
+        out["message_text"] = mt
+    ll = str(fix.get("link_label") or "").strip()
+    if ll or "link_label" in fix:
+        out["link_label"] = ll
+    return out
+
+
+async def _ollama_quality_gate_classify_bad(
+    base_url: str, model: str, hebrew_blob: str
+) -> bool | None:
+    user = (
+        "Is this Hebrew message gibberish or does it contain '- Ynet'? Answer YES/NO.\n\n"
+        f"{hebrew_blob[:4000]}"
+    )
+    raw = await _ollama_chat_completion_content(
+        base_url,
+        model,
+        "",
+        user,
+        temperature=0.0,
+        top_p=0.2,
+        max_tokens=8,
+        timeout_sec=35.0,
+    )
+    return _parse_gatekeeper_yes_no(raw)
+
+
+async def _ollama_repair_cloud_turn_locally(
+    base_url: str,
+    model: str,
+    blob: str,
+) -> dict[str, Any] | None:
+    sys_h = (
+        "You repair Hebrew Telegram lines for a news-discussion group. "
+        "Remove gibberish, fix broken Hebrew, and remove '- Ynet' and other news-site attribution. "
+        "Output ONLY one JSON object, no markdown."
+    )
+    user = (
+        "Fix these field lines (same intent, natural Israeli Hebrew, short like chat).\n\n"
+        f"{blob[:3500]}\n\n"
+        'Return only JSON: {"primary_message":"...","message_text":"...","link_label":"..."} '
+        "Use the same keys that had content; message_text may equal primary_message; "
+        "link_label must be generic Hebrew without site names or empty string."
+    )
+    raw = await _ollama_chat_completion_content(
+        base_url,
+        model,
+        sys_h,
+        user,
+        temperature=0.35,
+        top_p=0.85,
+        max_tokens=256,
+        timeout_sec=90.0,
+    )
+    if not raw:
+        return None
+    obj = parse_json_object(raw)
+    return obj if isinstance(obj, dict) else None
+
+
+async def _apply_cloud_llm_quality_gate(
+    turn: dict[str, Any],
+    *,
+    rich_media_mode: bool,
+    ollama_base: str,
+) -> dict[str, Any]:
+    """
+    After Gemini/OpenAI: Mac Mini Ollama classifies the Hebrew blob; if bad, repair locally
+    (no second paid call).
+    """
+    if not _ollama_quality_gate_enabled():
+        return turn
+    base = (ollama_base or "").strip().rstrip("/")
+    if not base:
+        return turn
+    blob = _turn_blob_for_quality_gate(turn)
+    if len(blob) < 2:
+        return turn
+    gk_model = _resolve_ollama_gatekeeper_model()
+    is_bad = await _ollama_quality_gate_classify_bad(base, gk_model, blob)
+    if is_bad is not True:
+        return turn
+    log.info("factory_ollama_quality_gate_reject", preview=blob[:100])
+    fix_model = (os.getenv("NEXUS_OLLAMA_FIX_MODEL") or "").strip() or _resolve_ollama_model()
+    fixed_obj = await _ollama_repair_cloud_turn_locally(base, fix_model, blob)
+    if isinstance(fixed_obj, dict):
+        merged = _merge_ollama_text_fix_into_turn(turn, fixed_obj)
+        pm = str(merged.get("primary_message") or merged.get("message_text") or "").strip()
+        if pm:
+            return _apply_anti_robot_to_turn_dict(merged, rich_media_mode=rich_media_mode)
+    scrubbed = _scrub_turn_news_leakage(turn)
+    return _apply_anti_robot_to_turn_dict(scrubbed, rich_media_mode=rich_media_mode)
+
+
 def _reading_delay_before_typing_seconds(*context_parts: str, wpm: int = 250) -> float:
     """Simulate reading incoming chat before showing the typing indicator (250 WPM default)."""
     combined = " ".join((p or "").strip() for p in context_parts if (p or "").strip())
@@ -1015,6 +1188,7 @@ async def _global_swarm_bump_after_send(
 async def _generate_unique_amcha_turn(redis: Any, group_id: int, **kwargs: Any) -> dict[str, Any] | None:
     """Up to 1 + MAX_REGENERATION_RETRIES generations; None => skip send (too similar to recent group lines)."""
     kwargs.pop("regeneration_attempt", None)
+    kwargs["redis_for_news_digest"] = redis
     news_opener = bool(kwargs.get("news_opener"))
     rich_media_mode = bool(kwargs.get("rich_media_mode"))
     recent = await _factory_group_recent_sent_fetch(redis, group_id)
@@ -1323,6 +1497,7 @@ async def _ollama_chat_completion_content(
     temperature: float,
     top_p: float,
     max_tokens: int,
+    timeout_sec: float = 120.0,
 ) -> str | None:
     """Ollama OpenAI-compatible /api/chat — returns assistant message text."""
     import httpx
@@ -1342,7 +1517,7 @@ async def _ollama_chat_completion_content(
         },
     }
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=float(timeout_sec)) as client:
             r = await client.post(url, json=payload)
             r.raise_for_status()
             data = r.json()
@@ -1380,6 +1555,7 @@ async def _generate_amcha_turn(
     regeneration_attempt: int = 0,
     derail_mode: str | None = None,
     derail_anchor_text: str | None = None,
+    redis_for_news_digest: Any | None = None,
 ) -> dict[str, Any]:
     anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
     anti += _global_outgoing_prompt_suffix(list(global_recent_outgoing or []))
@@ -1392,6 +1568,31 @@ async def _generate_amcha_turn(
     effective_stance = (
         random.choice(AMCHA_STANCES_PRIVILEGED_HE) if privileged_anchor else stance_he
     )
+
+    core_analysis: dict[str, Any] | None = None
+    nb_cached: Any = None
+    if news_opener and redis_for_news_digest is not None:
+        try:
+            from nexus.services.recent_news_digest import get_tick_news_bundle_for_consumer
+            from nexus.shared.intelligence_cache import compute_news_id, ensure_core_analysis
+
+            nb_cached = await get_tick_news_bundle_for_consumer(redis_for_news_digest)
+            nt = (nb_cached.anchor_title or "").strip()
+            nd = (nb_cached.digest_text or "").strip()
+            nl = (nb_cached.anchor_link or "").strip()
+            if nt or nd or nl:
+                nid = compute_news_id(nt, nl, nd)
+                core_analysis = await ensure_core_analysis(
+                    redis_for_news_digest,
+                    news_id=nid,
+                    anchor_title=nt,
+                    anchor_link=nl,
+                    digest_snippet=nd[:4000],
+                    gemini_api_key=api_key,
+                    holder_id=(session_base or "")[:80] or "session",
+                )
+        except Exception as exc:
+            log.debug("factory_master_thought_prefetch_failed", error=str(exc))
 
     if rich_media_mode:
         json_schema = (
@@ -1468,10 +1669,30 @@ async def _generate_amcha_turn(
             f"{opener_news_clause}\n{typo_rule}\n{anti}\n{json_schema}"
         )
     elif role == "opener" and news_opener:
+        digest_hint = ""
+        nb = nb_cached
+        if nb is None and redis_for_news_digest is not None:
+            try:
+                from nexus.services.recent_news_digest import get_tick_news_bundle_for_consumer
+
+                nb = await get_tick_news_bundle_for_consumer(redis_for_news_digest)
+            except Exception as exc:
+                log.debug("factory_news_opener_digest_bundle_failed", error=str(exc))
+                nb = None
+        if nb is not None:
+            parts: list[str] = []
+            if (nb.digest_text or "").strip():
+                parts.append(f"שורות עדכון (רקע בלבד, לא להעתיק מילה במילה): {nb.digest_text[:1200]}")
+            if (nb.anchor_title or "").strip():
+                parts.append(f"כותרת מובילה (רקע): {nb.anchor_title[:400]}")
+            if (nb.anchor_link or "").strip():
+                parts.append(f"קישור מוביל (לשימוש ב-article_url אם מתאים): {nb.anchor_link[:2000]}")
+            digest_hint = "\n".join(parts)
+        digest_block = f"\n{digest_hint}\n" if digest_hint else "\n"
         user_he = (
             f"{last_five_block}\n\n{effective_stance}\n\n"
             f"הנחיה: שמועה/פלאש/מה זה עכשיו — קבוצת חדשות בטלגרם. "
-            f'רקע רחב בלבד: "{topic}".\n'
+            f'רקע רחב בלבד: "{topic}".{digest_block}'
             f"{opener_news_clause}\n{typo_rule}\n{anti}\n{json_schema}"
         )
     else:
@@ -1494,6 +1715,11 @@ async def _generate_amcha_turn(
             "אסור לחזור על עובדות או ניסוח מהציטוט — רק תגובה אישית קצרה (2–10 מילים).\n"
             f"{typo_rule}\n{anti}\n{json_schema}"
         )
+
+    if core_analysis is not None and news_opener:
+        from nexus.shared.intelligence_cache import augment_user_prompt_with_core_analysis
+
+        user_he = augment_user_prompt_with_core_analysis(user_he, core_analysis)
 
     if regeneration_attempt == 1:
         user_he += (
@@ -1623,7 +1849,11 @@ async def _generate_amcha_turn(
             )
             processed = _postprocess_llm_dict(out) if isinstance(out, dict) else None
             if processed is not None:
-                return processed
+                return await _apply_cloud_llm_quality_gate(
+                    processed,
+                    rich_media_mode=rich_media_mode,
+                    ollama_base=ollama_base,
+                )
         except Exception as exc:
             log.warning("factory_gemini_failed", error=str(exc))
 
@@ -1655,7 +1885,11 @@ async def _generate_amcha_turn(
                 if obj:
                     processed = _postprocess_llm_dict(obj)
                     if processed is not None:
-                        return processed
+                        return await _apply_cloud_llm_quality_gate(
+                            processed,
+                            rich_media_mode=rich_media_mode,
+                            ollama_base=ollama_base,
+                        )
         except Exception as exc:
             log.warning("factory_openai_failed", error=str(exc))
 
@@ -2350,6 +2584,46 @@ async def swarm_lore_nightly(parameters: dict[str, Any]) -> dict[str, Any]:
         "error": last_exc or "no_session_succeeded",
         "group_id": target_gid,
     }
+
+
+DIGEST_WAKE_LOCK_PREFIX = "nexus:swarm:factory:digest_wake_lock:"
+
+
+async def schedule_converse_tick_on_swarm_news_digest_message(
+    redis: Any, *, raw_payload: str
+) -> dict[str, Any]:
+    """
+    Invoked when a message is received on ``nexus:swarm:news_digest`` (e.g. OpenClaw
+    after updating the central digest in Redis). Enqueues a one-shot
+    ``converse_tick`` with ``news_digest_wake`` so opener slots run the news/LLM
+    path immediately without waiting for the active-topic TTL.
+    """
+    if redis is None:
+        return {"ok": False, "reason": "no_redis"}
+    raw = raw_payload or ""
+    h = hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:32]
+    lock_key = f"{DIGEST_WAKE_LOCK_PREFIX}{h}"
+    try:
+        got = await redis.set(lock_key, "1", nx=True, ex=120)
+    except Exception as exc:
+        log.warning("swarm_digest_wake_lock_failed", error=str(exc))
+        return {"ok": False, "reason": "lock_error"}
+    if not got:
+        return {"ok": False, "reason": "deduped"}
+
+    state = await _redis_json_get(redis, KEY_STATE)
+    groups = await _redis_json_get(redis, KEY_GROUPS)
+    if not isinstance(state, dict) or state.get("phase") != "chatting":
+        return {"ok": False, "reason": "not_chatting"}
+    if not isinstance(groups, list) or not groups:
+        return {"ok": False, "reason": "no_groups"}
+
+    sd = str(state.get("sessions_dir") or "").strip()
+    if not sd:
+        sd = str(_resolve_sessions_dir(None))
+    params: dict[str, Any] = {"sessions_dir": sd, "news_digest_wake": True}
+    enq = await _enqueue_task("swarm.community_factory.converse_tick", params)
+    return {"ok": bool(enq), "reason": "enqueued" if enq else "enqueue_failed"}
 
 
 async def _enqueue_task(task_type: str, parameters: dict[str, Any]) -> bool:
@@ -3054,6 +3328,7 @@ async def _factory_converse_slot(
     groups: list[dict[str, Any]],
     all_sessions: list[str],
     carry: dict[str, Any],
+    news_digest_wake: bool = False,
 ) -> dict[str, Any]:
     """One session×group converse attempt; exceptions should be caught by the gather wrapper."""
     gi = slot_index % len(groups)
@@ -3090,10 +3365,20 @@ async def _factory_converse_slot(
         opener_fresh_event = _active_topic_should_refresh(active_record, event_threshold_sec)
         if not opener_fresh_event and active_record:
             active_topic_line = str(active_record.get("text") or "").strip() or None
+        if news_digest_wake:
+            opener_fresh_event = True
+            active_topic_line = None
     elif role == "replier" and active_record:
         active_topic_line = str(active_record.get("text") or "").strip() or None
 
     news_opener = role == "opener" and opener_fresh_event
+
+    if news_opener and news_digest_wake:
+        log.info(
+            "factory_converse_news_digest_wake_slot",
+            group_id=gid_int,
+            **{"Source": "OpenClaw"},
+        )
 
     if role == "lurk":
         if await _is_session_banned(redis, session_base):
@@ -3439,6 +3724,7 @@ async def _factory_converse_slot(
 @registry.register("swarm.community_factory.converse_tick")
 async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[str, Any]:
     redis = parameters.get("__redis__")
+    news_digest_wake_once = bool(parameters.pop("news_digest_wake", False))
     api_key = _resolve_api_key(parameters)
     openai_key = _resolve_openai_key(parameters)
 
@@ -3502,6 +3788,7 @@ async def community_factory_converse_tick(parameters: dict[str, Any]) -> dict[st
                 groups=groups,
                 all_sessions=all_sessions,
                 carry=carry,
+                news_digest_wake=news_digest_wake_once,
             )
         except Exception as exc:
             log.warning("factory_converse_slot_failed", slot=cidx + k, error=str(exc))

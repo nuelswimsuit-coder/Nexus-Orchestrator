@@ -51,9 +51,38 @@ export default function WarRoomIntel() {
   const conf = data.master_confidence_pct;
   const race = data.race_to_1000_pct;
   const grid = data.sentiment_heatmap ?? [];
+  const sync = data.openclaw_nexus_sync;
+  const syncCritical = sync?.alert_level === "critical";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1.1rem" }}>
+      {syncCritical && (
+        <div
+          role="alert"
+          style={{
+            padding: "0.85rem 1rem",
+            borderRadius: "10px",
+            border: stealth ? "1px solid #1e293b" : "1px solid rgba(248,113,113,0.55)",
+            background: stealth ? "transparent" : "rgba(127,29,29,0.45)",
+            fontFamily: "var(--font-mono)",
+            fontSize: "0.72rem",
+            lineHeight: 1.55,
+            color: stealth ? "#1e293b" : "#fecaca",
+            letterSpacing: "0.04em",
+          }}
+        >
+          <strong style={{ color: stealth ? "#1e293b" : "#fff" }}>OPENCLAW ↔ NEXUS — RED ALERT</strong>
+          <div style={{ marginTop: "0.35rem" }}>{sync?.message}</div>
+          {sync?.last_heartbeat_at != null && (
+            <div style={{ marginTop: "0.25rem", opacity: 0.9 }}>
+              Last test heartbeat: {sync.last_heartbeat_at}
+              {sync.seconds_since_heartbeat != null
+                ? ` · ${Math.round(sync.seconds_since_heartbeat)}s ago`
+                : ""}
+            </div>
+          )}
+        </div>
+      )}
       <div
         style={{
           display: "grid",
