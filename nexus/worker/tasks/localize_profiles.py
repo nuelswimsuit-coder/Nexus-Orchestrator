@@ -1,75 +1,50 @@
 """
-Standalone maintenance: set Telethon user display names to Hebrew (Israeli-style)
-when the display name is empty or contains Latin letters (e.g. English names).
+Standalone maintenance: set Hebrew Israeli display names on vault Telethon sessions
+whose current profile contains Latin letters (A–Z).
 
-Run (from repo root)::
+Unlike swarm's ``_display_name_is_non_israeli`` (Hebrew presence / short-Latin rules),
+this script localizes whenever ``[A-Za-z]`` appears in first+last name.
 
-    python -m nexus.worker.tasks.localize_profiles
+OPSEC: at most 20 successful ``UpdateProfileRequest`` calls per rolling hour, and
+``asyncio.sleep(random.randint(60, 300))`` after each successful update.
 
-**Vault mode (default)** — scans Nexus session vault for ``*.session`` + ``*.json``
-meta (``api_id`` / ``api_hash``). Override vault root with ``NEXUS_SESSION_VAULT_DIR``.
+Run from repo root (PYTHONPATH=. or editable install)::
 
-**Flat directory mode (plan)** — set ``TELEGRAM_API_ID``, ``TELEGRAM_API_HASH``, and
-``TELEGRAM_SESSIONS_DIR`` (or pass ``--sessions-dir``). Non-recursive scan for
-``*.session`` in that folder; same API credentials for every file.
-
-OPSEC: random 60–300s pause after each successful update and at most 20 updates
-per rolling hour.
-
-Environment
------------
-NEXUS_SESSION_VAULT_DIR — vault root for default mode
-TELEGRAM_API_ID / TELEGRAM_API_HASH — required for flat directory mode
-TELEGRAM_SESSIONS_DIR — directory of ``*.session`` files for flat mode
+    python -m nexus.worker.tasks.localize_profiles --dry-run
+    python -m nexus.worker.tasks.localize_profiles --limit 3
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
-import os
 import random
 import re
 import time
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import structlog
 
-from nexus.services.session_vault import (
-    discover_meta_paths_from_session_sqlite,
-    vault_meta_resolve_api_credentials,
-)
-from nexus.shared.logging_config import configure_logging
-from nexus.shared.tg_connection import (
-    telegram_network_slot,
-    telethon_connect_kwargs_for_session_base,
+from nexus.services.session_vault import discover_meta_paths_from_session_sqlite
+from nexus.worker.services.tg_session import (
+    async_telegram_client,
+    flood_wait_seconds,
 )
 
 log = structlog.get_logger(__name__)
 
-# Telegram display-name limits (Telethon / MTProto)
-_NAME_MAX_LEN = 64
+_TELEGRAM_NAME_MAX = 64
+_MAX_UPDATES_PER_ROLLING_HOUR = 20
+_ROLLING_WINDOW_S = 3600
+_POST_UPDATE_SLEEP_MIN_S = 60
+_POST_UPDATE_SLEEP_MAX_S = 300
+_FLOOD_WAIT_RETRIES = 1
 
+# --- Large Hebrew-only pools (authentic Israeli given names + surnames) ---
 
-def _dedupe_preserve_order(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for x in items:
-        t = (x or "").strip()
-        if not t or t in seen:
-            continue
-        seen.add(t)
-        out.append(t)
-    return out
-
-
-# ── Authentic Israeli name pools (Hebrew script; male/female given + surnames) ─
-
-_ISRAELI_FIRST_NAMES_MALE_RAW: list[str] = [
+ISRAELI_FIRST_NAMES_MALE: list[str] = [
     "יוסי",
     "דני",
     "אורי",
@@ -100,85 +75,76 @@ _ISRAELI_FIRST_NAMES_MALE_RAW: list[str] = [
     "יונתן",
     "דור",
     "מאור",
-    "איתן",
-    "בני",
-    "דוד",
+    "אליהו",
     "משה",
-    "יואב",
-    "אילן",
-    "עוז",
+    "דוד",
+    "יעקב",
+    "אהרן",
+    "שמואל",
+    "איתמר",
     "גלעד",
-    "אופיר",
-    "דורון",
-    "יובל",
+    "זיו",
     "קובי",
     "רמי",
-    "אהרון",
-    "יעקב",
-    "שמואל",
-    "אריאל",
-    "רפאל",
-    "אסף",
-    "עומרי",
+    "ירון",
+    "עופר",
+    "אילן",
     "ניר",
-    "גדעון",
-    "אביחי",
-    "מתן",
-    "אלעד",
-    "רז",
-    "עמוס",
-    "צחי",
-    "רום",
+    "דקל",
     "אורן",
-    "פלג",
-    "אליהו",
-    "מאיר",
-    "חיים",
-    "שלמה",
-    "מנחם",
-    "יצחק",
-    "מור",
-    "אבירם",
-    "אלכסנדר",
-    "מקס",
-    "טל",
-    "עומרי",
-    "אופק",
-    "נבו",
-    "אילי",
-    "רועי",
-    "אמנון",
-    "זיו",
-    "ליאם",
-    "ניתאי",
-    "אור",
-    "אליאב",
-    "איתמר",
-    "אבישי",
-    "יהונתן",
-    "אליה",
-    "יואל",
-    "אבינועם",
-    "רביד",
     "עידן",
-    "שחר",
-    "אלמוג",
-    "אוריאל",
-    "אביאל",
-    "נתן",
-    "שגיא",
-    "רון",
-    "עדי",
     "לירן",
-    "אמית",
-    "אביב",
-    "אלרואי",
-    "אבנר",
-    "אלחנן",
-    "יוגב",
+    "אופק",
+    "ניתאי",
+    "אסף",
+    "אמנון",
+    "יגאל",
+    "ראובן",
+    "שמעון",
+    "יהודה",
+    "אפרים",
+    "מנחם",
+    "יואב",
+    "ברק",
+    "דורון",
+    "אלכס",
+    "גיל",
+    "חיים",
+    "יוחאי",
+    "יוסף",
+    "מאיר",
+    "מוטי",
+    "סרגיי",
+    "פיני",
+    "צחי",
+    "קורן",
+    "רפאל",
+    "שחר",
+    "תבור",
+    "ארז",
+    "בועז",
+    "גדעון",
+    "דניאל",
+    "הראל",
+    "זהר",
+    "חגי",
+    "טל",
+    "יובל",
+    "כרמל",
+    "ליאם",
+    "מורן",
+    "נבו",
+    "סהר",
+    "עומרי",
+    "פלג",
+    "צבי",
+    "קייס",
+    "רום",
+    "שגיא",
+    "תאו",
 ]
 
-_ISRAELI_FIRST_NAMES_FEMALE_RAW: list[str] = [
+ISRAELI_FIRST_NAMES_FEMALE: list[str] = [
     "מיכל",
     "נועה",
     "שירה",
@@ -199,586 +165,401 @@ _ISRAELI_FIRST_NAMES_FEMALE_RAW: list[str] = [
     "רוני",
     "מיטל",
     "עדי",
-    "שני",
-    "סתיו",
-    "הדר",
-    "גל",
-    "מעיין",
+    "סיגל",
+    "אורית",
+    "טלי",
+    "עדיה",
+    "נוגה",
+    "גילי",
+    "דפנה",
+    "מרב",
+    "עופרה",
     "רונית",
+    "יפעת",
     "אילנה",
-    "מירב",
-    "שושנה",
-    "רחל",
+    "נטע",
     "שרה",
+    "רחל",
+    "מרים",
     "לאה",
     "אסתר",
-    "נעמה",
-    "תהילה",
-    "אורית",
-    "דפנה",
-    "מורן",
-    "שירלי",
-    "לימור",
-    "ענבר",
-    "נגה",
+    "חנה",
+    "רויטל",
+    "שרון",
+    "סיון",
+    "ניצה",
+    "גלית",
     "אפרת",
-    "טלי",
+    "נעמה",
+    "הדר",
+    "שי-לי",
     "מאי",
     "נוי",
-    "אגם",
-    "שי-לי",
-    "גילי",
-    "שירן",
-    "ליאורה",
-    "אורנה",
-    "חנה",
-    "מרים",
-    "רבקה",
-    "אילנית",
-    "שולמית",
-    "יובל",
-    "נועם",
-    "אלה",
-    "דורית",
-    "יעלה",
-    "מיטל",
-    "ניצן",
-    "פנינה",
+    "פז",
     "ציפי",
-    "קורל",
-    "רינה",
-    "שי",
-    "תכלת",
-    "אביגיל",
-    "אופירה",
-    "איילת",
-    "אילת",
-    "אלונה",
-    "אריאלה",
+    "קארין",
+    "רינת",
+    "תהילה",
+    "אגם",
     "בת-שבע",
-    "גאיה",
-    "גיל",
-    "דיאנה",
-    "הודיה",
-    "זהבה",
+    "גפן",
+    "דורית",
+    "הילי",
+    "ויקי",
+    "זוהר",
     "חגית",
     "טובה",
-    "יאסמין",
+    "כרמית",
+    "ליאורה",
+    "מוריה",
+    "נורית",
+    "סימה",
+    "עלמה",
+    "פנינה",
+    "צליל",
+    "קורל",
+    "רעות",
+    "תכלת",
+    "אבישג",
+    "בר",
+    "דניאלה",
+    "ורד",
+    "חן",
+    "כנרת",
+    "ענבר",
+    "ציפורה",
+    "קלרה",
+    "שיר",
 ]
 
-_ISRAELI_LAST_NAMES_RAW: list[str] = [
+ISRAELI_LAST_NAMES: list[str] = [
     "כהן",
     "לוי",
     "מזרחי",
-    "דהן",
     "אברהם",
+    "דהן",
     "ביטון",
     "פרידמן",
     "שפירא",
-    "אביב",
     "גולן",
     "ברק",
     "אדרי",
-    "חדד",
-    "אזולאי",
-    "בן דוד",
-    "פרץ",
-    "בוסקילה",
-    "אוחנה",
-    "זיו",
-    "מלכה",
-    "אלון",
-    "בן חמו",
-    "לוין",
-    "שטרן",
-    "רוזן",
     "גרין",
+    "רוזן",
     "קליין",
+    "אשכנזי",
     "סגל",
     "טל",
     "נחום",
     "אורבך",
     "חיים",
-    "יוסף",
     "דוד",
     "משה",
-    "אשכנזי",
-    "רוזנברג",
-    "גולדשטיין",
-    "וייס",
-    "שלום",
-    "מזרחי",
-    "פרידמן",
-    "ביטון",
-    "כהן",
-    "לוי",
-    "אברהם",
-    "דהן",
-    "חזן",
-    "אלבז",
-    "אמסלם",
-    "אוחיון",
-    "בן סימון",
-    "בן עמי",
-    "גבאי",
-    "גמליאל",
-    "גרוסמן",
-    "דנינו",
-    "הרשקוביץ",
-    "זלצר",
-    "חנוכה",
-    "טובי",
-    "יאיר",
-    "כרמלי",
-    "לביא",
-    "מלכה",
-    "נחמני",
-    "סבג",
-    "עזריה",
-    "פנחס",
-    "צדוק",
-    "קורן",
-    "רבינוביץ",
+    "יוסף",
+    "זיו",
     "שמש",
-    "תורגמן",
     "אילן",
     "נבו",
-    "עזרא",
-    "בן ארי",
-    "בן גל",
-    "בן חיים",
-    "בן יוסף",
-    "בן שושן",
-    "ברמן",
+    "עזריה",
+    "מלכה",
+    "פרץ",
+    "אזולאי",
+    "אוחיון",
+    "אלבז",
+    "אלון",
+    "אלחדד",
+    "אמסלם",
+    "ארביב",
+    "בן-דוד",
+    "בן-עמי",
+    "ברוך",
+    "גבאי",
+    "גולדשטיין",
+    "גורן",
+    "דנינו",
+    "הרשקוביץ",
+    "ויזל",
+    "וינברג",
+    "זלצר",
+    "חזן",
+    "טובי",
+    "טורגמן",
+    "יאיר",
+    "כהנא",
+    "לביא",
+    "לוין",
+    "מאיר",
+    "מורד",
+    "מילר",
+    "מלכה",
+    "נחמני",
+    "סויסה",
+    "סלומון",
+    "עוז",
+    "עידן",
+    "פוגל",
+    "צדקיהו",
+    "צמח",
+    "קדוש",
+    "קורן",
+    "קפלן",
+    "רבינוביץ",
+    "שטרן",
+    "שטרית",
+    "שמעוני",
+    "תורגמן",
+    "אביטל",
+    "אבנר",
+    "אהרוני",
+    "אוחנה",
+    "אלמוג",
+    "בן-ארי",
+    "בן-חיים",
+    "בן-שושן",
     "גוטמן",
-    "גרטנר",
+    "גרוס",
+    "דוידי",
     "הלפרין",
-    "זוהר",
-    "חביב",
-    "טביב",
+    "חדד",
+    "טויטו",
+    "יוגב",
     "כץ",
     "לנדאו",
     "מנדלסון",
-    "נחשון",
-    "סויסה",
-    "עמיר",
-    "פוגל",
-    "צור",
-    "קפלן",
-    "רוזנטל",
-    "שטיין",
-    "תמיר",
-    "אדר",
-    "בן אליעזר",
-    "גביש",
-    "דניאל",
-    "הכהן",
-    "זינגר",
-    "חמו",
-    "טולידנו",
-    "כרמל",
-    "לנצט",
-    "מזוז",
-    "נחשון",
-    "סורוקין",
+    "נתן",
+    "סבן",
+    "סלע",
+    "עמר",
     "פלד",
     "צוקר",
-    "קדוש",
-    "רוט",
-    "שוהם",
-    "תורני",
+    "קימחי",
+    "רוזנברג",
+    "שאול",
+    "שביט",
+    "שושני",
+    "תמם",
+    "אדר",
+    "אריאל",
+    "בוסקילה",
+    "גמליאל",
+    "דניאל",
+    "חכמון",
+    "טביב",
+    "ישראלי",
+    "כהן-צדק",
+    "מזוז",
+    "משעלי",
+    "עוזרי",
+    "פנחס",
+    "צור",
+    "קוריאט",
+    "רוטשטיין",
+    "שאולוב",
+    "שטרק",
+    "שמחה",
+    "גינזבורג",
+    "וינוקור",
+    "זקס",
+    "חביב",
+    "טולידנו",
+    "יושע",
+    "כהן-אלון",
+    "לבנון",
+    "מימון",
+    "נחשון",
+    "סורוקה",
+    "עוזר",
+    "פנקס",
+    "צרפתי",
+    "קופר",
+    "רוזנטל",
+    "שבתאי",
+    "שפיגל",
+    "תבורי",
 ]
 
-ISRAELI_FIRST_NAMES_MALE = _dedupe_preserve_order(_ISRAELI_FIRST_NAMES_MALE_RAW)
-ISRAELI_FIRST_NAMES_FEMALE = _dedupe_preserve_order(_ISRAELI_FIRST_NAMES_FEMALE_RAW)
-ISRAELI_LAST_NAMES = _dedupe_preserve_order(_ISRAELI_LAST_NAMES_RAW)
-
-_LATIN_LETTER = re.compile(r"[A-Za-z]")
+_LATIN_IN_NAME = re.compile(r"[A-Za-z]")
 
 
-def _truncate(s: str) -> str:
+def _truncate_field(s: str) -> str:
     t = (s or "").strip()
-    if len(t) <= _NAME_MAX_LEN:
+    if len(t) <= _TELEGRAM_NAME_MAX:
         return t
-    return t[:_NAME_MAX_LEN]
+    return t[:_TELEGRAM_NAME_MAX]
 
 
-def profile_has_english(first_name: str | None, last_name: str | None) -> bool:
-    """True if either name field contains ASCII Latin letters."""
-    for part in (first_name or "", last_name or ""):
-        if _LATIN_LETTER.search(part):
-            return True
-    return False
+def display_name_contains_latin(first: str | None, last: str | None) -> bool:
+    combined = f"{first or ''} {last or ''}".strip()
+    if not combined:
+        return False
+    return _LATIN_IN_NAME.search(combined) is not None
 
 
-def needs_profile_localization(first_name: str | None, last_name: str | None) -> bool:
-    """Empty combined name or any Latin letter → localize (per maintenance plan)."""
-    fn = first_name or ""
-    ln = last_name or ""
-    if not f"{fn} {ln}".strip():
-        return True
-    return profile_has_english(fn, ln)
+def roll_hebrew_display_name(rng: random.Random) -> tuple[str, str]:
+    pool = ISRAELI_FIRST_NAMES_MALE if rng.random() < 0.5 else ISRAELI_FIRST_NAMES_FEMALE
+    first = _truncate_field(rng.choice(pool))
+    last = _truncate_field(rng.choice(ISRAELI_LAST_NAMES))
+    return first, last
 
 
-def pick_hebrew_name_pair(rng: random.Random) -> tuple[str, str]:
-    """Random Hebrew first (gendered pool) + Hebrew surname."""
-    if rng.random() < 0.5:
-        first = rng.choice(ISRAELI_FIRST_NAMES_MALE)
-    else:
-        first = rng.choice(ISRAELI_FIRST_NAMES_FEMALE)
-    last = rng.choice(ISRAELI_LAST_NAMES)
-    return _truncate(first), _truncate(last)
-
-
-def _prune_hour_window(q: deque[float], now: float) -> None:
-    while q and now - q[0] >= 3600.0:
-        q.popleft()
-
-
-async def _wait_for_hourly_slot(update_times: deque[float]) -> None:
-    """Block until fewer than 20 updates occurred in the last rolling hour."""
+async def _wait_rate_slot(update_times: deque[float]) -> None:
     while True:
-        now = time.monotonic()
-        _prune_hour_window(update_times, now)
-        if len(update_times) < 20:
+        now = time.time()
+        while update_times and update_times[0] < now - _ROLLING_WINDOW_S:
+            update_times.popleft()
+        if len(update_times) < _MAX_UPDATES_PER_ROLLING_HOUR:
             return
-        wait_s = max(1.0, 3600.0 - (now - update_times[0]) + random.uniform(1.0, 15.0))
-        log.info("localize_profiles_hourly_cap_wait", seconds=round(wait_s, 1))
-        await asyncio.sleep(wait_s)
+        oldest = update_times[0]
+        wait_s = oldest + _ROLLING_WINDOW_S - now + random.uniform(1.0, 8.0)
+        log.info(
+            "localize_profiles_rate_limit_wait",
+            wait_s=round(wait_s, 1),
+            in_window=len(update_times),
+        )
+        await asyncio.sleep(max(wait_s, 1.0))
 
 
-@dataclass(frozen=True)
-class _SessionWorkItem:
-    stem: str
-    session_base: str
-    api_id: int
-    api_hash: str
-
-
-def _scan_flat_session_dir(root: Path) -> list[Path]:
-    if not root.is_dir():
-        return []
-    return sorted(p for p in root.glob("*.session") if p.is_file())
-
-
-def _env_flat_api_credentials() -> tuple[int, str] | None:
-    raw_id = (os.environ.get("TELEGRAM_API_ID") or "").strip()
-    api_hash = (os.environ.get("TELEGRAM_API_HASH") or "").strip()
-    if not raw_id or not api_hash:
-        return None
-    try:
-        return int(raw_id), api_hash
-    except ValueError:
-        return None
-
-
-async def _run_localize_session(
-    item: _SessionWorkItem,
+async def _apply_profile_update(
+    client: Any,
+    first: str,
+    last: str,
     *,
-    dry_run: bool,
-    rng: random.Random,
     update_times: deque[float],
-) -> dict[str, Any]:
-    from telethon import TelegramClient  # type: ignore[import-untyped]
+) -> bool:
     from telethon.errors import FloodWaitError  # type: ignore[import-untyped]
     from telethon.tl.functions.account import UpdateProfileRequest  # type: ignore[import-untyped]
 
-    stem = item.stem
-    session_base = item.session_base
-    extra = telethon_connect_kwargs_for_session_base(session_base, stem)
+    await _wait_rate_slot(update_times)
 
-    async with telegram_network_slot(task_name="localize_profiles"):
-        async with TelegramClient(
-            session_base, item.api_id, item.api_hash, **extra
-        ) as client:
+    attempt = 0
+    while True:
+        try:
+            await client(UpdateProfileRequest(first_name=first, last_name=last))
+            update_times.append(time.time())
+            return True
+        except FloodWaitError as exc:
+            wait = flood_wait_seconds(exc)
+            log.warning("localize_profiles_flood_wait", seconds=wait, attempt=attempt)
+            await asyncio.sleep(wait)
+            attempt += 1
+            if attempt > _FLOOD_WAIT_RETRIES:
+                log.error("localize_profiles_flood_wait_give_up", attempts=attempt)
+                return False
+
+
+async def _process_session(
+    meta_json: Path,
+    parameters: dict[str, Any],
+    *,
+    rng: random.Random,
+    dry_run: bool,
+    update_times: deque[float],
+) -> None:
+    session_base = str(meta_json.with_suffix(""))
+    stem = Path(session_base).name
+
+    try:
+        async with async_telegram_client(session_base, parameters) as client:
             if not await client.is_user_authorized():
-                return {"stem": stem, "ok": False, "action": "skip", "detail": "not authorized"}
+                log.warning("localize_profiles_skip_unauthorized", stem=stem)
+                return
 
             me = await client.get_me()
             uid = getattr(me, "id", None)
-            fn = me.first_name or ""
-            ln = me.last_name or ""
+            fn_old = str(getattr(me, "first_name", None) or "")
+            ln_old = str(getattr(me, "last_name", None) or "")
 
-            if not needs_profile_localization(me.first_name, me.last_name):
-                return {
-                    "stem": stem,
-                    "ok": True,
-                    "action": "unchanged",
-                    "detail": "already Hebrew-only non-empty name",
-                    "user_id": uid,
-                    "first_name": fn,
-                    "last_name": ln,
-                }
+            if not display_name_contains_latin(fn_old, ln_old):
+                log.info(
+                    "localize_profiles_skip_no_latin",
+                    stem=stem,
+                    user_id=uid,
+                )
+                return
 
-            new_fn, new_ln = pick_hebrew_name_pair(rng)
+            fn_new, ln_new = roll_hebrew_display_name(rng)
 
             if dry_run:
-                return {
-                    "stem": stem,
-                    "ok": True,
-                    "action": "dry_run",
-                    "detail": "would update",
-                    "user_id": uid,
-                    "old_first": fn,
-                    "old_last": ln,
-                    "new_first": new_fn,
-                    "new_last": new_ln,
-                }
-
-            await _wait_for_hourly_slot(update_times)
-
-            async def _do_update() -> None:
-                await client(
-                    UpdateProfileRequest(
-                        first_name=new_fn,
-                        last_name=new_ln,
-                    )
+                log.info(
+                    "localize_profiles_dry_run",
+                    stem=stem,
+                    user_id=uid,
+                    old_first=fn_old,
+                    old_last=ln_old,
+                    new_first=fn_new,
+                    new_last=ln_new,
                 )
+                return
 
-            try:
-                await _do_update()
-            except FloodWaitError as exc:
-                sec = min(int(getattr(exc, "seconds", 300) or 300), 3600)
-                log.warning("localize_profiles_flood_wait", stem=stem, seconds=sec)
-                await asyncio.sleep(sec)
-                try:
-                    await _do_update()
-                except Exception as exc2:
-                    log.warning("localize_profiles_update_failed", stem=stem, error=str(exc2))
-                    return {"stem": stem, "ok": False, "action": "error", "detail": str(exc2)}
-            except Exception as exc:
-                log.warning("localize_profiles_update_failed", stem=stem, error=str(exc))
-                return {"stem": stem, "ok": False, "action": "error", "detail": str(exc)}
-
-            update_times.append(time.monotonic())
-            log.info(
-                "localize_profiles_updated",
-                stem=stem,
-                user_id=uid,
-                new_first=new_fn,
-                new_last=new_ln,
-            )
-            return {
-                "stem": stem,
-                "ok": True,
-                "action": "updated",
-                "user_id": uid,
-                "old_first": fn,
-                "old_last": ln,
-                "new_first": new_fn,
-                "new_last": new_ln,
-            }
-
-
-async def _process_vault_meta(
-    meta_json: Path,
-    *,
-    dry_run: bool,
-    rng: random.Random,
-    update_times: deque[float],
-) -> dict[str, Any]:
-    stem = meta_json.stem
-    session_base = str(meta_json.with_suffix(""))
-    try:
-        raw = json.loads(meta_json.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return {"stem": stem, "ok": False, "action": "error", "detail": f"meta read: {exc}"}
-
-    if not isinstance(raw, dict):
-        return {"stem": stem, "ok": False, "action": "error", "detail": "meta not an object"}
-
-    creds = vault_meta_resolve_api_credentials(raw)
-    if not creds:
-        return {"stem": stem, "ok": False, "action": "skip", "detail": "no api_id/api_hash in meta"}
-
-    api_id, api_hash = creds
-    item = _SessionWorkItem(
-        stem=stem, session_base=session_base, api_id=api_id, api_hash=api_hash
-    )
-    return await _run_localize_session(item, dry_run=dry_run, rng=rng, update_times=update_times)
-
-
-async def _process_flat_session_file(
-    session_file: Path,
-    *,
-    api_id: int,
-    api_hash: str,
-    dry_run: bool,
-    rng: random.Random,
-    update_times: deque[float],
-) -> dict[str, Any]:
-    stem = session_file.stem
-    session_base = str(session_file.resolve().with_suffix(""))
-    item = _SessionWorkItem(
-        stem=stem, session_base=session_base, api_id=api_id, api_hash=api_hash
-    )
-    return await _run_localize_session(item, dry_run=dry_run, rng=rng, update_times=update_times)
-
-
-async def run_localize_profiles(
-    *,
-    dry_run: bool = False,
-    limit: int | None = None,
-    shuffle: bool = True,
-    flat_sessions_dir: Path | None = None,
-) -> list[dict[str, Any]]:
-    """
-    Vault mode: scan session vault metas (per-session API credentials).
-
-    Flat mode: ``flat_sessions_dir`` set → non-recursive ``*.session`` scan;
-    requires ``TELEGRAM_API_ID`` / ``TELEGRAM_API_HASH`` in the environment.
-
-    For each authorized account that needs localization (empty name or Latin
-    letters), apply a Hebrew name pair unless ``dry_run``.
-    """
-    rng = random.Random()
-    update_times: deque[float] = deque()
-    results: list[dict[str, Any]] = []
-
-    if flat_sessions_dir is not None:
-        creds = _env_flat_api_credentials()
-        if not creds:
-            log.error(
-                "localize_profiles_flat_mode_missing_api",
-                hint="set TELEGRAM_API_ID and TELEGRAM_API_HASH",
-            )
-            return [
-                {
-                    "stem": "",
-                    "ok": False,
-                    "action": "error",
-                    "detail": "flat mode requires TELEGRAM_API_ID and TELEGRAM_API_HASH",
-                }
-            ]
-        api_id, api_hash = creds
-        paths = _scan_flat_session_dir(flat_sessions_dir.resolve())
-        if shuffle:
-            random.shuffle(paths)
-        if limit is not None and limit > 0:
-            paths = paths[:limit]
-        if not flat_sessions_dir.is_dir():
-            log.warning(
-                "localize_profiles_flat_dir_missing",
-                dir=str(flat_sessions_dir.resolve()),
-            )
-        log.info(
-            "localize_profiles_flat_scan",
-            dir=str(flat_sessions_dir.resolve()),
-            count=len(paths),
-        )
-        for sess_path in paths:
-            res = await _process_flat_session_file(
-                sess_path,
-                api_id=api_id,
-                api_hash=api_hash,
-                dry_run=dry_run,
-                rng=rng,
+            ok = await _apply_profile_update(
+                client,
+                fn_new,
+                ln_new,
                 update_times=update_times,
             )
-            results.append(res)
-            if res.get("action") == "updated" and not dry_run:
-                delay = random.randint(60, 300)
-                log.info("localize_profiles_opsec_sleep", seconds=delay, stem=res.get("stem"))
+            if ok:
+                log.info(
+                    "localize_profiles_updated",
+                    stem=stem,
+                    user_id=uid,
+                    new_first=fn_new,
+                    new_last=ln_new,
+                )
+                delay = random.randint(_POST_UPDATE_SLEEP_MIN_S, _POST_UPDATE_SLEEP_MAX_S)
+                log.info("localize_profiles_post_update_sleep", seconds=delay)
                 await asyncio.sleep(delay)
-            elif res.get("action") == "error":
-                await asyncio.sleep(random.randint(5, 15))
             else:
-                await asyncio.sleep(random.randint(2, 8))
-        return results
+                log.error("localize_profiles_update_failed", stem=stem, user_id=uid)
 
-    metas = discover_meta_paths_from_session_sqlite()
-    if shuffle:
-        random.shuffle(metas)
-    if limit is not None and limit > 0:
-        metas = metas[:limit]
-
-    for meta in metas:
-        res = await _process_vault_meta(
-            meta,
-            dry_run=dry_run,
-            rng=rng,
-            update_times=update_times,
-        )
-        results.append(res)
-
-        if res.get("action") == "updated" and not dry_run:
-            delay = random.randint(60, 300)
-            log.info("localize_profiles_opsec_sleep", seconds=delay, stem=res.get("stem"))
-            await asyncio.sleep(delay)
-        elif res.get("action") == "error":
-            await asyncio.sleep(random.randint(5, 15))
-        else:
-            await asyncio.sleep(random.randint(2, 8))
-
-    return results
+    except ValueError as exc:
+        log.warning("localize_profiles_skip_no_creds", stem=stem, error=str(exc))
+    except Exception as exc:
+        log.exception("localize_profiles_session_error", stem=stem, error=str(exc))
 
 
-def _summarize(rows: list[dict[str, Any]]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for r in rows:
-        a = str(r.get("action") or "unknown")
-        counts[a] = counts.get(a, 0) + 1
-    return counts
+async def main_async(*, dry_run: bool, limit: int | None) -> int:
+    meta_paths = discover_meta_paths_from_session_sqlite()
+    if limit is not None:
+        meta_paths = meta_paths[: max(0, limit)]
 
-
-def _default_telegram_sessions_dir() -> Path | None:
-    raw = (os.environ.get("TELEGRAM_SESSIONS_DIR") or "").strip()
-    if not raw:
-        return None
-    return Path(raw).expanduser().resolve()
-
-
-async def _async_main() -> int:
-    configure_logging()
-    parser = argparse.ArgumentParser(description="Localize Telegram profiles to Hebrew names.")
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Only print what would change; no Telegram writes.",
+    log.info(
+        "localize_profiles_start",
+        sessions=len(meta_paths),
+        dry_run=dry_run,
     )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=0,
-        help="Process at most N sessions (0 = all).",
-    )
-    parser.add_argument(
-        "--no-shuffle",
-        action="store_true",
-        help="Process sessions in sorted path order instead of random.",
-    )
-    parser.add_argument(
-        "--sessions-dir",
-        type=Path,
-        default=None,
-        help=(
-            "Non-recursive scan for *.session (flat mode). "
-            "Default: TELEGRAM_SESSIONS_DIR if set, else Nexus vault discovery."
-        ),
-    )
-    args = parser.parse_args()
-    lim = args.limit if args.limit and args.limit > 0 else None
 
-    flat_dir: Path | None = None
-    if args.sessions_dir is not None:
-        flat_dir = args.sessions_dir.expanduser().resolve()
-    else:
-        flat_dir = _default_telegram_sessions_dir()
+    parameters: dict[str, Any] = {}
+    rng = random.Random()
+    update_times: deque[float] = deque()
 
-    rows = await run_localize_profiles(
-        dry_run=args.dry_run,
-        limit=lim,
-        shuffle=not args.no_shuffle,
-        flat_sessions_dir=flat_dir,
-    )
-    summary = _summarize(rows)
-    log.info("localize_profiles_done", summary=summary, total=len(rows))
-    print(json.dumps({"summary": summary, "total": len(rows)}, ensure_ascii=False, indent=2))
+    for meta in meta_paths:
+        await _process_session(meta, parameters, rng=rng, dry_run=dry_run, update_times=update_times)
+
+    log.info("localize_profiles_done")
     return 0
 
 
 def main() -> None:
-    raise SystemExit(asyncio.run(_async_main()))
+    parser = argparse.ArgumentParser(description="Localize Telegram profile names to Hebrew (vault sessions).")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Log proposed changes without calling UpdateProfileRequest.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Process at most N sessions (discovery order).",
+    )
+    args = parser.parse_args()
+    try:
+        code = asyncio.run(main_async(dry_run=args.dry_run, limit=args.limit))
+    except KeyboardInterrupt:
+        log.warning("localize_profiles_interrupted")
+        raise SystemExit(130) from None
+    raise SystemExit(code)
 
 
 if __name__ == "__main__":
