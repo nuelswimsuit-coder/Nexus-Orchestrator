@@ -229,16 +229,28 @@ export default function DeployTerminal() {
         `Triggered — ${API_BASE.replace("http://", "")} (worker_linux + worker_windows)`,
       ),
     );
-
-    openDeployStream("worker_linux");
-    setTimeout(() => openDeployStream("worker_windows"), 1400);
+    addLine(
+      makeLine("API", "#475569", "POST /api/deploy/sync (timeout 30s)…"),
+    );
 
     try {
       const res = await triggerSync();
       addLine(makeLine("JOB", "#475569", res.job_id));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setErrMsg(msg);
+      setPhase("error");
+      addLine(makeLine("ERROR", "#ef4444", msg));
+      streamsRef.current.forEach(es => es.close());
+      streamsRef.current.clear();
+      return;
+    }
 
-      let pollCount = 0;
-      statusPollRef.current = setInterval(async () => {
+    openDeployStream("worker_linux");
+    setTimeout(() => openDeployStream("worker_windows"), 400);
+
+    let pollCount = 0;
+    statusPollRef.current = setInterval(async () => {
         pollCount++;
         try {
           const st = await getDeployStatus();
@@ -312,14 +324,6 @@ export default function DeployTerminal() {
           }
         }
       }, 2_000);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrMsg(msg);
-      setPhase("error");
-      addLine(makeLine("ERROR", "#ef4444", msg));
-      streamsRef.current.forEach(es => es.close());
-      streamsRef.current.clear();
-    }
   }, [addLine, openDeployStream, setPhase]);
 
   const isRunning = phaseLocal === "running";

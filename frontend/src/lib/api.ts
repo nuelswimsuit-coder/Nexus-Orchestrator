@@ -56,17 +56,49 @@ function _formatApiErrorBody(status: number, body: string): string {
   return raw.slice(0, 800);
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(_resolveApiUrl(path), {
-    headers: { "Content-Type": "application/json", ...init?.headers },
-    ...init,
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    const detail = _formatApiErrorBody(res.status, body);
-    throw new Error(`API ${res.status}: ${detail}`);
+type ApiFetchInit = RequestInit & { timeoutMs?: number };
+
+async function apiFetch<T>(path: string, init?: ApiFetchInit): Promise<T> {
+  const { timeoutMs, signal: userSignal, ...rest } = init ?? {};
+  let clearTimer: (() => void) | undefined;
+  let signal: AbortSignal | undefined = userSignal;
+  if (!userSignal && typeof timeoutMs === "number" && timeoutMs > 0) {
+    const ctl = new AbortController();
+    const tid = setTimeout(() => ctl.abort(), timeoutMs);
+    clearTimer = () => clearTimeout(tid);
+    signal = ctl.signal;
   }
-  return res.json() as Promise<T>;
+  try {
+    const res = await fetch(_resolveApiUrl(path), {
+      headers: { "Content-Type": "application/json", ...rest.headers },
+      ...rest,
+      ...(signal ? { signal } : {}),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      const detail = _formatApiErrorBody(res.status, body);
+      throw new Error(`API ${res.status}: ${detail}`);
+    }
+    return res.json() as Promise<T>;
+  } catch (e: unknown) {
+    const aborted =
+      (e instanceof DOMException && e.name === "AbortError") ||
+      (e instanceof Error && e.name === "AbortError");
+    if (
+      aborted &&
+      typeof timeoutMs === "number" &&
+      timeoutMs > 0 &&
+      !userSignal
+    ) {
+      throw new Error(
+        `Request timed out after ${Math.round(timeoutMs / 1000)}s (${path}) — ` +
+          "is FastAPI running on this URL? Check port 8001 and NEXT_PUBLIC_API_URL.",
+      );
+    }
+    throw e;
+  } finally {
+    clearTimer?.();
+  }
 }
 
 // SWR-compatible fetcher typed for a specific response shape.
@@ -831,11 +863,16 @@ export function triggerClusterDeploy(
 
 /** Phase 18 — Nexus-Push: sync directly to WORKER_IP laptop. */
 export function triggerSync(): Promise<DeployResponse> {
-  return apiFetch<DeployResponse>("/api/deploy/sync", { method: "POST" });
+  return apiFetch<DeployResponse>("/api/deploy/sync", {
+    method: "POST",
+    timeoutMs: 30_000,
+  });
 }
 
 export function getDeployStatus(): Promise<DeployStatusResponse> {
-  return apiFetch<DeployStatusResponse>("/api/deploy/status");
+  return apiFetch<DeployStatusResponse>("/api/deploy/status", {
+    timeoutMs: 15_000,
+  });
 }
 
 /**

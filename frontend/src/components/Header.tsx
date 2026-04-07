@@ -5,7 +5,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import useSWR from "swr";
-import { swrFetcher, API_BASE, openDeployProgressStream, getDeployStatus, triggerPanic } from "@/lib/api";
+import {
+  swrFetcher,
+  API_BASE,
+  openDeployProgressStream,
+  getDeployStatus,
+  triggerPanic,
+  triggerSync,
+} from "@/lib/api";
 import { useStealth } from "@/lib/stealth";
 import { useNexus } from "@/lib/nexus-context";
 import { LanguageToggle, useI18n, type TranslationKey } from "@/lib/i18n";
@@ -329,15 +336,14 @@ function SyncClusterButton({ stealth }: { stealth: boolean }) {
       `Targeting ${API_BASE} → worker_linux + worker_windows (continues if one is down)`,
       "#a855f7",
     );
+    addLine(
+      "API",
+      "POST /api/deploy/sync (timeout 30s)…",
+      "#64748b",
+    );
 
     try {
-      // Call the new /api/deploy/sync endpoint (Phase 18)
-      const res = await fetch(`${API_BASE}/api/deploy/sync`, { method: "POST" });
-      if (!res.ok) {
-        const body = await res.text();
-        throw new Error(`API ${res.status}: ${body}`);
-      }
-      const data = await res.json();
+      const data = await triggerSync();
       addLine("JOB", data.job_id ?? "sync", "#64748b");
 
       // Poll for node discovery, then open SSE stream
