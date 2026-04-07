@@ -429,6 +429,7 @@ _ISRAELI_HEARTBEAT_KEY = "nexus:swarm:israeli:heartbeat"
 _ISRAELI_ENGINE_PID_KEY = "nexus:swarm:israeli:engine_pid"
 _ISRAELI_SPAWN_GUARD_KEY = "nexus:swarm:israeli:spawn_guard"
 _ISRAELI_SCHEDULE_KEY = "nexus:swarm:israeli:schedule"
+_MASS_JOIN_LATEST_TASK_KEY = "nexus:swarm:mass_join:latest_task_id"
 
 
 def _pid_running(pid: int) -> bool:
@@ -918,7 +919,7 @@ async def join_all_sessions_to_target(
     task = TaskPayload(
         task_id=task_id,
         task_type="swarm.onboarding.mass_join",
-        parameters={"target_link": tg},
+        parameters={"target_link": tg, "mass_join_task_id": task_id},
         project_id="live-swarm",
         priority=3,
         job_expires_seconds=7200,
@@ -942,6 +943,11 @@ async def join_all_sessions_to_target(
         log.error("swarm_mass_join_enqueue_failed", error=str(exc))
         raise HTTPException(status_code=502, detail=f"Failed to enqueue task: {exc}") from exc
 
+    try:
+        await redis.set(_MASS_JOIN_LATEST_TASK_KEY, task_id, ex=86400 * 7)
+    except Exception:
+        pass
+
     log.info("swarm_mass_join_enqueued", task_id=task_id, job_id=getattr(job, "job_id", None))
     return {
         "ok": True,
@@ -949,6 +955,93 @@ async def join_all_sessions_to_target(
         "job_id": getattr(job, "job_id", None),
         "task_type": task.task_type,
         "target_preview": tg_preview,
+    }
+
+
+@router.get(
+    "/mass-join-status",
+    summary="Per-session progress for the last (or given) mass-join job",
+)
+async def get_mass_join_status(
+    request: Request,
+    redis: RedisDep,
+    task_id: str | None = Query(
+        None,
+        description="Job id from join-all-sessions; omit to use latest pointer in Redis",
+    ),
+) -> dict[str, Any]:
+    if _api_redis_is_degraded(request):
+        raise HTTPException(status_code=503, detail=_SWARM_DEGRADED_MSG)
+
+    tid = (task_id or "").strip()
+    if not tid:
+        raw = await redis.get(_MASS_JOIN_LATEST_TASK_KEY)
+        tid = (
+            raw.decode("utf-8", errors="replace")
+            if isinstance(raw, (bytes, bytearray))
+            else str(raw or "")
+        ).strip()
+
+    if not tid:
+        return {
+            "ok": True,
+            "has_data": False,
+            "task_id": None,
+            "meta": None,
+            "sessions": [],
+        }
+
+    meta_key = f"nexus:swarm:mass_join:{tid}:meta"
+    sess_key = f"nexus:swarm:mass_join:{tid}:sessions"
+    meta_raw = await redis.get(meta_key)
+    meta: dict[str, Any] | None = None
+    if meta_raw:
+        try:
+            txt = (
+                meta_raw.decode("utf-8", errors="replace")
+                if isinstance(meta_raw, (bytes, bytearray))
+                else str(meta_raw)
+            )
+            parsed = json.loads(txt)
+            meta = parsed if isinstance(parsed, dict) else None
+        except Exception:
+            meta = None
+
+    rows_raw = await redis.hgetall(sess_key)
+    sessions: list[dict[str, Any]] = []
+    for stem, blob in rows_raw.items():
+        sk = (
+            stem.decode("utf-8", errors="replace")
+            if isinstance(stem, (bytes, bytearray))
+            else str(stem)
+        )
+        try:
+            btxt = (
+                blob.decode("utf-8", errors="replace")
+                if isinstance(blob, (bytes, bytearray))
+                else str(blob)
+            )
+            cell = json.loads(btxt)
+        except Exception:
+            cell = {"status": "unknown", "reason": "parse_error"}
+        if not isinstance(cell, dict):
+            cell = {"status": "unknown"}
+        sessions.append({"stem": sk, **cell})
+
+    def _sort_key(s: dict[str, Any]) -> tuple[int, str]:
+        st = str(s.get("status") or "").lower()
+        order = {"joining": 0, "pending": 1, "failed": 2, "success": 3}.get(st, 9)
+        return (order, str(s.get("stem") or ""))
+
+    sessions.sort(key=_sort_key)
+
+    return {
+        "ok": True,
+        "has_data": True,
+        "task_id": tid,
+        "meta": meta,
+        "sessions": sessions,
+        "queued": meta is None,
     }
 
 

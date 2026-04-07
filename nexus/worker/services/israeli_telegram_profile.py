@@ -1,16 +1,17 @@
 """
 Authentic-ish Israeli Telegram profile rolls for swarm workers: mixed Hebrew/English
 names, mostly empty bios, optional messy usernames, and non-face photos (delete or picsum).
-All Telethon calls are wrapped for FloodWaitError (sleep, no crash) and username collisions.
+Each Telethon session stem gets a stable RNG + Picsum seed so names/avatars are unique
+per account and reproducible across runs. Telethon RPCs tolerate FloodWaitError.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import random
 import re
-import secrets
 import string
 import tempfile
 from dataclasses import dataclass
@@ -51,10 +52,32 @@ _HEBREW_LAST = [
 _ENGLISH_LAST = [
     "Cohen", "Levy", "Mizrahi", "Aviv", "Barak", "Friedman", "Green", "Rosen", "Klein",
     "Segal", "Tal", "David", "Joseph", "Peretz", "Azulay", "Biton", "Shapiro", "Gold",
+    "Mor", "Weiss", "Adler", "Ben-David", "Hasson", "Gabay", "Ohana", "Solomon",
 ]
 
 _INITIALS_HE = ["מ.", "ד.", "א.", "נ.", "י.", "ל.", "ר.", "ש.", "ע.", "ג.", "ת.", "ה."]
 _INITIALS_EN = ["C.", "L.", "D.", "M.", "A.", "B.", "S.", "R.", "T.", "K.", "N.", "G."]
+
+# Higher → fewer "דני ר." / "Ben A." templates (Telegram then shows uniform initial blobs).
+_INITIAL_LAST_NAME_FRACTION = 0.08
+# Prefer a real Picsum avatar so profiles are not all colored initials.
+_DELETE_PHOTO_FRACTION = 0.14
+
+_PICSUM_SEED_SALT = "nexus.profile.picsum.v2"
+
+
+def _rng_for_session(seed_material: str) -> random.Random:
+    """Stable RNG per Telethon session stem (path‑unique, reproducible rolls)."""
+    digest = hashlib.sha256(seed_material.encode("utf-8")).digest()
+    return random.Random(int.from_bytes(digest[:8], "big"))
+
+
+def _stable_picsum_seed(seed_material: str) -> str:
+    """Deterministic Picsum seed string per session (no per-run random fragment)."""
+    h = hashlib.sha256(
+        (seed_material + "\n" + _PICSUM_SEED_SALT).encode("utf-8")
+    ).hexdigest()
+    return h[:48]
 
 
 _ISRAELI_BIOS = [
@@ -98,49 +121,60 @@ def _truncate_telegram_field(s: str) -> str:
     return t[:_TELEGRAM_NAME_MAX]
 
 
-def _pick_hebrew_pair() -> tuple[str, str]:
-    u = random.random()
-    first = random.choice(_HEBREW_FIRST)
-    if u < 0.55:
-        last = random.choice(_HEBREW_LAST)
+def _pick_hebrew_pair(rng: random.Random) -> tuple[str, str]:
+    u = rng.random()
+    first = rng.choice(_HEBREW_FIRST)
+    if u < (1.0 - _INITIAL_LAST_NAME_FRACTION):
+        last = rng.choice(_HEBREW_LAST)
     else:
-        last = random.choice(_INITIALS_HE)
+        last = rng.choice(_INITIALS_HE)
     return first, last
 
 
-def _pick_english_pair() -> tuple[str, str]:
-    u = random.random()
-    first = random.choice(_ENGLISH_FIRST)
-    if u < 0.55:
-        last = random.choice(_ENGLISH_LAST)
+def _pick_english_pair(rng: random.Random) -> tuple[str, str]:
+    u = rng.random()
+    first = rng.choice(_ENGLISH_FIRST)
+    if u < (1.0 - _INITIAL_LAST_NAME_FRACTION):
+        last = rng.choice(_ENGLISH_LAST)
     else:
-        last = random.choice(_INITIALS_EN)
+        last = rng.choice(_INITIALS_EN)
     return first, last
 
 
-def roll_display_name() -> tuple[str, str]:
-    """40% Hebrew, 40% English, 10% first-only, 10% first + digits."""
-    r = random.random()
+def roll_display_name(rng: random.Random | None = None) -> tuple[str, str]:
+    """40% Hebrew, 40% English, 10% first-only, 10% first + digits.
+
+    When ``rng`` is omitted, uses the global ``random`` module (non-deterministic).
+    For swarm workers, pass ``_rng_for_session(stem)`` so each session is unique and stable.
+    """
+    g = rng or random
+    r = g.random()
     if r < 0.40:
-        f, l = _pick_hebrew_pair()
+        f, l = _pick_hebrew_pair(g)
         return _truncate_telegram_field(f), _truncate_telegram_field(l)
     if r < 0.80:
-        f, l = _pick_english_pair()
+        f, l = _pick_english_pair(g)
         return _truncate_telegram_field(f), _truncate_telegram_field(l)
     if r < 0.90:
-        pool = random.choice((_HEBREW_FIRST, _ENGLISH_FIRST))
-        f = random.choice(pool)
+        pool = g.choice((_HEBREW_FIRST, _ENGLISH_FIRST))
+        f = g.choice(pool)
         return _truncate_telegram_field(f), ""
-    base = random.choice(_ENGLISH_FIRST)
-    digits = str(random.randint(1, 9999))
+    base = g.choice(_ENGLISH_FIRST)
+    digits = str(g.randint(1, 9999))
     return _truncate_telegram_field(f"{base}{digits}"), ""
 
 
-def roll_about() -> str:
-    if random.random() < 0.80:
+def roll_display_name_for_session(seed_material: str) -> tuple[str, str]:
+    """Deterministic display name for a Telethon session stem (path / account key)."""
+    return roll_display_name(_rng_for_session(seed_material))
+
+
+def roll_about(rng: random.Random | None = None) -> str:
+    g = rng or random
+    if g.random() < 0.80:
         return ""
     choices = [b for b in _ISRAELI_BIOS if b]
-    return random.choice(choices) if choices else ""
+    return g.choice(choices) if choices else ""
 
 
 def _slug_ascii_token(s: str) -> str:
@@ -149,18 +183,23 @@ def _slug_ascii_token(s: str) -> str:
     return t[:24] if t else ""
 
 
-def roll_username_plan(first_name: str, last_name: str) -> tuple[bool, str | None]:
+def roll_username_plan(
+    first_name: str,
+    last_name: str,
+    rng: random.Random | None = None,
+) -> tuple[bool, str | None]:
     """
     70% clear username (private-style); 30% messy ascii username.
     Returns (clear_username, candidate_or_none).
     """
-    if random.random() < 0.70:
+    g = rng or random
+    if g.random() < 0.70:
         return True, None
     base = _slug_ascii_token(first_name) or "user"
     frag = _slug_ascii_token(last_name)
-    sep = random.choice(["_", ".", "_", ""])
+    sep = g.choice(["_", ".", "_", ""])
     mid = f"{sep}{frag}" if frag and sep else (f"_{frag}" if frag else "")
-    digits = "".join(random.choices(string.digits, k=random.randint(3, 5)))
+    digits = "".join(g.choices(string.digits, k=g.randint(3, 5)))
     raw = f"{base}{mid}_{digits}" if mid else f"{base}_{digits}"
     raw = re.sub(r"[^a-z0-9_]", "", raw.lower())
     raw = raw.strip("_")
@@ -175,19 +214,19 @@ def roll_username_plan(first_name: str, last_name: str) -> tuple[bool, str | Non
     return False, raw
 
 
-def roll_photo_plan(seed_material: str) -> tuple[bool, str]:
+def roll_photo_plan(seed_material: str, rng: random.Random) -> tuple[bool, str]:
     """Returns (delete_all_photos, picsum_seed). If delete True, ignore picsum except for logging."""
-    delete = random.random() < 0.50
-    h = secrets.token_hex(8)
-    picsum_seed = f"{abs(hash(seed_material)) % (2**32):x}-{h}"
+    delete = rng.random() < _DELETE_PHOTO_FRACTION
+    picsum_seed = _stable_picsum_seed(seed_material)
     return delete, picsum_seed
 
 
 def roll_israeli_profile(seed_material: str) -> IsraeliProfileRoll:
-    fn, ln = roll_display_name()
-    about = roll_about()
-    clear_u, u_cand = roll_username_plan(fn, ln)
-    del_ph, pseed = roll_photo_plan(seed_material)
+    rng = _rng_for_session(seed_material)
+    fn, ln = roll_display_name(rng)
+    about = roll_about(rng)
+    clear_u, u_cand = roll_username_plan(fn, ln, rng)
+    del_ph, pseed = roll_photo_plan(seed_material, rng)
     return IsraeliProfileRoll(
         first_name=fn,
         last_name=ln,

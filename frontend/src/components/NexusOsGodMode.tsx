@@ -6999,6 +6999,40 @@ interface SwarmFeedData {
   configured_redis_url_safe?: string | null;
 }
 
+interface MassJoinSessionRow {
+  stem: string;
+  status?: string;
+  ok?: boolean;
+  reason?: string;
+  updated_at?: string;
+}
+
+interface MassJoinStatusPayload {
+  ok?: boolean;
+  has_data?: boolean;
+  task_id?: string | null;
+  meta?: {
+    task_id?: string;
+    target_link?: string;
+    started_at?: string;
+    finished_at?: string;
+    status?: string;
+    total?: number;
+    joins_ok?: number;
+    detail?: string;
+  } | null;
+  sessions?: MassJoinSessionRow[];
+  queued?: boolean;
+}
+
+const MASS_JOIN_STATUS_HE: Record<string, string> = {
+  pending: "ממתין",
+  joining: "מצטרף…",
+  success: "הצטרף",
+  failed: "נכשל",
+  unknown: "לא ידוע",
+};
+
 interface TgUiMessage {
   message_id: number;
   date: string;
@@ -7326,6 +7360,9 @@ function LiveSwarmView() {
   const [tgLoading, setTgLoading] = useState(false);
   const [tgCached, setTgCached] = useState(false);
   const liveFeedEndRef = useRef<HTMLDivElement>(null);
+  const [massJoinTaskId, setMassJoinTaskId] = useState<string | null>(null);
+  const [massJoinStatus, setMassJoinStatus] = useState<MassJoinStatusPayload | null>(null);
+  const [massJoinPollErr, setMassJoinPollErr] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -7380,6 +7417,36 @@ function LiveSwarmView() {
     const t = setInterval(fetchFeed, 3000);
     return () => clearInterval(t);
   }, [fetchFeed]);
+
+  const fetchMassJoinStatus = useCallback(async () => {
+    try {
+      const q =
+        massJoinTaskId && massJoinTaskId.trim()
+          ? `?task_id=${encodeURIComponent(massJoinTaskId.trim())}`
+          : "";
+      const res = await fetch(`${API_BASE}/api/swarm/mass-join-status${q}`);
+      if (res.status === 503) {
+        setMassJoinStatus(null);
+        setMassJoinPollErr("מצב מקומי — אין סנכרון Redis לסטטוס צירוף");
+        return;
+      }
+      if (!res.ok) {
+        setMassJoinPollErr(`שגיאה ${res.status}`);
+        return;
+      }
+      const data = (await res.json()) as MassJoinStatusPayload;
+      setMassJoinStatus(data);
+      setMassJoinPollErr(null);
+    } catch (e) {
+      setMassJoinPollErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [massJoinTaskId]);
+
+  useEffect(() => {
+    void fetchMassJoinStatus();
+    const t = setInterval(() => void fetchMassJoinStatus(), 2000);
+    return () => clearInterval(t);
+  }, [fetchMassJoinStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -7542,11 +7609,15 @@ function LiveSwarmView() {
         return;
       }
       if (data.ok) {
+        if (typeof data.task_id === "string" && data.task_id.trim()) {
+          setMassJoinTaskId(data.task_id.trim());
+        }
         const tid = typeof data.task_id === "string" && data.task_id ? ` · task ${data.task_id.slice(0, 8)}…` : "";
         setStatusMsg(
           `✅ צירוף המוני נשלח לתור ה-worker — כל הסשנים הכשרים ינסו להצטרף לקבוצה לפני/מקביל להפעלת הנחיל${tid}`,
         );
         void fetchFeed();
+        void fetchMassJoinStatus();
       } else {
         setStatusMsg(`❌ שגיאה: ${typeof data.detail === "string" ? data.detail : "unknown"}`);
       }
@@ -7810,6 +7881,190 @@ function LiveSwarmView() {
             </span>
             {feed.last_engine_error}
           </div>
+        )}
+      </div>
+
+      {/* Mass join — per-session table (worker writes Redis during swarm.onboarding.mass_join) */}
+      <div className="rounded-2xl border border-violet-500/25 bg-gradient-to-br from-slate-950/85 to-violet-950/20 p-4 sm:p-5 space-y-3 shadow-[0_0_28px_rgba(139,92,246,0.1)]">
+        <div className="flex flex-wrap items-center gap-3 justify-between">
+          <div>
+            <div className="text-[11px] text-violet-300/90 font-black uppercase tracking-widest">
+              צירוף סשנים לקבוצה
+            </div>
+            <p className="text-[10px] text-slate-500 mt-1 font-bold leading-relaxed max-w-xl">
+              סטטוס לכל קובץ ‎.session בזמן אמת אחרי «צרף כל הסשנים» — מתעדכן מה־worker דרך Redis
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 items-center" dir="ltr">
+            {massJoinStatus?.task_id && (
+              <span className="text-[10px] font-mono text-slate-500 truncate max-w-[14rem]" title={massJoinStatus.task_id}>
+                job {massJoinStatus.task_id.slice(0, 8)}…
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setMassJoinTaskId(null);
+                void fetchMassJoinStatus();
+              }}
+              className="text-[10px] font-black uppercase tracking-wider px-3 py-1.5 rounded-lg border border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500 transition"
+            >
+              הצג אחרון מ־Redis
+            </button>
+          </div>
+        </div>
+
+        {massJoinPollErr && (
+          <div className="text-[11px] text-amber-400/95 font-mono rounded-xl border border-amber-500/35 bg-amber-950/25 px-3 py-2">
+            {massJoinPollErr}
+          </div>
+        )}
+
+        {!massJoinStatus?.has_data && !massJoinPollErr && (
+          <p className="text-sm text-slate-500 font-bold">
+            אין ריצת צירוף אחרונה בזיכרון המערכת — שלח משימה עם «צרף כל הסשנים» כדי לראות טבלה כאן.
+          </p>
+        )}
+
+        {massJoinStatus?.has_data && (
+          <>
+            {massJoinStatus.queued && (
+              <div className="flex items-center gap-2 text-sm text-amber-300/95 font-bold">
+                <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
+                המשימה בתור — ממתין ל-worker שיכתוב סטטוס…
+              </div>
+            )}
+            {massJoinStatus.meta && (
+              <div className="flex flex-wrap gap-3 items-center text-[11px]">
+                {massJoinStatus.meta.target_link && (
+                  <span
+                    className="font-mono text-slate-400 truncate max-w-full sm:max-w-md"
+                    dir="ltr"
+                    title={massJoinStatus.meta.target_link}
+                  >
+                    {massJoinStatus.meta.target_link.length > 56
+                      ? `${massJoinStatus.meta.target_link.slice(0, 53)}…`
+                      : massJoinStatus.meta.target_link}
+                  </span>
+                )}
+                <span
+                  className={`font-black uppercase tracking-wider px-2 py-0.5 rounded-md border ${
+                    massJoinStatus.meta.status === "running"
+                      ? "border-cyan-500/45 text-cyan-300 bg-cyan-950/30"
+                      : massJoinStatus.meta.status === "completed"
+                        ? "border-emerald-500/40 text-emerald-300 bg-emerald-950/25"
+                        : "border-slate-600 text-slate-400 bg-slate-900/50"
+                  }`}
+                >
+                  {massJoinStatus.meta.status === "running"
+                    ? "רץ"
+                    : massJoinStatus.meta.status === "completed"
+                      ? "הושלם"
+                      : massJoinStatus.meta.status || "—"}
+                </span>
+                {typeof massJoinStatus.meta.total === "number" && (
+                  <span className="text-slate-500 font-bold tabular-nums">
+                    סה״כ {massJoinStatus.meta.total} סשנים
+                    {typeof massJoinStatus.meta.joins_ok === "number" && massJoinStatus.meta.status === "completed"
+                      ? ` · הצליחו ${massJoinStatus.meta.joins_ok}`
+                      : ""}
+                  </span>
+                )}
+                {massJoinStatus.meta.detail && (
+                  <span className="text-slate-500 font-mono">{massJoinStatus.meta.detail}</span>
+                )}
+              </div>
+            )}
+
+            {(() => {
+              const sessions = massJoinStatus.sessions ?? [];
+              const total = massJoinStatus.meta?.total ?? sessions.length;
+              const done = sessions.filter((s) => s.status === "success" || s.status === "failed").length;
+              const pct =
+                total > 0 ? Math.min(100, Math.round((done / total) * 100)) : massJoinStatus.meta?.status === "completed"
+                  ? 100
+                  : 0;
+              return total > 0 && massJoinStatus.meta?.status === "running" ? (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] text-slate-500 font-black uppercase tracking-widest">
+                    <span>התקדמות</span>
+                    <span className="tabular-nums" dir="ltr">
+                      {done}/{total} ({pct}%)
+                    </span>
+                  </div>
+                  <div className="h-2 rounded-full bg-slate-800 overflow-hidden border border-violet-500/20">
+                    <div
+                      className="h-full bg-gradient-to-l from-violet-500 to-fuchsia-500 transition-all duration-500"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+              ) : null;
+            })()}
+
+            {(massJoinStatus.sessions ?? []).length > 0 && (
+              <div className="rounded-xl border border-slate-800/90 bg-slate-950/60 overflow-hidden">
+                <div className="max-h-64 overflow-y-auto nexus-os-scrollbar">
+                  <table className="w-full text-right text-[11px] border-collapse">
+                    <thead className="sticky top-0 bg-slate-900/95 backdrop-blur-sm border-b border-slate-800">
+                      <tr className="text-[9px] font-black uppercase tracking-widest text-slate-500">
+                        <th className="py-2 px-3 font-black text-right">סשן (קובץ)</th>
+                        <th className="py-2 px-3 font-black text-right w-[6.5rem]">סטטוס</th>
+                        <th className="py-2 px-3 font-black text-right hidden sm:table-cell">עודכן</th>
+                        <th className="py-2 px-3 font-black text-right">הערה</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(massJoinStatus.sessions ?? []).map((row) => {
+                        const st = (row.status || "unknown").toLowerCase();
+                        const stLabel = MASS_JOIN_STATUS_HE[st] ?? row.status ?? "—";
+                        const badge =
+                          st === "success"
+                            ? "border-emerald-500/45 text-emerald-300 bg-emerald-950/35"
+                            : st === "failed"
+                              ? "border-rose-500/45 text-rose-300 bg-rose-950/35"
+                              : st === "joining"
+                                ? "border-cyan-500/45 text-cyan-300 bg-cyan-950/35 animate-pulse"
+                                : st === "pending"
+                                  ? "border-slate-600 text-slate-500 bg-slate-900/60"
+                                  : "border-slate-700 text-slate-400 bg-slate-900/50";
+                        let timeLabel = "—";
+                        if (row.updated_at) {
+                          try {
+                            timeLabel = new Date(row.updated_at).toLocaleTimeString("he-IL");
+                          } catch {
+                            timeLabel = row.updated_at;
+                          }
+                        }
+                        return (
+                          <tr key={row.stem} className="border-b border-slate-800/60 hover:bg-slate-900/40 transition-colors">
+                            <td className="py-2 px-3 font-mono text-slate-200 truncate max-w-[10rem] sm:max-w-none" dir="ltr" title={row.stem}>
+                              {row.stem}
+                            </td>
+                            <td className="py-2 px-3">
+                              <span className={`inline-block font-black uppercase tracking-wide text-[9px] px-2 py-0.5 rounded-md border ${badge}`}>
+                                {stLabel}
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 text-slate-500 font-mono text-[10px] hidden sm:table-cell tabular-nums" dir="ltr">
+                              {timeLabel}
+                            </td>
+                            <td className="py-2 px-3 text-slate-500 font-mono text-[10px] break-all max-w-[14rem] sm:max-w-none" dir="ltr">
+                              {row.reason?.trim() ? row.reason : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {massJoinStatus.meta && (massJoinStatus.sessions ?? []).length === 0 && !massJoinStatus.queued && (
+              <p className="text-xs text-slate-500 font-bold">אין שורות סשן (ייתכן שאין סשנים כשרים או שהמטא-דאטה עדיין נטען).</p>
+            )}
+          </>
         )}
       </div>
 

@@ -496,12 +496,21 @@ def _swarm_identity_path(stem: str) -> pathlib.Path:
 
 
 def _identity_from_stem(stem: str) -> dict[str, Any]:
-    h = hashlib.sha256(stem.encode("utf-8")).digest()
-    fi = h[0] % len(_ISRAELI_FIRST_NAMES)
-    li = h[1] % len(_ISRAELI_LAST_NAMES)
+    """Match ``roll_israeli_profile(stem)`` naming so local JSON matches Telegram."""
+    try:
+        from nexus.worker.services.israeli_telegram_profile import (  # type: ignore[import]
+            roll_display_name_for_session,
+        )
+
+        fn, ln = roll_display_name_for_session(stem)
+    except Exception:
+        h = hashlib.sha256(stem.encode("utf-8")).digest()
+        fi = h[0] % len(_ISRAELI_FIRST_NAMES)
+        li = h[1] % len(_ISRAELI_LAST_NAMES)
+        fn, ln = _ISRAELI_FIRST_NAMES[fi], _ISRAELI_LAST_NAMES[li]
     return {
-        "first_name": _ISRAELI_FIRST_NAMES[fi],
-        "last_name": _ISRAELI_LAST_NAMES[li],
+        "first_name": fn,
+        "last_name": ln,
         "avatar_seed": stem,
         "profile_applied": False,
     }
@@ -695,7 +704,9 @@ async def _ensure_swarm_profile_ascii_fix(client: Any, stem: str) -> None:
     except Exception:
         pass
     try:
-        from nexus.worker.services.israeli_telegram_profile import roll_display_name  # type: ignore[import]
+        from nexus.worker.services.israeli_telegram_profile import (  # type: ignore[import]
+            roll_display_name_for_session,
+        )
 
         me = await client.get_me()
         fn = str(getattr(me, "first_name", None) or "")
@@ -703,7 +714,7 @@ async def _ensure_swarm_profile_ascii_fix(client: Any, stem: str) -> None:
         if _display_name_is_non_israeli(fn, ln):
             from telethon.tl.functions.account import UpdateProfileRequest  # type: ignore[import]
 
-            nfn, nln = roll_display_name()
+            nfn, nln = roll_display_name_for_session(stem)
             await client(UpdateProfileRequest(first_name=nfn, last_name=nln))
     except Exception as exc:
         log.debug("[COMMUNITY] On-the-fly profile fix skipped: %s", exc)
