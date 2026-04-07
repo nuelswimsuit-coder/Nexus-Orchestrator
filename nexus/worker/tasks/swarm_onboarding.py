@@ -31,6 +31,7 @@ from nexus.services.session_vault import (
     discover_all_meta_json_files,
     merge_meta_row,
     meta_key,
+    vault_candidate_roots,
 )
 from nexus.worker.services.tg_session import async_telegram_client, flood_wait_seconds
 from nexus.worker.task_registry import registry
@@ -113,33 +114,61 @@ async def _redis_meta(redis: Any, stem: str) -> dict[str, Any]:
         return {}
 
 
-def _eligible_for_onboarding(meta: dict[str, Any], path: Path) -> bool:
-    if meta.get("is_banned") is True:
-        return False
-    if meta.get("is_active") is False:
-        return False
-    st = str(meta.get("status") or "").strip().lower()
-    if st in ("banned", "offline"):
-        return False
-    sess_file = path.with_suffix(".session")
-    return sess_file.is_file()
+def _vault_roots_for_diagnostics() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for r in vault_candidate_roots():
+        try:
+            rp = r.resolve()
+            out.append({"path": str(rp), "is_dir": rp.is_dir()})
+        except Exception:
+            out.append({"path": str(r), "is_dir": False})
+    return out
 
 
-async def _iter_onboarding_targets(
+async def _scan_onboarding_targets(
     redis: Any,
     allow_stems: set[str] | None,
-) -> list[Path]:
-    out: list[Path] = []
-    for meta_json in discover_all_meta_json_files():
+) -> tuple[list[Path], dict[str, Any]]:
+    """
+    Returns eligible meta paths plus counts explaining skips (vault on worker disk vs Redis flags).
+    """
+    all_meta = discover_all_meta_json_files()
+    diag: dict[str, Any] = {
+        "discovered_meta_json_files": len(all_meta),
+        "skipped_allow_list": 0,
+        "skipped_missing_session_sqlite": 0,
+        "skipped_redis_banned": 0,
+        "skipped_redis_is_active_false": 0,
+        "skipped_redis_status_offline_or_banned": 0,
+        "eligible": 0,
+        "vault_roots": _vault_roots_for_diagnostics(),
+    }
+    eligible: list[Path] = []
+    for meta_json in all_meta:
         stem = meta_json.stem
         if allow_stems is not None and stem not in allow_stems:
+            diag["skipped_allow_list"] += 1
+            continue
+        sess_file = meta_json.with_suffix(".session")
+        if not sess_file.is_file():
+            diag["skipped_missing_session_sqlite"] += 1
             continue
         row = await _redis_meta(redis, stem)
         if not row:
             row = {}
-        if _eligible_for_onboarding(row, meta_json):
-            out.append(meta_json)
-    return out
+        if row.get("is_banned") is True:
+            diag["skipped_redis_banned"] += 1
+            continue
+        if row.get("is_active") is False:
+            diag["skipped_redis_is_active_false"] += 1
+            continue
+        st = str(row.get("status") or "").strip().lower()
+        if st in ("banned", "offline"):
+            diag["skipped_redis_status_offline_or_banned"] += 1
+            continue
+        diag["eligible"] += 1
+        eligible.append(meta_json)
+    return eligible, diag
 
 
 async def _mark_dead_session(
@@ -188,6 +217,7 @@ async def _join_one_session(
     redis: Any,
 ) -> dict[str, Any]:
     from telethon.errors import (  # type: ignore[import-untyped]
+        AuthKeyDuplicatedError,
         AuthKeyUnregisteredError,
         FloodWaitError,
         UserDeactivatedBanError,
@@ -220,6 +250,16 @@ async def _join_one_session(
         except AuthKeyUnregisteredError as exc:
             await _mark_dead_session(redis, meta_json, banned=False, detail=type(exc).__name__)
             return {"stem": stem, "ok": False, "reason": type(exc).__name__}
+
+        except AuthKeyDuplicatedError:
+            # Same .session used from two IPs — Telegram invalidates the key until re-login.
+            await _mark_dead_session(
+                redis,
+                meta_json,
+                banned=False,
+                detail="AuthKeyDuplicatedError: session used from two IPs",
+            )
+            return {"stem": stem, "ok": False, "reason": "AuthKeyDuplicatedError"}
 
         except FloodWaitError as exc:
             flood_sleep = min(int(flood_wait_seconds(exc)), 3600)
@@ -261,7 +301,7 @@ async def swarm_onboarding_mass_join(parameters: dict[str, Any]) -> dict[str, An
     if isinstance(raw_stems, list) and raw_stems:
         allow = {str(s).strip() for s in raw_stems if str(s).strip()}
 
-    paths = await _iter_onboarding_targets(redis, allow)
+    paths, join_diagnostics = await _scan_onboarding_targets(redis, allow)
     if not paths:
         if task_id:
             meta_key = _mass_join_meta_key(task_id)
@@ -279,6 +319,7 @@ async def swarm_onboarding_mass_join(parameters: dict[str, Any]) -> dict[str, An
                         "total": 0,
                         "joins_ok": 0,
                         "detail": "no eligible sessions",
+                        "diagnostics": join_diagnostics,
                     },
                     ensure_ascii=False,
                 ),
@@ -286,7 +327,17 @@ async def swarm_onboarding_mass_join(parameters: dict[str, Any]) -> dict[str, An
             await redis.delete(sess_key)
             await redis.set(_MASS_JOIN_LATEST_KEY, task_id, ex=_MASS_JOIN_TTL_S)
             await redis.expire(meta_key, _MASS_JOIN_TTL_S)
-        return {"status": "completed", "joined": 0, "detail": "no eligible sessions"}
+        log.warning(
+            "swarm_onboarding_no_eligible",
+            target=target[:80],
+            diagnostics=join_diagnostics,
+        )
+        return {
+            "status": "completed",
+            "joined": 0,
+            "detail": "no eligible sessions",
+            "diagnostics": join_diagnostics,
+        }
 
     started_at = datetime.now(timezone.utc).isoformat()
     if task_id:

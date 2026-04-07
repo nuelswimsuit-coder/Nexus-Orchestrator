@@ -7020,9 +7020,42 @@ interface MassJoinStatusPayload {
     total?: number;
     joins_ok?: number;
     detail?: string;
+    /** From worker when total=0: disk vs Redis skip counts + vault roots */
+    diagnostics?: Record<string, unknown>;
   } | null;
   sessions?: MassJoinSessionRow[];
   queued?: boolean;
+}
+
+function _massJoinDiagHintHe(diag: Record<string, unknown> | null | undefined): string | null {
+  if (!diag || typeof diag !== "object") return null;
+  const num = (k: string) => {
+    const v = diag[k];
+    return typeof v === "number" && Number.isFinite(v) ? v : 0;
+  };
+  const disc = num("discovered_meta_json_files");
+  const eligible = num("eligible");
+  const inactive = num("skipped_redis_is_active_false");
+  const statBan = num("skipped_redis_status_offline_or_banned");
+  const banned = num("skipped_redis_banned");
+  const noSess = num("skipped_missing_session_sqlite");
+
+  if (disc === 0) {
+    return "במחשב שבו רץ ה־worker לא נמצאו זוגות ‎.json/.session בנתיבי ה־vault. מספר הסשנים בדשבורד לעיתים מגיע מה־API או ממכונה אחרת — לא מדיסק של ה־worker. הרץ את ה־worker על אותה מכונה כמו קבצי ה־vault, או הגדר NEXUS_SESSION_VAULT_DIR לאותה תיקייה.";
+  }
+  if (disc > 0 && eligible === 0) {
+    if (inactive > 0) {
+      return `בדיסק של ה־worker נמצאו ${disc} מטא־קבצים, אבל ${inactive} סוננו כי ב־Redis מסומן is_active=false. סנכרן מחדש את ה־vault→Redis מהמכונה הנכונה או בדוק מטא-דאטה.`;
+    }
+    if (banned > 0 || statBan > 0) {
+      return `סוננו רשומות בגלל banned/offline או is_banned ב־Redis (בערך ${banned + statBan}).`;
+    }
+    if (noSess > 0) {
+      return `ל־${noSess} רשומות יש ‎.json בלי ‎.session מתאים בדיסק ה־worker — תקן את תיקיית ה־vault.`;
+    }
+    return "אף סשן לא התקבל לצירוף — עיין בפירוט הטכני למטה.";
+  }
+  return null;
 }
 
 const MASS_JOIN_STATUS_HE: Record<string, string> = {
@@ -7892,7 +7925,12 @@ function LiveSwarmView() {
               צירוף סשנים לקבוצה
             </div>
             <p className="text-[10px] text-slate-500 mt-1 font-bold leading-relaxed max-w-xl">
-              סטטוס לכל קובץ ‎.session בזמן אמת אחרי «צרף כל הסשנים» — מתעדכן מה־worker דרך Redis
+              סטטוס לכל קובץ ‎.session בזמן אמת אחרי «צרף כל הסשנים» — מתעדכן מה־worker דרך Redis. הסריקה רצה על{" "}
+              <strong className="text-slate-400">דיסק ה־worker</strong>, לא על שרת ה־API בלבד.
+            </p>
+            <p className="text-[9px] text-slate-600 mt-1.5 font-bold leading-relaxed max-w-2xl">
+              שגיאת «authorization key / שני IP»: טלגרם ביטלה את המפתח — עצור כל שימוש מקביל באותו קובץ ‎.session (מחשב
+              אחר, VPN, דפדפן), והתחבר מחדש לסשן או החלף קובץ.
             </p>
           </div>
           <div className="flex flex-wrap gap-2 items-center" dir="ltr">
@@ -7935,44 +7973,73 @@ function LiveSwarmView() {
               </div>
             )}
             {massJoinStatus.meta && (
-              <div className="flex flex-wrap gap-3 items-center text-[11px]">
-                {massJoinStatus.meta.target_link && (
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-3 items-center text-[11px]">
+                  {massJoinStatus.meta.target_link && (
+                    <span
+                      className="font-mono text-slate-400 truncate max-w-full sm:max-w-md"
+                      dir="ltr"
+                      title={massJoinStatus.meta.target_link}
+                    >
+                      {massJoinStatus.meta.target_link.length > 56
+                        ? `${massJoinStatus.meta.target_link.slice(0, 53)}…`
+                        : massJoinStatus.meta.target_link}
+                    </span>
+                  )}
                   <span
-                    className="font-mono text-slate-400 truncate max-w-full sm:max-w-md"
-                    dir="ltr"
-                    title={massJoinStatus.meta.target_link}
+                    className={`font-black uppercase tracking-wider px-2 py-0.5 rounded-md border ${
+                      massJoinStatus.meta.status === "running"
+                        ? "border-cyan-500/45 text-cyan-300 bg-cyan-950/30"
+                        : massJoinStatus.meta.status === "completed"
+                          ? "border-emerald-500/40 text-emerald-300 bg-emerald-950/25"
+                          : "border-slate-600 text-slate-400 bg-slate-900/50"
+                    }`}
                   >
-                    {massJoinStatus.meta.target_link.length > 56
-                      ? `${massJoinStatus.meta.target_link.slice(0, 53)}…`
-                      : massJoinStatus.meta.target_link}
-                  </span>
-                )}
-                <span
-                  className={`font-black uppercase tracking-wider px-2 py-0.5 rounded-md border ${
-                    massJoinStatus.meta.status === "running"
-                      ? "border-cyan-500/45 text-cyan-300 bg-cyan-950/30"
+                    {massJoinStatus.meta.status === "running"
+                      ? "רץ"
                       : massJoinStatus.meta.status === "completed"
-                        ? "border-emerald-500/40 text-emerald-300 bg-emerald-950/25"
-                        : "border-slate-600 text-slate-400 bg-slate-900/50"
-                  }`}
-                >
-                  {massJoinStatus.meta.status === "running"
-                    ? "רץ"
-                    : massJoinStatus.meta.status === "completed"
-                      ? "הושלם"
-                      : massJoinStatus.meta.status || "—"}
-                </span>
-                {typeof massJoinStatus.meta.total === "number" && (
-                  <span className="text-slate-500 font-bold tabular-nums">
-                    סה״כ {massJoinStatus.meta.total} סשנים
-                    {typeof massJoinStatus.meta.joins_ok === "number" && massJoinStatus.meta.status === "completed"
-                      ? ` · הצליחו ${massJoinStatus.meta.joins_ok}`
-                      : ""}
+                        ? "הושלם"
+                        : massJoinStatus.meta.status || "—"}
                   </span>
-                )}
-                {massJoinStatus.meta.detail && (
-                  <span className="text-slate-500 font-mono">{massJoinStatus.meta.detail}</span>
-                )}
+                  {typeof massJoinStatus.meta.total === "number" && (
+                    <span className="text-slate-500 font-bold tabular-nums">
+                      סה״כ {massJoinStatus.meta.total} סשנים
+                      {typeof massJoinStatus.meta.joins_ok === "number" && massJoinStatus.meta.status === "completed"
+                        ? ` · הצליחו ${massJoinStatus.meta.joins_ok}`
+                        : ""}
+                    </span>
+                  )}
+                  {massJoinStatus.meta.detail && (
+                    <span className="text-slate-500 font-mono">{massJoinStatus.meta.detail}</span>
+                  )}
+                </div>
+                {massJoinStatus.meta.diagnostics &&
+                  typeof massJoinStatus.meta.diagnostics === "object" &&
+                  massJoinStatus.meta.diagnostics !== null && (
+                    <div className="space-y-2">
+                      {(() => {
+                        const hint = _massJoinDiagHintHe(
+                          massJoinStatus.meta!.diagnostics as Record<string, unknown>,
+                        );
+                        return hint ? (
+                          <div className="rounded-xl border border-amber-500/40 bg-amber-950/25 px-3 py-2.5 text-[11px] text-amber-100/95 font-bold leading-relaxed">
+                            {hint}
+                          </div>
+                        ) : null;
+                      })()}
+                      <details className="group rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2">
+                        <summary className="cursor-pointer text-[10px] font-black uppercase tracking-widest text-slate-500 group-open:text-slate-400 transition">
+                          פירוט טכני (דיאגנוסטיקה)
+                        </summary>
+                        <pre
+                          className="mt-2 max-h-48 overflow-y-auto nexus-os-scrollbar p-2 rounded-lg bg-slate-950/90 border border-slate-800/80 font-mono text-[9px] text-slate-400 leading-relaxed"
+                          dir="ltr"
+                        >
+                          {JSON.stringify(massJoinStatus.meta.diagnostics, null, 2)}
+                        </pre>
+                      </details>
+                    </div>
+                  )}
               </div>
             )}
 
