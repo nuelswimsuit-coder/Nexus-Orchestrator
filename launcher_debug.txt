@@ -9067,3 +9067,19 @@ eded the max restart limit (3). Manual intervention required.
 [launcher] spawn [telegram-bot]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
 [launcher] spawn [frontend]: C:\Program Files\nodejs\npm.CMD ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator\frontend)
 [launcher] spawn [git-sync]: C:\Users\Yarin\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python.exe ... (cwd=C:\Users\Yarin\Desktop\Nexus-Orchestrator)
+[launcher] child process exited pid=9480 label=redis returncode=4294967295.
+[watchdog] redis not in registry — cannot restart.
+[launcher] child process exited pid=18148 label=core returncode=0.
+[auto-worker] No worker heartbeats — auto-spawning local worker…
+[auto-worker] Worker spawned — pid=43544
+[launcher] child process exited pid=43544 label=auto-worker returncode=1.
+[watchdog] Restarting [auto-worker] in 5s (attempt 1/3)…
+[watchdog] [auto-worker] restarted — pid=40704
+[launcher] child process exited pid=40704 label=auto-worker returncode=1.
+[watchdog] Restarting [auto-worker] in 10s (attempt 2/3)…
+[watchdog] [auto-worker] restarted — pid=27200
+[launcher] child process exited pid=27200 label=auto-worker returncode=1.
+[watchdog] Restarting [auto-worker] in 15s (attempt 3/3)…
+[watchdog] [auto-worker] restarted — pid=35240
+[launcher] child process exited pid=35240 label=auto-worker returncode=1.
+[WATCHDOG] Service *auto-worker* has crashed 3 times and exceeded the max restart limit (3). Manual intervention required.
