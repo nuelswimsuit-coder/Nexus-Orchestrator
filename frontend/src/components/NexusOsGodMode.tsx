@@ -7039,6 +7039,16 @@ function _massJoinDiagHintHe(diag: Record<string, unknown> | null | undefined): 
   const statBan = num("skipped_redis_status_offline_or_banned");
   const banned = num("skipped_redis_banned");
   const noSess = num("skipped_missing_session_sqlite");
+  const missingStems = Array.isArray(diag.missing_session_stems)
+    ? (diag.missing_session_stems as unknown[]).filter((s): s is string => typeof s === "string")
+    : [];
+  const samples = Array.isArray(diag.missing_session_samples)
+    ? (diag.missing_session_samples as unknown[]).filter(
+        (x): x is Record<string, unknown> => typeof x === "object" && x !== null,
+      )
+    : [];
+  const firstPath =
+    typeof samples[0]?.meta_json_path === "string" ? (samples[0].meta_json_path as string) : "";
 
   if (disc === 0) {
     return "במחשב שבו רץ ה־worker לא נמצאו זוגות ‎.json/.session בנתיבי ה־vault. מספר הסשנים בדשבורד לעיתים מגיע מה־API או ממכונה אחרת — לא מדיסק של ה־worker. הרץ את ה־worker על אותה מכונה כמו קבצי ה־vault, או הגדר NEXUS_SESSION_VAULT_DIR לאותה תיקייה.";
@@ -7050,8 +7060,17 @@ function _massJoinDiagHintHe(diag: Record<string, unknown> | null | undefined): 
     if (banned > 0 || statBan > 0) {
       return `סוננו רשומות בגלל banned/offline או is_banned ב־Redis (בערך ${banned + statBan}).`;
     }
+    if (noSess > 0 && noSess >= disc) {
+      const pathHint =
+        firstPath.length > 0
+          ? ` נתיב לדוגמה (קובץ ‎.json ללא ‎.session לידו): ${firstPath.length > 140 ? `${firstPath.slice(0, 137)}…` : firstPath}`
+          : "";
+      return `בדיסק ה־worker נמצאו ${disc} קבצי ‎.json מתאימים לטלגרם, ולכולם חסר קובץ ‎.session באותה תיקייה — לרוב זה אומר שה־worker רץ בלי תיקיית ה־vault האמיתית (רק שריד/קובץ יתום).${pathHint} הרץ את ה־worker על המחשב שבו יושבים כל זוגות ‎.session+‎.json, או הגדר משתנה סביבה NEXUS_SESSION_VAULT_DIR לנתיב המלא של תיקיית הסשנים.`;
+    }
     if (noSess > 0) {
-      return `ל־${noSess} רשומות יש ‎.json בלי ‎.session מתאים בדיסק ה־worker — תקן את תיקיית ה־vault.`;
+      const preview = missingStems.slice(0, 5).join(", ");
+      const extra = missingStems.length > 5 ? ` (+${missingStems.length - 5})` : "";
+      return `ל־${noSess} רשומות אין קובץ ‎.session ליד ה־‎.json בדיסק ה־worker${preview ? ` (דוגמאות stem: ${preview}${extra})` : ""}.`;
     }
     return "אף סשן לא התקבל לצירוף — עיין בפירוט הטכני למטה.";
   }

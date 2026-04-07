@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -125,6 +126,44 @@ def _vault_roots_for_diagnostics() -> list[dict[str, Any]]:
     return out
 
 
+def _paired_session_file(meta_json: Path) -> Path | None:
+    """
+    Telethon sqlite next to ``*.json``: ``<stem>.session`` (case-insensitive on Windows).
+    """
+    direct = meta_json.with_suffix(".session")
+    try:
+        if direct.is_file():
+            return direct.resolve()
+    except OSError:
+        pass
+    if sys.platform == "win32":
+        stem_l = meta_json.stem.lower()
+        try:
+            for p in meta_json.parent.iterdir():
+                if not p.is_file():
+                    continue
+                if p.name.lower().endswith("-journal"):
+                    continue
+                if p.suffix.lower() != ".session":
+                    continue
+                if p.stem.lower() != stem_l:
+                    continue
+                try:
+                    return p.resolve()
+                except OSError:
+                    return p
+        except OSError:
+            pass
+    return None
+
+
+def _session_base_str(meta_json: Path) -> str | None:
+    paired = _paired_session_file(meta_json)
+    if paired is None:
+        return None
+    return str(paired.parent / paired.stem)
+
+
 async def _scan_onboarding_targets(
     redis: Any,
     allow_stems: set[str] | None,
@@ -133,6 +172,7 @@ async def _scan_onboarding_targets(
     Returns eligible meta paths plus counts explaining skips (vault on worker disk vs Redis flags).
     """
     all_meta = discover_all_meta_json_files()
+    missing_samples: list[dict[str, str]] = []
     diag: dict[str, Any] = {
         "discovered_meta_json_files": len(all_meta),
         "skipped_allow_list": 0,
@@ -142,6 +182,8 @@ async def _scan_onboarding_targets(
         "skipped_redis_status_offline_or_banned": 0,
         "eligible": 0,
         "vault_roots": _vault_roots_for_diagnostics(),
+        "missing_session_stems": [],
+        "missing_session_samples": [],
     }
     eligible: list[Path] = []
     for meta_json in all_meta:
@@ -149,9 +191,22 @@ async def _scan_onboarding_targets(
         if allow_stems is not None and stem not in allow_stems:
             diag["skipped_allow_list"] += 1
             continue
-        sess_file = meta_json.with_suffix(".session")
-        if not sess_file.is_file():
+        if _paired_session_file(meta_json) is None:
             diag["skipped_missing_session_sqlite"] += 1
+            mss = diag["missing_session_stems"]
+            if isinstance(mss, list) and len(mss) < 50:
+                mss.append(stem)
+            if len(missing_samples) < 12:
+                try:
+                    missing_samples.append(
+                        {
+                            "stem": stem,
+                            "meta_json_path": str(meta_json.resolve()),
+                        }
+                    )
+                except OSError:
+                    missing_samples.append({"stem": stem, "meta_json_path": str(meta_json)})
+            diag["missing_session_samples"] = missing_samples
             continue
         row = await _redis_meta(redis, stem)
         if not row:
@@ -224,8 +279,10 @@ async def _join_one_session(
         UserDeactivatedError,
     )
 
-    session_base = str(meta_json.parent / meta_json.stem)
     stem = meta_json.stem
+    session_base = _session_base_str(meta_json)
+    if not session_base:
+        return {"stem": stem, "ok": False, "reason": "missing_session_file"}
     flood_sleep: int | None = None
     async with _JOIN_SEM:
         try:
