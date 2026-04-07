@@ -36,6 +36,66 @@ _TRAILING_ISRAELI_NEWS_OUTLET_RE = re.compile(
 )
 _ORPHAN_TRAILING_DASH_RE = re.compile(r"\s*[-–—]+\s*$")
 
+# Hard ban: model must not echo these (split at `` - `` / en-dash before them, else drop).
+_BANNED_Y_NET_RE = re.compile(r"-\s*ynet\b", re.IGNORECASE)
+_N12_RE = re.compile(r"(?<![A-Za-z0-9])N12(?![A-Za-z0-9])", re.IGNORECASE)
+_DASH_ATTRIBUTION_SEPS: tuple[str, ...] = (" - ", " – ", " — ")
+
+
+def _cut_before_last_dash_chunk(prefix: str, full: str) -> str | None:
+    for sep in _DASH_ATTRIBUTION_SEPS:
+        j = prefix.rfind(sep)
+        if j >= 0:
+            return full[:j].rstrip()
+    return None
+
+
+def purge_absolute_news_source_blacklist(text: str) -> str:
+    """
+    Remove outlet leakage from LLM chatter. Prefer splitting at a dash-attribution boundary;
+    if a banned token appears with no such boundary before it, return empty for that pass.
+    """
+    s = (text or "").strip()
+    for _ in range(40):
+        if not s:
+            return ""
+        first_at: int | None = None
+        mode: str = ""
+
+        if " - מעריב" in s:
+            i = s.index(" - מעריב")
+            first_at, mode = i, "split_maariv"
+        ym = _BANNED_Y_NET_RE.search(s)
+        if ym and (first_at is None or ym.start() < first_at):
+            first_at, mode = ym.start(), "cut_at_match"
+        for lit in ("גלובס", "ערוץ 12", "וואלה"):
+            if lit in s:
+                i = s.index(lit)
+                if first_at is None or i < first_at:
+                    first_at, mode = i, "lit"
+        n12m = _N12_RE.search(s)
+        if n12m and (first_at is None or n12m.start() < first_at):
+            first_at, mode = n12m.start(), "lit"
+
+        if first_at is None:
+            return s
+
+        if mode == "split_maariv":
+            s = s.split(" - מעריב", 1)[0].strip()
+            continue
+
+        if mode == "cut_at_match":
+            s = s[:first_at].rstrip()
+            continue
+
+        pre = s[:first_at]
+        cut = _cut_before_last_dash_chunk(pre, s)
+        if cut is not None:
+            s = cut.strip()
+            continue
+        s = ""
+    return s
+
 
 def strip_trailing_israeli_news_outlet(text: str) -> str:
     """
@@ -64,7 +124,7 @@ def strip_swarm_llm_artifacts(text: str) -> str:
                 break
         if not changed:
             break
-    return strip_trailing_israeli_news_outlet(s)
+    return purge_absolute_news_source_blacklist(strip_trailing_israeli_news_outlet(s))
 
 
 def telethon_media_kind_and_hint(m: Any) -> tuple[str | None, str]:

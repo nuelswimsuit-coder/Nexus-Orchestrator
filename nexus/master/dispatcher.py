@@ -199,6 +199,10 @@ class Dispatcher:
             self._israeli_meme_ingest_scheduler_loop(),
             name="israeli-meme-ingest-scheduler",
         )
+        asyncio.create_task(
+            self._lurkers_scheduler_loop(),
+            name="swarm-lurkers-scheduler",
+        )
         log.info(
             "dispatcher_started",
             node_id=self.node_id,
@@ -533,6 +537,68 @@ class Dispatcher:
                     log.debug("israeli_meme_ingest_dispatched", job_id=job_id)
             except Exception as exc:
                 log.warning("israeli_meme_ingest_dispatch_failed", error=str(exc))
+            await asyncio.sleep(float(interval))
+
+    async def _lurkers_scheduler_loop(self) -> None:
+        """
+        Enqueue ``swarm.lurkers.tick`` on a fixed interval (default 1800 s).
+
+        Opt-in: ``NEXUS_LURKERS_ENABLED=1`` and ``NEXUS_LURKERS_GROUP_ID``.
+        ``NEXUS_LURKERS_INTERVAL_SEC=0`` disables. Optional ``NEXUS_LURKERS_BATCH_SIZE``.
+        """
+        import os as _os
+
+        enabled = (_os.getenv("NEXUS_LURKERS_ENABLED") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if not enabled:
+            log.info(
+                "lurkers_scheduler_disabled",
+                hint="set NEXUS_LURKERS_ENABLED=1 and NEXUS_LURKERS_GROUP_ID",
+            )
+            return
+        gid_raw = (_os.getenv("NEXUS_LURKERS_GROUP_ID") or "").strip()
+        try:
+            group_id = int(gid_raw)
+        except ValueError:
+            log.info("lurkers_scheduler_disabled", hint="NEXUS_LURKERS_GROUP_ID must be an integer")
+            return
+        raw = (_os.getenv("NEXUS_LURKERS_INTERVAL_SEC") or "1800").strip()
+        try:
+            interval = int(raw)
+        except ValueError:
+            interval = 1800
+        if interval <= 0:
+            log.info("lurkers_scheduler_interval_disabled")
+            return
+        batch_raw = (_os.getenv("NEXUS_LURKERS_BATCH_SIZE") or "100").strip()
+        try:
+            batch_size = int(batch_raw)
+        except ValueError:
+            batch_size = 100
+        await asyncio.sleep(45.0)
+        log.info(
+            "lurkers_scheduler_started",
+            interval_s=interval,
+            group_id=group_id,
+            batch_size=batch_size,
+        )
+        while True:
+            try:
+                if self._arq:
+                    task = TaskPayload(
+                        task_type="swarm.lurkers.tick",
+                        parameters={"group_id": group_id, "batch_size": batch_size},
+                        project_id="nexus-swarm",
+                        job_expires_seconds=3600,
+                    )
+                    job_id = await self.dispatch(task)
+                    log.debug("lurkers_task_dispatched", job_id=job_id)
+            except Exception as exc:
+                log.warning("lurkers_dispatch_failed", error=str(exc))
             await asyncio.sleep(float(interval))
 
     async def _heartbeat_loop(self, interval: float = 30.0) -> None:

@@ -47,6 +47,11 @@ except Exception:
     pass
 
 try:
+    from nexus.worker.tasks import reactions as _reactions  # noqa: F401 — passive native reactions
+except Exception:
+    pass
+
+try:
     from nexus.worker.tasks import swarm_onboarding as _swarm_onboarding  # noqa: F401
 except Exception:
     pass
@@ -58,5 +63,10 @@ except Exception:
 
 try:
     from nexus.worker.tasks import seo_group_factory as _seo_group_factory  # noqa: F401
+except Exception:
+    pass
+
+try:
+    from nexus.worker.tasks import lurkers as _lurkers  # noqa: F401 — swarm.lurkers.tick
 except Exception:
     pass

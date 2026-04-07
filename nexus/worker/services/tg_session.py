@@ -18,6 +18,7 @@ from typing import Any, Literal
 import structlog
 
 from nexus.services.session_vault import vault_meta_resolve_api_credentials
+from nexus.shared.telethon_human_hesitation import await_human_hesitation_tasks
 from nexus.shared.tg_connection import (
     telegram_network_slot,
     telethon_connect_kwargs_for_session_base,
@@ -123,7 +124,11 @@ async def async_telegram_client(
                 api_hash,
                 **extra,
             ) as client:
+                setattr(client, "_nexus_human_hesitation_tasks", [])
                 yield client
+                await await_human_hesitation_tasks(client)
         else:
             async with TelegramClient(session_base, api_id, api_hash, **extra) as client:
+                setattr(client, "_nexus_human_hesitation_tasks", [])
                 yield client
+                await await_human_hesitation_tasks(client)

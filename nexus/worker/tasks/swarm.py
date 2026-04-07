@@ -2,7 +2,7 @@
 swarm.community_factory — Israeli Community Factory: role split, group creation,
 distributed joins with FloodWait / ban handling, and LLM-driven Hebrew chatter.
 
-Redis namespace: nexus:swarm:factory:*
+Redis namespace: nexus:swarm:factory:*, nexus:swarm:lore_facts
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ from nexus.worker.services.tg_session import (
     resolve_telethon_creds,
 )
 from nexus.worker.task_registry import registry
+from nexus.worker.tasks.reactions import send_passive_group_reaction
 
 log = structlog.get_logger(__name__)
 
@@ -117,8 +118,7 @@ EXAMPLES OF GOOD, AUTHENTIC OUTPUTS (DO THIS):
 # Twelve fixed archetypes — index chosen deterministically from MD5(session path).
 PERSONA_ARCHETYPES: list[str] = [
     (
-        "ARCHETYPE Ars/פרח: עצבני, סלנג אגרסיבי, 'אחי' 'נודר' 'בדוק', טעויות כתיב מכוונות "
-        "('ניראה' במקום 'נראה'). קצר וחד."
+        "ARCHETYPE Ars/פרח: עצבני, סלנג אגרסיבי, 'אחי' 'נודר' 'בדוק'. קצר וחד."
     ),
     (
         "ARCHETYPE Boomer: בן/בת 60+, נקודות '...' ואימוג'ים 🙏🌹, מתלונן על ממשלה/צעירים, "
@@ -375,6 +375,103 @@ def _strip_hashtags_and_cleanup(text: str) -> str:
 
 def _is_hebrew_char(ch: str) -> bool:
     return len(ch) == 1 and "\u0590" <= ch <= "\u05FF"
+
+
+# Israeli Hebrew keyboard proximity (Qwerty-style layout) — one adjacent swap, post-LLM only.
+_HEB_KEYBOARD_PROXIMITY: dict[str, tuple[str, ...]] = {
+    "א": ("ע", "ט", "ר"),
+    "ע": ("א", "י", "ח"),
+    "ח": ("כ", "י", "ל", "ע"),
+    "כ": ("ח", "ק", "ל", "ף"),
+    "ך": ("ל", "כ", "י"),
+    "ט": ("ת", "ו", "א", "ר"),
+    "ת": ("ט", "מ", "צ", "ד"),
+    "ק": ("כ", "ר", "ש"),
+    "ש": ("ד", "ח", "ק"),
+    "ר": ("א", "ט", "ק", "ד"),
+    "ד": ("ש", "ג", "ת", "ר"),
+    "י": ("ח", "ע", "ל", "ך"),
+    "ל": ("כ", "ח", "ך", "י"),
+    "ו": ("ט", "ה", "ן"),
+    "ה": ("ו", "ב", "נ"),
+    "ב": ("ה", "ס", "מ"),
+    "מ": ("נ", "ת", "ב", "צ"),
+    "נ": ("מ", "ה", "צ"),
+    "צ": ("ת", "מ", "נ"),
+    "ס": ("ב", "ש", "ז"),
+    "ז": ("ס", "ג"),
+    "ג": ("ד", "ז", "כ"),
+}
+
+
+def _inject_hebrew_typo(text: str) -> tuple[str, str | None]:
+    """
+    With probability 5%, corrupt one Hebrew token by swapping a letter to a keyboard neighbor.
+    Returns (possibly_modified_text, original_correct_word) for a follow-up '*word' reply, or (text, None).
+    """
+    s = text or ""
+    if not s.strip() or random.random() >= 0.05:
+        return s, None
+    spans = list(re.finditer(r"\S+", s))
+    if not spans:
+        return s, None
+    candidates: list[re.Match[str]] = []
+    for m in spans:
+        w = m.group(0)
+        if not any(_is_hebrew_char(c) for c in w):
+            continue
+        if not any(c in _HEB_KEYBOARD_PROXIMITY for c in w):
+            continue
+        candidates.append(m)
+    if not candidates:
+        return s, None
+    m = random.choice(candidates)
+    orig_word = m.group(0)
+    chars = list(orig_word)
+    positions = [i for i, c in enumerate(chars) if c in _HEB_KEYBOARD_PROXIMITY]
+    if not positions:
+        return s, None
+    i = random.choice(positions)
+    old_c = chars[i]
+    alts = tuple(x for x in _HEB_KEYBOARD_PROXIMITY[old_c] if x != old_c)
+    if not alts:
+        return s, None
+    chars[i] = random.choice(alts)
+    new_word = "".join(chars)
+    if new_word == orig_word:
+        return s, None
+    new_text = s[: m.start()] + new_word + s[m.end() :]
+    return new_text, orig_word
+
+
+async def _send_factory_plain_text_with_hebrew_typo(
+    client: Any,
+    entity: Any,
+    body: str,
+    *,
+    reply_to_id: int | None,
+    sent: list[Any],
+) -> None:
+    """Plain send_message with optional post-LLM Hebrew typo + delayed '*correct_word' reply."""
+    chunk = (body or "")[:4096]
+    out_text, correct_word = _inject_hebrew_typo(chunk)
+    msg = await _telethon_send_text_schedule_hesitation(
+        client, entity, out_text, reply_to=reply_to_id, parse_mode=None
+    )
+    sent.append(msg)
+    if correct_word:
+        original_msg_id = getattr(msg, "id", None)
+        await asyncio.sleep(random.uniform(2.0, 5.0))
+        fix = f"*{correct_word.strip()}"[:4096]
+        if fix:
+            msg2 = await _telethon_send_text_schedule_hesitation(
+                client,
+                entity,
+                fix,
+                reply_to=int(original_msg_id) if original_msg_id is not None else None,
+                parse_mode=None,
+            )
+            sent.append(msg2)
 
 
 def _anti_robot_message_text(text: str, *, short_mutations: bool = True) -> str:
@@ -821,7 +918,11 @@ async def _generate_unique_amcha_turn(redis: Any, group_id: int, **kwargs: Any) 
 
 
 def _build_amcha_system_prompt(
-    session_base: str, persona_seed: str | None, *, privileged_anchor: bool = False
+    session_base: str,
+    persona_seed: str | None,
+    *,
+    privileged_anchor: bool = False,
+    community_lore_line: str | None = None,
 ) -> str:
     """
     System prompt: base Israeli swarm rules, few-shot BAD/GOOD examples,
@@ -848,7 +949,15 @@ def _build_amcha_system_prompt(
             f"Your unique persona seed is {persona_seed.strip()}. You MUST output a completely unique response "
             "never seen before. NEVER use generic templates."
         )
-    return "\n\n".join(parts)
+    out = "\n\n".join(parts)
+    lore = (community_lore_line or "").strip()
+    if lore:
+        out += (
+            "\n\nCommunity inside joke: "
+            + lore
+            + "\nIf relevant, casually mock the user involved or bring this up naturally."
+        )
+    return out
 
 
 def _message_text_for_factory_prompt(m: Any) -> str | None:
@@ -1046,21 +1155,42 @@ async def _send_amcha_messages(
 ) -> list[Any]:
     sent: list[Any] = []
     text = primary[:4096]
+    text, typo_correct_word = _inject_hebrew_typo(text)
     try:
-        msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=parse_mode)
+        msg = await _telethon_send_text_schedule_hesitation(
+            client, entity, text, reply_to=reply_to_id, parse_mode=parse_mode
+        )
         sent.append(msg)
     except Exception as exc:
         if parse_mode:
             log.debug("factory_send_md_fallback", error=str(exc))
-            msg = await client.send_message(entity, text, reply_to=reply_to_id, parse_mode=None)
+            msg = await _telethon_send_text_schedule_hesitation(
+                client, entity, text, reply_to=reply_to_id, parse_mode=None
+            )
             sent.append(msg)
         else:
             raise
+    if typo_correct_word:
+        original_msg_id = getattr(msg, "id", None)
+        await asyncio.sleep(random.uniform(2.0, 5.0))
+        star_fix = f"*{typo_correct_word.strip()}"[:4096]
+        if star_fix:
+            sent.append(
+                await _telethon_send_text_schedule_hesitation(
+                    client,
+                    entity,
+                    star_fix,
+                    reply_to=int(original_msg_id) if original_msg_id is not None else None,
+                    parse_mode=None,
+                )
+            )
     if needs_correction and (correction or "").strip():
         await asyncio.sleep(random.uniform(2.0, 4.0))
         fix = _finalize_correction_message(correction)[:4096]
         if fix:
-            msg2 = await client.send_message(entity, fix, reply_to=None, parse_mode=None)
+            msg2 = await _telethon_send_text_schedule_hesitation(
+                client, entity, fix, reply_to=None, parse_mode=None
+            )
             sent.append(msg2)
     return sent
 
@@ -1118,7 +1248,6 @@ async def _generate_amcha_turn(
     role: Literal["opener", "replier"],
     stance_he: str,
     last_five_block: str,
-    typo_must_correct: bool,
     anchor_preview: str | None = None,
     recent_texts: list[str] | None = None,
     active_topic_line: str | None = None,
@@ -1128,12 +1257,16 @@ async def _generate_amcha_turn(
     rich_media_mode: bool = False,
     global_recent_outgoing: list[str] | None = None,
     privileged_anchor: bool = False,
+    community_lore_line: str | None = None,
     regeneration_attempt: int = 0,
 ) -> dict[str, Any]:
     anti = _anti_duplication_prompt_suffix(list(recent_texts or []))
     anti += _global_outgoing_prompt_suffix(list(global_recent_outgoing or []))
     system_prompt = _build_amcha_system_prompt(
-        session_base, persona_seed, privileged_anchor=privileged_anchor
+        session_base,
+        persona_seed,
+        privileged_anchor=privileged_anchor,
+        community_lore_line=community_lore_line,
     )
     effective_stance = (
         random.choice(AMCHA_STANCES_PRIVILEGED_HE) if privileged_anchor else stance_he
@@ -1162,15 +1295,10 @@ async def _generate_amcha_turn(
             '{"text":"...","needs_correction":true/false,"correction":"..."} — מותר גם primary_message/correction_message במקום text/correction. '
             "article_url ו-link_label — מחרוזות; כשאין קישור חדשותי השאר ריק."
         )
-    if typo_must_correct:
-        typo_field = "message_text, primary_message או text" if rich_media_mode else "primary_message או text"
-        typo_rule = (
-            f"חובה: needs_correction=true — שים ב-{typo_field} טעות הקלדה עברית נפוצה "
-            "(למשל בוט במקום טוב, או ניראה לי במקום נראה לי), "
-            "וב-correction או correction_message תיקון אותנטי קצר כמו 'טוב*' או 'סליחה טוב*' או 'איזה אהבל אני, טוב*'."
-        )
-    else:
-        typo_rule = "needs_correction חייב להיות false; correction/correction_message יכול להיות מחרוזת ריקה."
+    typo_rule = (
+        "needs_correction חייב להיות false; correction/correction_message ריקים. "
+        "כתוב עברית תקנית וברורה — בלי טעויות כתיב מכוונות בפלט."
+    )
 
     opener_news_clause = ""
     if news_opener:
@@ -1661,7 +1789,9 @@ async def _append_rich_correction_messages(
     await asyncio.sleep(random.uniform(2.0, 4.0))
     fix = _finalize_correction_message(cm)[:4096]
     if fix:
-        msg2 = await client.send_message(entity, fix, reply_to=None, parse_mode=None)
+        msg2 = await _telethon_send_text_schedule_hesitation(
+            client, entity, fix, reply_to=None, parse_mode=None
+        )
         sent.append(msg2)
 
 
@@ -1705,7 +1835,9 @@ async def _send_rich_factory_messages(
     try:
         if action in ("text", "text_with_emoji"):
             body = (mt[:4096] if mt else "וואלה") or "וואלה"
-            sent.append(await client.send_message(entity, body, reply_to=reply_to_id, parse_mode=None))
+            await _send_factory_plain_text_with_hebrew_typo(
+                client, entity, body, reply_to_id=reply_to_id, sent=sent
+            )
         elif action == "sticker":
             msg = await _try_send_random_sticker_from_packs(client, entity, reply_to=reply_to_id)
             if msg is not None:
@@ -1714,19 +1846,20 @@ async def _send_rich_factory_messages(
                 line = (line or "חחח").strip()
                 try:
                     smid = getattr(msg, "id", None)
-                    sent.append(
-                        await client.send_message(
-                            entity,
-                            line,
-                            reply_to=int(smid) if smid is not None else reply_to_id,
-                            parse_mode=None,
-                        )
+                    await _send_factory_plain_text_with_hebrew_typo(
+                        client,
+                        entity,
+                        line,
+                        reply_to_id=int(smid) if smid is not None else reply_to_id,
+                        sent=sent,
                     )
                 except Exception as exc:
                     log.debug("factory_sticker_text_followup_failed", error=str(exc))
             else:
                 fb = (mt[:4096] if mt else "😂") or "😂"
-                sent.append(await client.send_message(entity, fb, reply_to=reply_to_id, parse_mode=None))
+                await _send_factory_plain_text_with_hebrew_typo(
+                    client, entity, fb, reply_to_id=reply_to_id, sent=sent
+                )
         elif action == "gif":
             gif_url = await _resolve_gif_media_url(iq or "funny")
             msg_obj = None
@@ -1752,13 +1885,12 @@ async def _send_rich_factory_messages(
                     line = (line or "וואלה").strip()
                     gmid = getattr(msg_obj, "id", None)
                     try:
-                        sent.append(
-                            await client.send_message(
-                                entity,
-                                line,
-                                reply_to=int(gmid) if gmid is not None else reply_to_id,
-                                parse_mode=None,
-                            )
+                        await _send_factory_plain_text_with_hebrew_typo(
+                            client,
+                            entity,
+                            line,
+                            reply_to_id=int(gmid) if gmid is not None else reply_to_id,
+                            sent=sent,
                         )
                     except Exception as exc:
                         log.debug("factory_gif_text_followup_failed", error=str(exc))
@@ -1771,18 +1903,22 @@ async def _send_rich_factory_messages(
                     try:
                         fmid = getattr(fb_msg, "id", None)
                         if fmid is not None:
-                            sent.append(
-                                await client.send_message(
-                                    entity, line, reply_to=int(fmid), parse_mode=None
-                                )
+                            await _send_factory_plain_text_with_hebrew_typo(
+                                client,
+                                entity,
+                                line,
+                                reply_to_id=int(fmid),
+                                sent=sent,
                             )
                     except Exception as exc:
                         log.debug("factory_gif_fallback_sticker_followup_failed", error=str(exc))
                 else:
-                    sent.append(
-                        await client.send_message(
-                            entity, (mt or "וואלה")[:4096], reply_to=reply_to_id, parse_mode=None
-                        )
+                    await _send_factory_plain_text_with_hebrew_typo(
+                        client,
+                        entity,
+                        (mt or "וואלה")[:4096],
+                        reply_to_id=reply_to_id,
+                        sent=sent,
                     )
         elif action == "image":
             data, fname = await _fetch_image_bytes_for_query(iq or "city", persona_seed)
@@ -1813,29 +1949,37 @@ async def _send_rich_factory_messages(
                     try:
                         imid = getattr(msg_obj, "id", None)
                         if imid is not None:
-                            sent.append(
-                                await client.send_message(
-                                    entity, line[:4096], reply_to=int(imid), parse_mode=None
-                                )
+                            await _send_factory_plain_text_with_hebrew_typo(
+                                client,
+                                entity,
+                                line[:4096],
+                                reply_to_id=int(imid),
+                                sent=sent,
                             )
                     except Exception as exc:
                         log.debug("factory_image_text_followup_failed", error=str(exc))
             else:
-                sent.append(
-                    await client.send_message(
-                        entity, (mt or "וואלה")[:4096], reply_to=reply_to_id, parse_mode=None
-                    )
+                await _send_factory_plain_text_with_hebrew_typo(
+                    client,
+                    entity,
+                    (mt or "וואלה")[:4096],
+                    reply_to_id=reply_to_id,
+                    sent=sent,
                 )
         else:
             body = (mt[:4096] if mt else "וואלה") or "וואלה"
-            sent.append(await client.send_message(entity, body, reply_to=reply_to_id, parse_mode=None))
+            await _send_factory_plain_text_with_hebrew_typo(
+                client, entity, body, reply_to_id=reply_to_id, sent=sent
+            )
     except Exception as exc:
         log.debug("factory_rich_send_failed", action=action, error=str(exc))
         try:
-            sent.append(
-                await client.send_message(
-                    entity, (mt or "וואלה")[:4096], reply_to=reply_to_id, parse_mode=None
-                )
+            await _send_factory_plain_text_with_hebrew_typo(
+                client,
+                entity,
+                (mt or "וואלה")[:4096],
+                reply_to_id=reply_to_id,
+                sent=sent,
             )
         except Exception as exc2:
             log.warning("factory_rich_fallback_failed", error=str(exc2))
@@ -1912,6 +2056,153 @@ async def _sync_active_sessions(redis: Any, all_bases: list[str]) -> None:
     m["active_sessions"] = active
     m["updated_at"] = datetime.now(timezone.utc).isoformat()
     await _redis_json_set(redis, KEY_METRICS, m)
+
+
+def _normalize_extracted_lore_sentence(raw: str | None) -> str:
+    if not raw:
+        return ""
+    s = str(raw).strip()
+    s = s.split("\n")[0].strip()
+    low = s.lower()
+    for pref in ("משפט:", "תשובה:", "סיכום:", "sentence:", "output:"):
+        if low.startswith(pref):
+            s = s[len(pref) :].strip()
+            low = s.lower()
+    if len(s) >= 2 and s[0] in ('"', "'") and s[-1] == s[0]:
+        s = s[1:-1].strip()
+    return s[:500]
+
+
+def _lore_history_block_from_messages(messages_newest_first: list[Any]) -> str:
+    chronological = list(reversed(messages_newest_first))
+    lines: list[str] = []
+    for m in chronological:
+        t = _message_text_for_factory_prompt(m)
+        if not t:
+            continue
+        sid = getattr(m, "sender_id", None)
+        lab = str(sid) if sid is not None else "?"
+        lines.append(f"{lab}: {t}")
+    return "\n".join(lines)
+
+
+def _resolve_lore_target_group_id(parameters: dict[str, Any], groups: list[Any]) -> int | None:
+    raw = parameters.get("group_id")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    env_g = (os.getenv("NEXUS_SWARM_LORE_GROUP_ID") or "").strip()
+    if env_g:
+        try:
+            return int(env_g)
+        except ValueError:
+            pass
+    for g in groups:
+        if isinstance(g, dict) and g.get("group_id") is not None:
+            try:
+                return int(g["group_id"])
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+@registry.register("swarm.lore_nightly")
+async def swarm_lore_nightly(parameters: dict[str, Any]) -> dict[str, Any]:
+    """
+    Nightly lore: last N messages from the factory group → Ollama (Mac Mini) → Redis list
+    ``nexus:swarm:lore_facts`` (newest-first, capped at LORE_FACTS_LIST_MAX).
+    """
+    redis = parameters.get("__redis__")
+    if redis is None:
+        return {"status": "failed", "error": "redis unavailable"}
+
+    roles = await _redis_json_get(redis, KEY_ROLES)
+    groups = await _redis_json_get(redis, KEY_GROUPS)
+    if not isinstance(roles, dict) or not isinstance(groups, list) or not groups:
+        return {"status": "skipped", "reason": "missing roles or groups"}
+
+    target_gid = _resolve_lore_target_group_id(parameters, groups)
+    if target_gid is None:
+        return {"status": "skipped", "reason": "no group_id"}
+
+    owners = list(roles.get("owners") or [])
+    members = list(roles.get("members") or [])
+    pool = owners + members
+    if not pool:
+        return {"status": "skipped", "reason": "no sessions"}
+
+    ollama_base = _resolve_ollama_base_url()
+    ollama_model = _resolve_ollama_model()
+    if not ollama_base:
+        return {"status": "failed", "error": "NEXUS_OLLAMA_BASE_URL / OLLAMA_HOST not set"}
+
+    random.shuffle(pool)
+    last_exc: str | None = None
+    for session_base in pool:
+        if await _is_session_banned(redis, session_base):
+            continue
+        until = await _cooldown_until(redis, session_base)
+        if until and datetime.now(timezone.utc) < until:
+            continue
+        try:
+            async with async_telegram_client(session_base, parameters) as client:
+                if not await client.is_user_authorized():
+                    await _mark_banned(redis, session_base)
+                    continue
+                await _ensure_factory_profile(client, redis, session_base)
+                ent = await client.get_entity(target_gid)
+                hist = await client.get_messages(ent, limit=LORE_NIGHTLY_MESSAGE_LIMIT)
+                block = _lore_history_block_from_messages(list(hist or []))
+                if not block.strip():
+                    return {
+                        "status": "skipped",
+                        "reason": "no_text_in_history",
+                        "group_id": target_gid,
+                    }
+
+                user_he = LORE_EXTRACTION_USER_PREFIX + block
+                raw_ol = await _ollama_chat_completion_content(
+                    ollama_base,
+                    ollama_model,
+                    LORE_EXTRACTION_SYSTEM,
+                    user_he,
+                    temperature=0.45,
+                    top_p=0.9,
+                    max_tokens=160,
+                )
+                fact = _normalize_extracted_lore_sentence(raw_ol)
+                if not fact:
+                    log.warning("lore_nightly_empty_llm", group_id=target_gid)
+                    return {
+                        "status": "failed",
+                        "error": "ollama_empty_output",
+                        "group_id": target_gid,
+                    }
+
+                await redis.lpush(KEY_LORE_FACTS, fact)
+                await redis.ltrim(KEY_LORE_FACTS, 0, LORE_FACTS_LIST_MAX - 1)
+                log.info("lore_nightly_stored", group_id=target_gid, fact_len=len(fact))
+                return {"status": "completed", "group_id": target_gid, "fact_len": len(fact)}
+        except ValueError as exc:
+            last_exc = str(exc)
+            log.warning("lore_nightly_creds", error=last_exc)
+        except Exception as exc:
+            last_exc = str(exc)
+            kind = classify_telethon_account_error(exc)
+            if kind == "ban":
+                await _mark_banned(redis, session_base)
+            elif kind == "flood":
+                sec = int(flood_wait_seconds(exc) * 1.1) + 1
+                await _set_cooldown(redis, session_base, sec)
+            log.warning("lore_nightly_failed", error=last_exc[:300], group_id=target_gid)
+
+    return {
+        "status": "failed",
+        "error": last_exc or "no_session_succeeded",
+        "group_id": target_gid,
+    }
 
 
 async def _enqueue_task(task_type: str, parameters: dict[str, Any]) -> bool:
@@ -2490,7 +2781,6 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                     ) or None
                     topic = random.choice(FACTORY_TOPICS)
                     stance = random.choice(AMCHA_STANCES_HE)
-                    typo_must = random.random() < 0.15
                     privileged_burst = False
                     try:
                         privileged_burst = await sender_of_message_is_owner_or_admin(
@@ -2498,6 +2788,9 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         )
                     except Exception:
                         privileged_burst = False
+                    lore_line = await _maybe_sample_lore_for_amcha(
+                        redis, privileged_anchor=privileged_burst
+                    )
                     turn = await _generate_unique_amcha_turn(
                         redis,
                         gid_int,
@@ -2508,7 +2801,6 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         role="replier",
                         stance_he=stance,
                         last_five_block=last_five,
-                        typo_must_correct=typo_must,
                         anchor_preview=anchor_preview or None,
                         recent_texts=recent_texts,
                         active_topic_line=active_topic_line,
@@ -2516,6 +2808,7 @@ async def community_factory_burst_reply_chain(parameters: dict[str, Any]) -> dic
                         news_opener=False,
                         persona_seed=_session_persona_seed(session_base),
                         privileged_anchor=privileged_burst,
+                        community_lore_line=lore_line,
                         global_recent_outgoing=global_recent_burst,
                     )
                     if turn is None:
@@ -2657,7 +2950,6 @@ async def _factory_converse_slot(
 
     reply_to_id: int | None = None
     stance = random.choice(AMCHA_STANCES_HE)
-    typo_must_correct = random.random() < 0.15
     news_opener = role == "opener" and opener_fresh_event
 
     sent_list: list[Any] = []
@@ -2669,6 +2961,20 @@ async def _factory_converse_slot(
                 return {**base_out, "status": "skipped", "reason": "unauthorized"}
             await _ensure_factory_profile(client, redis, session_base)
             ent = await client.get_entity(gid_int)
+            if news_opener and random.random() < 0.7:
+                try:
+                    ok = await send_passive_group_reaction(client, ent, session_base)
+                except Exception as exc:
+                    log.debug("news_wake_passive_reaction_failed", error=str(exc))
+                    ok = False
+                if ok:
+                    await _bump_metric(redis, "messages_sent", 1)
+                return {
+                    **base_out,
+                    "status": "completed",
+                    "action": "news_reaction_only",
+                    "reaction_sent": ok,
+                }
             refs_newest_first: list[tuple[int, str]] = []
             recent_texts: list[str] = []
             hist: list[Any] = []
@@ -2724,6 +3030,9 @@ async def _factory_converse_slot(
                 except Exception:
                     privileged_anchor = False
 
+            lore_line = await _maybe_sample_lore_for_amcha(
+                redis, privileged_anchor=privileged_anchor
+            )
             turn = await _generate_unique_amcha_turn(
                 redis,
                 gid_int,
@@ -2734,7 +3043,6 @@ async def _factory_converse_slot(
                 role="opener" if role == "opener" else "replier",
                 stance_he=stance,
                 last_five_block=last_five_block,
-                typo_must_correct=typo_must_correct,
                 anchor_preview=anchor_preview,
                 recent_texts=recent_texts,
                 active_topic_line=active_topic_line,
@@ -2742,6 +3050,7 @@ async def _factory_converse_slot(
                 news_opener=news_opener,
                 persona_seed=persona,
                 rich_media_mode=True,
+                community_lore_line=lore_line,
                 global_recent_outgoing=global_recent,
                 privileged_anchor=privileged_anchor,
             )

@@ -35,6 +35,9 @@ aiogram>=3.20
 # ── HTTP client ───────────────────────────────────────────────────────────────
 httpx>=0.27
 
+# ── Hebrew TTS (swarm voice notes — Edge TTS + ffmpeg → OGG Opus) ─────────────
+edge-tts>=6.1
+
 # ── Ops Sync (ahu) — merge nexus_audit_*.xlsx Account Summary into /api/ahu/stats
 openpyxl>=3.1.2
 

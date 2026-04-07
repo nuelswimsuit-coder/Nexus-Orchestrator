@@ -15,6 +15,8 @@ SWARM_MAJOR_NEWS_SCORE         OpenClaw score ≥ this ⇒ major news burst (def
 SWARM_NEWS_JITTER_MIN_S        Lower bound for per-bot news-response delay (default 5).
 SWARM_NEWS_JITTER_MAX_S        Upper bound (default 900 = 15 minutes).
 SWARM_NEWS_JITTER_BURST_MAX_S  Upper bound during major news / non-quiet (default 120).
+SWARM_GLOBAL_MEDIA_MIN_GAP_S   Min seconds between any two photo/file Telegram uploads
+                               swarm-wide (default 900 = 15 minutes). One bot per window.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from typing import Any
 
 OPENCLAW_NEWS_SENTIMENT_KEY = "nexus:openclaw:news_sentiment"
 PACING_LAST_SEND_KEY = "nexus:swarm:pacing:last_global_send"
+PACING_LAST_GLOBAL_MEDIA_KEY = "nexus:swarm:pacing:last_global_media_send"
 
 _LUA_ACQUIRE = """
 local last_raw = redis.call('GET', KEYS[1])
@@ -171,6 +174,37 @@ async def wait_global_telegram_send_turn(
         if w <= 0:
             return
         sleep_s = min(max(w, 0.05), 5.0) + random.uniform(0, 0.35)
+        await asyncio.sleep(sleep_s)
+
+
+async def wait_global_media_send_turn(redis: Any | None) -> None:
+    """
+    Block until this process may upload photo/file media to Telegram (global lock).
+
+    Enforces at most one media send across all swarm workers within
+    ``SWARM_GLOBAL_MEDIA_MIN_GAP_S`` (default 15 minutes), independent of text pacing.
+    """
+    gap = _float_env("SWARM_GLOBAL_MEDIA_MIN_GAP_S", 900.0)
+    gap = max(60.0, min(3600.0, float(gap)))
+    if redis is None:
+        await asyncio.sleep(random.uniform(45.0, 180.0))
+        return
+    while True:
+        now = time.time()
+        try:
+            wait = await redis.eval(
+                _LUA_ACQUIRE, 1, PACING_LAST_GLOBAL_MEDIA_KEY, str(now), str(gap)
+            )
+        except Exception:
+            await asyncio.sleep(1.0)
+            continue
+        try:
+            w = float(wait)
+        except (TypeError, ValueError):
+            w = 0.0
+        if w <= 0:
+            return
+        sleep_s = min(max(w, 0.05), 30.0) + random.uniform(0, 0.5)
         await asyncio.sleep(sleep_s)
 
 

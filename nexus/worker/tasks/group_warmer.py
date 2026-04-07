@@ -36,6 +36,7 @@ from nexus.services.recent_news_digest import (
 from nexus.services.tg_message_text import llm_media_prefix_for_message, telethon_display_text
 from nexus.services.tg_participant_privilege import sender_of_message_is_owner_or_admin
 from nexus.worker.task_registry import registry
+from nexus.shared.swarm_pacing import wait_global_media_send_turn
 
 log = structlog.get_logger(__name__)
 
@@ -285,6 +286,17 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
             return {"status": "failed", "error": "GEMINI_API_KEY missing"}
         if not api_id or not api_hash:
             return {"status": "failed", "error": "TELEFIX_API_ID / TELEFIX_API_HASH missing"}
+
+        pre_raw = parameters.get("pre_tick_sleep_s")
+        if pre_raw is not None and redis is not None:
+            try:
+                pre = float(pre_raw)
+                if pre > 0:
+                    pre = min(pre, 4000.0)
+                    log.info("warmer_pre_tick_sleep", group_key=group_key, seconds=pre)
+                    await asyncio.sleep(pre)
+            except (TypeError, ValueError):
+                pass
 
         state_key = f"{SWARM_STATE_PREFIX}{group_key}"
         community_key = f"{SWARM_COMMUNITY_PREFIX}{group_key}"
@@ -543,7 +555,13 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                         log.debug("warmer_privileged_reply_regen_failed", error=str(exc))
 
                 message_id: int | None = None
-                if text and action == "tick":
+                body = (text or "").strip()
+                if not body and turn_i == 0 and (news_bundle.image_url or "").strip():
+                    body = (news_bundle.anchor_title or "").strip() or (
+                        (news_bundle.digest_text or "").strip()[:400]
+                    )
+                caption_for_media = (body or "")[:1024]
+                if body and action == "tick":
                     photo_bytes: bytes | None = None
                     if turn_i == 0 and news_bundle.image_url:
                         photo_bytes = await download_image_bytes(news_bundle.image_url)
@@ -556,6 +574,14 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                         post_entity = await poster.get_entity(int(group_id))
                         try:
                             if photo_bytes:
+                                if not (caption_for_media or "").strip():
+                                    log.info(
+                                        "warmer_media_skipped_no_caption",
+                                        group_key=group_key,
+                                    )
+                                    photo_bytes = None
+                            if photo_bytes:
+                                await wait_global_media_send_turn(redis)
                                 salt = make_image_upload_salt_seed(Path(session_path).stem)
                                 photo_bytes, _ = prepare_jpeg_png_for_telegram_upload(
                                     photo_bytes, salt_seed=salt
@@ -566,7 +592,7 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                                     sent = await poster.send_file(
                                         post_entity,
                                         file=(fname, bio),
-                                        caption=text[:1024],
+                                        caption=caption_for_media[:1024],
                                         reply_to=reply_id if reply_id else None,
                                         force_document=False,
                                         parse_mode=link_parse_mode,
@@ -576,7 +602,7 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                                     log.warning("warmer_send_file_failed", error=str(photo_exc))
                                     sent = await poster.send_message(
                                         post_entity,
-                                        text,
+                                        body,
                                         reply_to=reply_id if reply_id else None,
                                         parse_mode=link_parse_mode,
                                     )
@@ -586,7 +612,7 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                             else:
                                 sent = await poster.send_message(
                                     post_entity,
-                                    text,
+                                    body,
                                     reply_to=reply_id if reply_id else None,
                                     parse_mode=link_parse_mode,
                                 )
@@ -596,7 +622,7 @@ async def group_warmer(parameters: dict[str, Any]) -> dict[str, Any]:
                             try:
                                 sent = await poster.send_message(
                                     post_entity,
-                                    text,
+                                    body,
                                     reply_to=reply_id if reply_id else None,
                                     parse_mode=link_parse_mode,
                                 )

@@ -55,11 +55,13 @@ import nexus.worker.tasks.group_warmer  # noqa: F401 — registers swarm.group_w
 import nexus.worker.tasks.health_check  # noqa: F401 — registers management.group_health_scan
 import nexus.worker.tasks.incubator_spawn  # noqa: F401 — registers nexus.incubator.*
 import nexus.worker.tasks.israeli_media_ingest  # noqa: F401 — swarm.israeli_media.ingest
+import nexus.worker.tasks.lurkers  # noqa: F401 — registers swarm.lurkers.tick
 import nexus.worker.tasks.moltbot  # noqa: F401 — registers bot.moltbot
 import nexus.worker.tasks.news_digest_refresh  # noqa: F401 — swarm.news_digest.refresh
 import nexus.worker.tasks.openclaw  # noqa: F401 — registers scraper.openclaw/openclaw.browser_scrape
 import nexus.worker.tasks.polymarket_bot  # noqa: F401 — trading.polymarket_bot_tick / trading.polymarket_bot_session / polymarket_bot
 import nexus.worker.tasks.prediction  # noqa: F401 — registers prediction.cross_exchange
+import nexus.worker.tasks.reactions  # noqa: F401 — registers swarm.passive_reaction
 import nexus.worker.tasks.retention_monitor  # noqa: F401 — retention.guardian.monitor
 import nexus.worker.tasks.scale  # noqa: F401 — registers nexus.scale_worker
 import nexus.worker.tasks.sentinel_seo  # noqa: F401 — registers management.sentinel_seo

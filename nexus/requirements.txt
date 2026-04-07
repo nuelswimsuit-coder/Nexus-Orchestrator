@@ -1,0 +1,3 @@
+# Minimal deps for standalone Nexus worker maintenance scripts (e.g. localize_profiles).
+# Main app also lists telethon in repo-root requirements.txt.
+telethon>=1.36

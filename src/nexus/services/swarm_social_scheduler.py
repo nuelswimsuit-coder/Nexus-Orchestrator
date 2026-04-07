@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 from datetime import datetime, timezone
 from typing import Any
 
@@ -74,7 +75,7 @@ class SwarmSocialScheduler:
             return
 
         now = datetime.now(timezone.utc)
-        pending: list[Any] = []
+        to_queue: list[tuple[str, dict[str, Any], int, list[Any]]] = []
         for group_key, cfg in groups.items():
             if not isinstance(cfg, dict):
                 continue
@@ -105,7 +106,31 @@ class SwarmSocialScheduler:
                 except Exception:
                     pass
 
-            pending.append(self._dispatch_group_warmer(group_key, cfg, int(gid), sessions))
+            to_queue.append((str(group_key), cfg, int(gid), sessions))
+
+        digest_stagger = False
+        if len(to_queue) > 1:
+            try:
+                from nexus.services.recent_news_digest import NEWS_DIGEST_UPDATED_AT_KEY
+
+                win = float(os.getenv("SWARM_WARMER_DIGEST_STAGGER_WINDOW_S", "900") or "900")
+                win = max(60.0, min(7200.0, win))
+                raw_ts = await self._redis.get(NEWS_DIGEST_UPDATED_AT_KEY)
+                if raw_ts:
+                    du = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+                    if du.tzinfo is None:
+                        du = du.replace(tzinfo=timezone.utc)
+                    age = (now - du).total_seconds()
+                    digest_stagger = 0.0 <= age <= win
+            except Exception:
+                digest_stagger = False
+
+        pending: list[Any] = []
+        for gk, cfg, gid, sessions in to_queue:
+            pre_s = random.randint(600, 2700) if digest_stagger else 0
+            pending.append(
+                self._dispatch_group_warmer(gk, cfg, gid, sessions, pre_tick_sleep_s=pre_s)
+            )
 
         if pending:
             await asyncio.gather(*pending)
@@ -116,6 +141,7 @@ class SwarmSocialScheduler:
         cfg: dict[str, Any],
         gid: int,
         sessions: list[Any],
+        pre_tick_sleep_s: int = 0,
     ) -> None:
         lock_key = f"{SWARM_LOCK_PREFIX}{group_key}"
         got = await self._redis.set(lock_key, "1", nx=True, ex=900)
