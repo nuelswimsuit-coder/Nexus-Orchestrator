@@ -3,15 +3,22 @@ Community vibe + chatter planning — Gemini 1.5 Flash JSON helpers.
 
 Used by ``swarm.group_warmer`` for persona assignment, topic selection,
 message composition, and periodic community classification.
+
+Performance: shared ``httpx`` client (pooling), ``ujson`` for bodies/parsing,
+tight ``maxOutputTokens`` and smaller transcript windows to cut GPU/CPU time.
+(Redis batching belongs in callers; this module does not touch Redis.)
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
 
+import httpx
 import structlog
+import ujson
 
 from nexus.services.tg_message_text import strip_trailing_israeli_news_outlet
 
@@ -22,6 +29,29 @@ GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
 )
+
+# Smaller context → faster inference (Ollama path mirrors prompts upstream).
+_TRANSCRIPT_REFRESH_MAX = 4000
+_TRANSCRIPT_CHATTER_MAX = 3500
+_TRANSCRIPT_CLASSIFY_MAX = 6000
+_NEWS_DIGEST_MAX = 4000
+_ANCHOR_HEADLINE_MAX = 300
+_HOOKS_MAX = 12
+_MSG_INDEX_MAP_MAX = 20
+
+# Strict generation caps (Gemini maxOutputTokens).
+_TOK_DEFAULT = 512
+_TOK_PERSONAS = 320
+_TOK_TOPIC = 240
+_TOK_CHATTER = 64
+_TOK_CLASSIFY = 280
+
+_JSON_HEADERS = {"Content-Type": "application/json; charset=utf-8"}
+
+_RE_HASHTAG = re.compile(r"#\S+")
+_RE_SPACES = re.compile(r"\s{2,}")
+_RE_MD_FENCE_OPEN = re.compile(r"^```(?:json)?\s*", re.IGNORECASE)
+_RE_MD_FENCE_CLOSE = re.compile(r"\s*```$")
 
 _LAZY_NEWS_PREFIXES_HE: tuple[str, ...] = (
     "שמעתם כבר על ",
@@ -49,10 +79,36 @@ _CHATTER_OUTLET_TAIL_RE = re.compile(
     re.UNICODE,
 )
 
+_gemini_client: httpx.AsyncClient | None = None
+_gemini_client_lock = asyncio.Lock()
+
+
+def _dumps_bytes(obj: Any) -> bytes:
+    return ujson.dumps(obj, ensure_ascii=False).encode("utf-8")
+
+
+def _loads_dict(data: str | bytes) -> Any:
+    try:
+        return ujson.loads(data)
+    except (ValueError, TypeError):
+        return json.loads(data)
+
+
+async def _gemini_http_client() -> httpx.AsyncClient:
+    global _gemini_client
+    if _gemini_client is None:
+        async with _gemini_client_lock:
+            if _gemini_client is None:
+                _gemini_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(60.0, connect=10.0),
+                    limits=httpx.Limits(max_keepalive_connections=32, max_connections=64),
+                )
+    return _gemini_client
+
 
 def _strip_hashtags_and_cleanup(text: str) -> str:
-    s = re.sub(r"#\S+", "", text or "")
-    s = re.sub(r"\s{2,}", " ", s).strip()
+    s = _RE_HASHTAG.sub("", text or "")
+    s = _RE_SPACES.sub(" ", s).strip()
     return s
 
 
@@ -84,9 +140,10 @@ def _strip_trailing_news_attribution(text: str) -> str:
 
 
 def _cap_words(text: str, max_words: int = 10) -> str:
-    parts = (text or "").split()
+    raw = text or ""
+    parts = raw.split()
     if len(parts) <= max_words:
-        return (text or "").strip()
+        return raw.strip()
     return " ".join(parts[:max_words])
 
 
@@ -96,9 +153,8 @@ def _finalize_chatter_line(text: str) -> str:
     s = strip_trailing_israeli_news_outlet(s)
     s = _strip_trailing_news_attribution(s)
     s = _cap_words(s, 10)
-    parts = s.split()
-    if len(parts) == 1 and parts[0]:
-        s = f"{parts[0]} אחי"
+    if s and " " not in s:
+        s = f"{s} אחי"
     return s.strip()
 
 
@@ -106,9 +162,9 @@ def parse_json_object(raw: str) -> dict[str, Any]:
     """Strip optional markdown fences and parse a single JSON object."""
     text = raw.strip()
     if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*```$", "", text)
-    # Some models wrap with extra prose; grab outermost {...}
+        text = _RE_MD_FENCE_OPEN.sub("", text)
+        text = _RE_MD_FENCE_CLOSE.sub("", text)
+        text = text.strip()
     if "{" in text:
         start = text.index("{")
         depth = 0
@@ -118,8 +174,8 @@ def parse_json_object(raw: str) -> dict[str, Any]:
             elif ch == "}":
                 depth -= 1
                 if depth == 0:
-                    return json.loads(text[start : i + 1])
-    return json.loads(text)
+                    return _loads_dict(text[start : i + 1])
+    return _loads_dict(text)
 
 
 async def _gemini_json(
@@ -128,13 +184,11 @@ async def _gemini_json(
     user_text: str,
     *,
     temperature: float = 0.85,
-    max_tokens: int = 1024,
+    max_tokens: int = _TOK_DEFAULT,
     frequency_penalty: float | None = None,
     presence_penalty: float | None = None,
     top_p: float | None = None,
 ) -> dict[str, Any]:
-    import httpx
-
     url = f"{GEMINI_URL}?key={api_key}"
     combined = f"{system_instruction}\n\n---\n\n{user_text}"
     gen_cfg: dict[str, Any] = {
@@ -154,21 +208,21 @@ async def _gemini_json(
     }
     payload_fallback = {
         "contents": [{"role": "user", "parts": [{"text": combined}]}],
-        "generationConfig": dict(gen_cfg),
+        "generationConfig": gen_cfg,
     }
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(url, json=payload_primary)
-        if resp.status_code >= 400:
-            resp = await client.post(url, json=payload_fallback)
-        resp.raise_for_status()
-        data = resp.json()
-        cands = data.get("candidates") or []
-        if not cands:
-            raise ValueError("gemini_empty_candidates")
-        parts = cands[0].get("content", {}).get("parts") or []
-        if not parts or "text" not in parts[0]:
-            raise ValueError("gemini_no_text")
-        raw = parts[0]["text"]
+    client = await _gemini_http_client()
+    resp = await client.post(url, content=_dumps_bytes(payload_primary), headers=_JSON_HEADERS)
+    if resp.status_code >= 400:
+        resp = await client.post(url, content=_dumps_bytes(payload_fallback), headers=_JSON_HEADERS)
+    resp.raise_for_status()
+    data = _loads_dict(resp.content)
+    cands = data.get("candidates") or []
+    if not cands:
+        raise ValueError("gemini_empty_candidates")
+    parts = cands[0].get("content", {}).get("parts") or []
+    if not parts or "text" not in parts[0]:
+        raise ValueError("gemini_no_text")
+    raw = parts[0]["text"]
     return parse_json_object(raw)
 
 
@@ -185,18 +239,16 @@ async def assign_personas(
     if not api_key or not accounts:
         return []
     sys_prompt = (
-        "You invent realistic chat personas for organic group discussion. "
-        "Output ONLY valid JSON: {\"personas\":[{\"session_path\":\"\",\"username\":\"\","
-        "\"archetype\":\"short label e.g. The Skeptic\",\"voice\":\"how they type\","
-        "\"slang_notes\":\"terms they favor\"}]}. "
-        "Each archetype must be unique. Usernames may be empty — still assign personas."
+        "Invent distinct chat personas. Reply with JSON only: "
+        '{"personas":[{"session_path":"","username":"","archetype":"short label",'
+        '"voice":"typing style","slang_notes":"terms"}]}. '
+        "Unique archetypes; empty usernames OK."
     )
-    user = json.dumps(
-        {"accounts": accounts, "group_context_hint": group_hint},
-        ensure_ascii=False,
-    )
+    user = ujson.dumps({"accounts": accounts, "group_context_hint": group_hint}, ensure_ascii=False)
     try:
-        out = await _gemini_json(api_key, sys_prompt, user, temperature=0.9)
+        out = await _gemini_json(
+            api_key, sys_prompt, user, temperature=0.9, max_tokens=_TOK_PERSONAS
+        )
         personas = out.get("personas") or []
         if isinstance(personas, list) and len(personas) >= len(accounts):
             trimmed = personas[: len(accounts)]
@@ -205,7 +257,6 @@ async def assign_personas(
                     trimmed[i]["session_path"] = acc.get("session_path", "")
                     trimmed[i]["username"] = acc.get("username") or trimmed[i].get("username", "")
             return trimmed
-        # Pad / merge by index
         merged: list[dict[str, Any]] = []
         for i, acc in enumerate(accounts):
             p = personas[i] if i < len(personas) else {}
@@ -241,21 +292,22 @@ async def refresh_emerging_topic(
 ) -> dict[str, Any]:
     """Infer emerging identity and a fresh on-topic discussion thread."""
     sys_prompt = (
-        "You shape a group's 'emerging identity' from chat. "
-        "Output ONLY JSON: {\"emerging_identity\":\"2-4 sentences\","
-        "\"discussion_topic\":\"specific angle for next messages\","
-        "\"in_universe_hooks\":[\"optional rumor or meme names fitting the niche\"]}"
+        "From chat, infer group identity. JSON only: "
+        '{"emerging_identity":"2-4 sentences","discussion_topic":"next-message angle",'
+        '"in_universe_hooks":["niche memes/rumors"]}'
     )
-    user = json.dumps(
+    user = ujson.dumps(
         {
             "group_title": group_title,
             "prior_emerging_identity": prior_identity,
-            "recent_transcript": transcript[-8000:],
+            "recent_transcript": transcript[-_TRANSCRIPT_REFRESH_MAX:],
         },
         ensure_ascii=False,
     )
     try:
-        return await _gemini_json(api_key, sys_prompt, user, temperature=0.88)
+        return await _gemini_json(
+            api_key, sys_prompt, user, temperature=0.88, max_tokens=_TOK_TOPIC
+        )
     except Exception as exc:
         log.warning("refresh_emerging_topic_failed", error=str(exc))
         return {
@@ -288,57 +340,51 @@ async def compose_chatter_line(
     ``message_index_map``: [{\"id\": telegram int, \"sender\": str}, ...] newest first.
     """
     sys_prompt = (
-        "You write one authentic Telegram group line as an impatient Israeli — NOT a newsreader.\n"
-        "Rules: 2–10 words only (count them). Natural emoji/slang matching the speaker.\n"
-        "DRAMA & NAMES: When other_participant_handles is non-empty, address at least one peer by @username "
-        "inside the text (Hebrew phrasing e.g. 'מה אתה אומר @Yossi?', 'צודק @Hila זה ביזיון'). "
-        "Put @ in the text; mention_usernames JSON lists those handles without @.\n"
-        "If news_from_last_24h is non-empty, internalize ONE real item and output a fresh casual reaction "
-        "in your own words — NEVER copy/paste the headline, NEVER print [source] tags or '- ynet' / '- מעריב' / outlet names.\n"
-        "FORBIDDEN openers: 'שמעתם כבר', 'דיווח:', 'ראיתם מה', 'לפי דיווח'.\n"
-        "If you reply to another message (reply_to_id set): do NOT repeat their facts — only opinion, joke, complaint, or disagreement.\n"
-        "Do not invent stories not implied by the digest. "
-        "Output ONLY JSON: {\"text\":\"message\",\"reply_to_id\":null or integer,"
-        "\"mention_usernames\":[\"without@\"]}"
+        "One Telegram line: impatient Israeli, not newsreader. 2–10 words. "
+        "If other_participant_handles non-empty, @mention one peer in text; "
+        "mention_usernames = handles without @.\n"
+        "If news_from_last_24h set: one casual reaction, own words — no headline paste, "
+        "no [source], no '- ynet' / outlets.\n"
+        "Forbidden openers: שמעתם כבר, דיווח:, ראיתם מה, לפי דיווח.\n"
+        "If reply_to_id set: no repeating their facts — reaction only.\n"
+        'JSON only: {"text":"...","reply_to_id":null|int,"mention_usernames":["..."]}'
     )
     if require_peer_mention and other_handles and not privileged_reply_target:
-        sys_prompt += (
-            " MANDATORY: your text must include @mention of at least one handle from other_participant_handles."
-        )
+        sys_prompt += " MANDATORY: @mention from other_participant_handles."
     if drama_directive and not privileged_reply_target:
-        sys_prompt += f"\nScene direction (follow closely): {drama_directive.strip()}"
+        sys_prompt += f"\nScene: {drama_directive.strip()}"
     if privileged_reply_target:
         sys_prompt += (
-            " The message you reply to is from a group owner or admin: never argue, insult, "
-            "or use profanity; stay neutral, brief, and respectful."
+            " Replying to owner/admin: neutral, brief, respectful — no insults/profanity."
         )
     if forced_reply_to_id is not None:
-        sys_prompt += (
-            f" You MUST set reply_to_id in your JSON to exactly {int(forced_reply_to_id)}."
-        )
+        sys_prompt += f" reply_to_id must be {int(forced_reply_to_id)}."
+
     user_obj: dict[str, Any] = {
         "emerging_identity": emerging_identity,
         "discussion_topic": topic,
-        "in_universe_hooks": hooks,
-        "recent_transcript": transcript[-6000:],
+        "in_universe_hooks": hooks[:_HOOKS_MAX],
+        "recent_transcript": transcript[-_TRANSCRIPT_CHATTER_MAX:],
         "speaker_persona": speaker,
         "other_participant_handles": other_handles,
-        "message_ids_newest_first": message_index_map[:25],
+        "message_ids_newest_first": message_index_map[:_MSG_INDEX_MAP_MAX],
     }
     if forced_reply_to_id is not None:
         user_obj["required_reply_to_id"] = int(forced_reply_to_id)
         user_obj["forced_reply_rule"] = (
-            "You MUST reply to that message: 2–10 words, do NOT restate their facts or wording — reaction only."
+            "Reply to that id: 2–10 words, reaction only, no restating their wording."
         )
     nd = (news_digest or "").strip()
     if nd:
-        user_obj["news_from_last_24h"] = nd[:8000]
+        user_obj["news_from_last_24h"] = nd[:_NEWS_DIGEST_MAX]
     ah = (anchor_headline or "").strip()
     if ah:
-        user_obj["preferred_anchor_headline"] = ah[:500]
-    user = json.dumps(user_obj, ensure_ascii=False)
+        user_obj["preferred_anchor_headline"] = ah[:_ANCHOR_HEADLINE_MAX]
+    user = ujson.dumps(user_obj, ensure_ascii=False)
     try:
-        out = await _gemini_json(api_key, sys_prompt, user, temperature=0.92, max_tokens=96)
+        out = await _gemini_json(
+            api_key, sys_prompt, user, temperature=0.92, max_tokens=_TOK_CHATTER
+        )
         if isinstance(out, dict):
             out["text"] = _finalize_chatter_line(str(out.get("text") or ""))
         return out
@@ -354,17 +400,22 @@ async def classify_community(
 ) -> dict[str, Any]:
     """24h vibe scan — short dashboard labels + description text."""
     sys_prompt = (
-        "Classify the vibe of this chat for an operator dashboard. "
-        "Output ONLY JSON: {\"community_identity\":\"2-5 words e.g. Active Trading Floor\","
-        "\"group_description\":\"<=220 chars suitable for Telegram about text\","
-        "\"emerging_identity\":\"2-3 sentences internal summary\"}"
+        "Classify chat vibe for ops dashboard. JSON only: "
+        '{"community_identity":"2-5 words",'
+        '"group_description":"<=220 chars Telegram about",'
+        '"emerging_identity":"2-3 sentences"}'
     )
-    user = json.dumps(
-        {"group_title": group_title, "transcript": transcript[-12000:]},
+    user = ujson.dumps(
+        {
+            "group_title": group_title,
+            "transcript": transcript[-_TRANSCRIPT_CLASSIFY_MAX:],
+        },
         ensure_ascii=False,
     )
     try:
-        return await _gemini_json(api_key, sys_prompt, user, temperature=0.55, max_tokens=512)
+        return await _gemini_json(
+            api_key, sys_prompt, user, temperature=0.55, max_tokens=_TOK_CLASSIFY
+        )
     except Exception as exc:
         log.warning("classify_community_failed", error=str(exc))
         return {

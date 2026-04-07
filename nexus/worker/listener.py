@@ -47,26 +47,28 @@ from typing import Any
 import structlog
 from arq.connections import RedisSettings
 
-import nexus.worker.tasks.auto_scrape  # noqa: F401 — registers telegram.auto_scrape
-import nexus.worker.tasks.scale  # noqa: F401 — registers nexus.scale_worker
-import nexus.worker.tasks.content_factory  # noqa: F401 — registers telegram.content_factory
-import nexus.worker.tasks.group_warmer  # noqa: F401 — registers swarm.group_warmer
-import nexus.worker.tasks.news_digest_refresh  # noqa: F401 — swarm.news_digest.refresh
-import nexus.worker.tasks.swarm  # noqa: F401 — registers swarm.community_factory.*
-import nexus.worker.tasks.swarm_onboarding  # noqa: F401 — swarm.onboarding mass join
-import nexus.worker.tasks.incubator_spawn  # noqa: F401 — registers nexus.incubator.*
 import nexus.worker.tasks.account_mapper  # noqa: F401 — registers account_mapper.map
 import nexus.worker.tasks.auditor  # noqa: F401 — registers seo.watchdog.audit
+import nexus.worker.tasks.auto_scrape  # noqa: F401 — registers telegram.auto_scrape
+import nexus.worker.tasks.content_factory  # noqa: F401 — registers telegram.content_factory
+import nexus.worker.tasks.group_warmer  # noqa: F401 — registers swarm.group_warmer
 import nexus.worker.tasks.health_check  # noqa: F401 — registers management.group_health_scan
-import nexus.worker.tasks.spambot_weekly  # noqa: F401 — registers management.vault_spambot_weekly
-import nexus.worker.tasks.sentinel_seo  # noqa: F401 — registers management.sentinel_seo
+import nexus.worker.tasks.incubator_spawn  # noqa: F401 — registers nexus.incubator.*
+import nexus.worker.tasks.israeli_media_ingest  # noqa: F401 — swarm.israeli_media.ingest
 import nexus.worker.tasks.moltbot  # noqa: F401 — registers bot.moltbot
+import nexus.worker.tasks.news_digest_refresh  # noqa: F401 — swarm.news_digest.refresh
 import nexus.worker.tasks.openclaw  # noqa: F401 — registers scraper.openclaw/openclaw.browser_scrape
 import nexus.worker.tasks.polymarket_bot  # noqa: F401 — trading.polymarket_bot_tick / trading.polymarket_bot_session / polymarket_bot
 import nexus.worker.tasks.prediction  # noqa: F401 — registers prediction.cross_exchange
 import nexus.worker.tasks.retention_monitor  # noqa: F401 — retention.guardian.monitor
+import nexus.worker.tasks.scale  # noqa: F401 — registers nexus.scale_worker
+import nexus.worker.tasks.sentinel_seo  # noqa: F401 — registers management.sentinel_seo
+import nexus.worker.tasks.seo_group_factory  # noqa: F401 — seo.group_factory.* + seo_group_factory
+import nexus.worker.tasks.spambot_weekly  # noqa: F401 — registers management.vault_spambot_weekly
 import nexus.worker.tasks.staged_session_warmup  # noqa: F401 — registers telegram.run_warmup
 import nexus.worker.tasks.super_scraper  # noqa: F401 — registers telegram.super_scrape
+import nexus.worker.tasks.swarm  # noqa: F401 — registers swarm.community_factory.*
+import nexus.worker.tasks.swarm_onboarding  # noqa: F401 — swarm.onboarding mass join
 import nexus.worker.tasks.telegram_adder  # noqa: F401 — registers telegram.auto_add
 from nexus.worker.executor.runner import WORKER_CAPABILITIES, run_task
 from nexus.worker.task_registry import registry  # noqa: F401 — registers built-ins

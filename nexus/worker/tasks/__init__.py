@@ -55,3 +55,8 @@ try:
     from nexus.worker.tasks import retention_monitor as _retention_monitor  # noqa: F401
 except Exception:
     pass
+
+try:
+    from nexus.worker.tasks import seo_group_factory as _seo_group_factory  # noqa: F401
+except Exception:
+    pass

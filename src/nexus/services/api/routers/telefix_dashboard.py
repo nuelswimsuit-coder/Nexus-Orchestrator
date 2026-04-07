@@ -948,6 +948,7 @@ async def get_telefix_db_status() -> TelefixDbStatus:
 
 _GROUP_FACTORY_STATE = _REPO_ROOT / "vault" / "data" / "group_factory_state.json"
 _GROUP_FACTORY_SETTINGS = _VAULT_DATA / "group_factory_settings.json"
+_GROUP_FACTORY_RANKSEO_REPORT = _VAULT_DATA / "group_factory_rankseo_report.json"
 
 _DEFAULT_FACTORY_SETTINGS = {
     "warmup_days": 14,
@@ -1082,7 +1083,7 @@ async def get_group_factory_activity() -> GroupFactoryActivityResponse:
 
 @router.post(
     "/group-factory/start",
-    summary="Arm group factory automation (UI + settings flag)",
+    summary="Arm group factory + enqueue RankSEO Telethon pipeline (vault megagroups + mass join)",
     dependencies=[Depends(_require_legacy_telefix_writes)],
 )
 async def post_group_factory_start() -> dict[str, Any]:
@@ -1091,13 +1092,108 @@ async def post_group_factory_start() -> dict[str, Any]:
     current["armed_at"] = _utc_now_iso()
     current["updated_at"] = _utc_now_iso()
     _write_json(_GROUP_FACTORY_SETTINGS, current)
+
+    gpt = int(current.get("groups_per_day") or 20)
+    gpt = max(1, min(gpt, 50))
+
+    task_id: str | None = None
+    job_id: str | None = None
+    enqueue_error: str | None = None
+    try:
+        import arq
+        from arq.connections import RedisSettings
+
+        from nexus.shared.schemas import TaskPayload
+
+        tid = str(uuid.uuid4())
+        params: dict[str, Any] = {"reset": True}
+        task = TaskPayload(
+            task_id=tid,
+            task_type="seo.group_factory.bootstrap",
+            parameters=params,
+            project_id="seo-group-factory",
+            priority=3,
+            job_expires_seconds=3600,
+        )
+        arq_pool = await arq.create_pool(
+            RedisSettings.from_dsn(settings.redis_url),
+            default_queue_name="nexus:tasks",
+        )
+        job_ttl = int(task.job_expires_seconds or 3600)
+        job = await arq_pool.enqueue_job(
+            "execute_task",
+            task_payload=task.model_dump_for_wire(),
+            _job_id=tid,
+            _queue_name="nexus:tasks",
+            _expires=job_ttl,
+        )
+        await arq_pool.aclose()
+        task_id = tid
+        job_id = str(getattr(job, "job_id", "") or "")
+        log.info(
+            "group_factory_rankseo_enqueued_from_ui",
+            task_id=task_id,
+            job_id=job_id,
+            pipeline="seo.group_factory",
+        )
+    except Exception as exc:
+        enqueue_error = str(exc)
+        log.warning("group_factory_rankseo_enqueue_from_ui_failed", error=enqueue_error)
+
     msg = (
-        "מפעל הקבוצות הופעל: דגל automation_armed=true נשמר. "
-        "לולאת GroupFactory ברקע רצה בתהליך המאסטר (אם פעיל)."
+        "מפעל הקבוצות הופעל: automation_armed=true. "
+        "לולאת חימום/אינדוקס t.me במאסטר (אם פעיל). "
+        "יצירת מגה-קבוצות פרטיות (Telethon): worker מריץ seo.group_factory — "
+        "סשנים בריאים מה-vault, עד 3 קבוצות לסשן, round-robin, ייצוא הזמנה, "
+        "שמירה ב-Redis, ואז הצטרפות שאר ה-swarm עם jitter."
     )
-    append_group_factory_activity("info", msg)
+    if task_id:
+        msg += f" נשלח לתור: task_id={task_id}."
+    if enqueue_error:
+        msg += f" שגיאת תור: {enqueue_error}"
+    append_group_factory_activity("info" if not enqueue_error else "warning", msg.strip())
     log.info("group_factory_armed")
-    return {"ok": True, "settings": current, "detail": msg}
+
+    out: dict[str, Any] = {
+        "ok": True,
+        "settings": current,
+        "detail": msg.strip(),
+        "rankseo_enqueued": bool(task_id and not enqueue_error),
+        "task_id": task_id,
+        "job_id": job_id or None,
+        "groups_per_day_setting": gpt,
+    }
+    if enqueue_error:
+        out["enqueue_error"] = enqueue_error
+    return out
+
+
+@router.get(
+    "/group-factory/rankseo-report",
+    summary="RANKSEO private groups report (after worker export phase)",
+    dependencies=[Depends(_require_legacy_telefix_writes)],
+)
+async def get_group_factory_rankseo_report() -> dict[str, Any]:
+    data = _read_json(
+        _GROUP_FACTORY_RANKSEO_REPORT,
+        {
+            "updated_at": None,
+            "private_groups_total": 0,
+            "private_invite_links_total": 0,
+            "groups": [],
+            "links_text": "",
+        },
+    )
+    if not isinstance(data, dict):
+        data = {}
+    return {
+        "ok": True,
+        "updated_at": data.get("updated_at"),
+        "private_groups_total": int(data.get("private_groups_total") or 0),
+        "private_invite_links_total": int(data.get("private_invite_links_total") or 0),
+        "groups": data.get("groups") if isinstance(data.get("groups"), list) else [],
+        "links_text": str(data.get("links_text") or ""),
+    }
 
 
 # ── Operations config ──────────────────────────────────────────────────────────

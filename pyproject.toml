@@ -65,6 +65,11 @@ dependencies = [
 poly-trading = [
     "web3>=6.0",
 ]
+# Local ONNX image classifier for ``swarm.israeli_media.ingest`` (optional; Ollama/heuristic need no extra).
+meme-vision-onnx = [
+    "onnxruntime>=1.17",
+    "numpy>=1.26",
+]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",

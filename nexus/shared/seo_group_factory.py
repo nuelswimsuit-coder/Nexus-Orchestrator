@@ -25,6 +25,10 @@ SEO_FACTORY_STATUS_KEY = "nexus:factory:seo:status"
 SWARM_FACTORY_GROUPS_KEY = "nexus:swarm:factory:groups"
 SWARM_FACTORY_STATE_KEY = "nexus:swarm:factory:state"
 
+# Rank-SEO Telethon factory (nexus.worker.tasks.seo_group_factory)
+SEO_TELETHON_LINKS_KEY = "nexus:seo_factory:generated_links"
+SEO_TELETHON_STATE_KEY = "nexus:seo_factory:state"
+
 
 def _json_loads(raw: str | bytes | None) -> Any:
     if raw is None:
@@ -79,9 +83,24 @@ def groups_to_report_rows(groups: Any) -> list[dict[str, str]]:
     return out
 
 
+def _seo_telethon_phase_ui(seo_state: Any) -> tuple[str, str] | None:
+    if not isinstance(seo_state, dict):
+        return None
+    raw = str(seo_state.get("phase") or "").strip().lower()
+    if raw in ("", "idle"):
+        return None
+    if raw == "creating":
+        return ("Creating groups...", raw)
+    if raw == "joining":
+        return ("Mass Joining...", raw)
+    if raw == "complete":
+        return ("Done", raw)
+    return ("Creating groups...", raw)
+
+
 async def persist_seo_factory_snapshot(redis: Any) -> dict[str, Any]:
     """
-    Refresh SEO report + status keys from swarm factory Redis state.
+    Refresh SEO report + status keys from Community Factory and/or Telethon SEO factory Redis state.
 
     Returns ``{"report": [...], "status": {...}}``.
     """
@@ -91,7 +110,36 @@ async def persist_seo_factory_snapshot(redis: Any) -> dict[str, Any]:
     state = _json_loads(state_raw)
 
     report = groups_to_report_rows(groups)
+    seen_links = {str(r.get("invite_link") or "") for r in report if r.get("invite_link")}
+
+    seo_state_raw = await redis.get(SEO_TELETHON_STATE_KEY)
+    seo_state = _json_loads(seo_state_raw)
+    raw_list = await redis.lrange(SEO_TELETHON_LINKS_KEY, 0, -1)
+    for raw in raw_list or []:
+        try:
+            row = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        link = str(row.get("invite_link") or "").strip()
+        if link and link in seen_links:
+            continue
+        if link:
+            seen_links.add(link)
+        report.append(
+            {
+                "group_name": str(row.get("group_name") or "").strip(),
+                "invite_link": link,
+                "owner": str(row.get("owner_session") or row.get("owner_id") or "").strip(),
+            }
+        )
+
     ui_phase, raw_phase = _derive_ui_phase(state)
+    tele_ui = _seo_telethon_phase_ui(seo_state)
+    if tele_ui is not None:
+        ui_phase, raw_phase = tele_ui
+
     with_links = sum(1 for r in report if r.get("invite_link"))
 
     status_obj: dict[str, Any] = {

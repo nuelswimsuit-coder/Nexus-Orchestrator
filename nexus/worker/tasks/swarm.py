@@ -303,6 +303,7 @@ def _default_metrics() -> dict[str, Any]:
         "joins_failed": 0,
         "join_attempts": 0,
         "groups_total": 0,
+        "private_links_exported": 0,
         "active_sessions": 0,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1958,9 +1959,19 @@ async def community_factory_bootstrap(parameters: dict[str, Any]) -> dict[str, A
     phases = [str(p).lower() for p in (parameters.get("phases") or ["allocate", "create"])]
     dry_run = bool(parameters.get("dry_run", False))
     reset = bool(parameters.get("reset", False))
+    rankseo_mode = bool(parameters.get("rankseo_mode", False))
+    gpt_override = parameters.get("groups_per_owner_target")
+    groups_per_owner_target = (
+        int(gpt_override)
+        if gpt_override is not None and str(gpt_override).strip() != ""
+        else GROUPS_TARGET_PER_OWNER
+    )
+    groups_per_owner_target = max(1, min(groups_per_owner_target, 200))
 
     bases = _discover_session_bases(sessions_dir)
-    owners, members = _split_roles(bases)
+    owners, members = (
+        _split_roles_rankseo(bases) if rankseo_mode else _split_roles(bases)
+    )
 
     if reset and redis and not dry_run:
         await redis.delete(
@@ -2002,9 +2013,12 @@ async def community_factory_bootstrap(parameters: dict[str, Any]) -> dict[str, A
         state["phase"] = "allocating"
         state["init_phases"] = phases
         state["chat_enabled"] = "chat" in phases
+        state["rankseo_mode"] = rankseo_mode
+        state["groups_per_owner_target"] = groups_per_owner_target
         state["creation_index"] = 0
         state["join_flat_idx"] = 0
         state["converse_idx"] = 0
+        state["export_invite_idx"] = 0
         state["max_joins_per_tick"] = int(parameters.get("max_joins_per_tick") or 1)
         state["converse_chain_limit"] = int(
             parameters.get("converse_chain_limit")
@@ -2031,6 +2045,8 @@ async def community_factory_bootstrap(parameters: dict[str, Any]) -> dict[str, A
             "owners": len(owners),
             "members": len(members),
             "roles": roles_payload,
+            "rankseo_mode": rankseo_mode,
+            "groups_per_owner_target": groups_per_owner_target,
         }
 
     if "create" in phases and owners:
@@ -2051,6 +2067,8 @@ async def community_factory_bootstrap(parameters: dict[str, Any]) -> dict[str, A
         "members": len(members),
         "phases": phases,
         "enqueued": True,
+        "rankseo_mode": rankseo_mode,
+        "groups_per_owner_target": groups_per_owner_target,
     }
 
 
@@ -2110,7 +2128,10 @@ async def community_factory_create_groups_tick(parameters: dict[str, Any]) -> di
     owner_idx = idx % len(owners)
     owner_base = owners[owner_idx]
 
-    title = f"CF {owner_idx}-{idx // len(owners)}-{random.randint(1000, 9999)}"
+    if bool(state.get("rankseo_mode")):
+        title = f"RANKSEO {owner_idx}-{idx // len(owners)}-{random.randint(1000, 9999)}"
+    else:
+        title = f"CF {owner_idx}-{idx // len(owners)}-{random.randint(1000, 9999)}"
     group_id: int | None = None
     invite_link = ""
 
@@ -2252,6 +2273,10 @@ async def community_factory_join_tick(parameters: dict[str, Any]) -> dict[str, A
         if not link:
             continue
 
+        owner_sess = str(grp.get("owner_session") or "").strip()
+        if owner_sess and session_base.strip() == owner_sess:
+            continue
+
         await _bump_metric(redis, "join_attempts", 1)
         h = _invite_hash(link)
         if not h:
@@ -2276,10 +2301,7 @@ async def community_factory_join_tick(parameters: dict[str, Any]) -> dict[str, A
             if j < flat_max:
                 await _enqueue_task("swarm.community_factory.join_tick", carry)
             else:
-                state["phase"] = "chatting" if state.get("chat_enabled") else "complete"
-                await _redis_json_set(redis, KEY_STATE, state)
-                if state.get("chat_enabled"):
-                    await _enqueue_task("swarm.community_factory.converse_tick", carry)
+                await _factory_after_joins_done(redis, state, carry)
             return {"status": "completed", "joined": True, "join_flat_idx": j}
 
         except ValueError as exc:
@@ -2312,12 +2334,87 @@ async def community_factory_join_tick(parameters: dict[str, Any]) -> dict[str, A
     if j < flat_max:
         await _enqueue_task("swarm.community_factory.join_tick", carry)
     else:
-        state["phase"] = "chatting" if state.get("chat_enabled") else "complete"
-        await _redis_json_set(redis, KEY_STATE, state)
-        if state.get("chat_enabled"):
-            await _enqueue_task("swarm.community_factory.converse_tick", carry)
+        await _factory_after_joins_done(redis, state, carry)
 
     return {"status": "completed", "joined": False, "join_flat_idx": j, "exhausted": j >= flat_max}
+
+
+@registry.register("swarm.community_factory.export_private_invites_tick")
+async def community_factory_export_private_invites_tick(
+    parameters: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    For each factory group, refresh primary invite link as the owner (private t.me/+ link).
+    Writes ``vault/data/group_factory_rankseo_report.json`` when all rows are processed.
+    """
+    redis = parameters.get("__redis__")
+    groups = await _redis_json_get(redis, KEY_GROUPS)
+    state = await _redis_json_get(redis, KEY_STATE)
+    if not isinstance(groups, list) or not groups:
+        return {"status": "failed", "error": "no groups"}
+    if not isinstance(state, dict):
+        return {"status": "failed", "error": "state missing"}
+
+    idx = int(state.get("export_invite_idx", 0))
+    if idx >= len(groups):
+        _write_rankseo_report_file(groups)
+        state["phase"] = "complete"
+        await _redis_json_set(redis, KEY_STATE, state)
+        return {"status": "completed", "phase": "export_done", "groups_total": len(groups)}
+
+    try:
+        from telethon.tl.types import PeerChannel  # type: ignore[import-untyped]
+    except ImportError:
+        return {"status": "failed", "error": "telethon not installed"}
+
+    grp = groups[idx]
+    owner = str(grp.get("owner_session") or "").strip()
+    raw_gid = grp.get("group_id")
+    carry = dict(parameters)
+    carry.pop("__redis__", None)
+
+    async def _continue_next() -> None:
+        state["export_invite_idx"] = idx + 1
+        await _redis_json_set(redis, KEY_GROUPS, groups)
+        await _redis_json_set(redis, KEY_STATE, state)
+        await _enqueue_task("swarm.community_factory.export_private_invites_tick", carry)
+
+    if not owner or raw_gid is None:
+        groups[idx]["invite_export_error"] = "missing owner or group_id"
+        await _continue_next()
+        return {"status": "skipped", "idx": idx, "reason": "missing_meta"}
+
+    await asyncio.sleep(random.uniform(5.0, 20.0))
+    ch_id = _peer_channel_id(int(raw_gid))
+
+    try:
+        async with async_telegram_client(owner, parameters) as client:
+            if not await client.is_user_authorized():
+                await _mark_banned(redis, owner)
+                groups[idx]["invite_export_error"] = "owner_unauthorized"
+                await _continue_next()
+                return {"status": "skipped", "idx": idx, "reason": "owner_unauthorized"}
+
+            await _ensure_factory_profile(client, redis, owner)
+            entity = await client.get_entity(PeerChannel(ch_id))
+            new_link = await client.export_chat_invite_link(entity)
+            groups[idx]["invite_link"] = new_link
+            groups[idx]["private_invite_exported_at"] = datetime.now(timezone.utc).isoformat()
+            groups[idx].pop("invite_export_error", None)
+            await _bump_metric(redis, "private_links_exported", 1)
+    except ValueError as exc:
+        log.warning("factory_export_invite_creds", idx=idx, error=str(exc))
+        groups[idx]["invite_export_error"] = str(exc)[:500]
+    except Exception as exc:
+        log.warning("factory_export_invite_failed", idx=idx, error=str(exc))
+        groups[idx]["invite_export_error"] = str(exc)[:500]
+
+    await _continue_next()
+    return {
+        "status": "completed",
+        "exported_index": idx,
+        "invite_link": groups[idx].get("invite_link"),
+    }
 
 
 @registry.register("swarm.community_factory.burst_reply_chain")

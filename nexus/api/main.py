@@ -62,7 +62,7 @@ from nexus.api.routers import (
     system,
     telefix,
 )
-from src.nexus.services.api.routers import telefix_dashboard
+from src.nexus.services.api.routers import factory_dashboard, telefix_dashboard
 from nexus.shared import redis_util
 from nexus.shared.config import log_polymarket_wallet_mismatch_at_startup, settings
 from nexus.shared.logging_config import configure_logging
@@ -1453,6 +1453,7 @@ def create_app() -> FastAPI:
     app.include_router(proxy.router, prefix="/api")
     app.include_router(telefix.router, prefix="/api")
     app.include_router(group_infiltration.router, prefix="/api")
+    app.include_router(factory_dashboard.router, prefix="/api")
     app.include_router(telefix_dashboard.router, prefix="/api")
     app.include_router(ahu.router, prefix="/api")
 

@@ -247,7 +247,7 @@ async def get_seo_status(redis: RedisDep) -> SeoFactoryStatusOut:
         )
 
     if in_state == 0:
-        msg = f"מתחיל… 0/{target}"
+        msg = f"יוצר קבוצות… 0/{target}"
         phase = "creating_groups"
     elif matched < in_state:
         msg = f"מצרף סשנים… {matched}/{in_state}"

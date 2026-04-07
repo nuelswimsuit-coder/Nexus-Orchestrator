@@ -47,7 +47,6 @@ from nexus.master.hitl_gate import HitlGate, TaskRejectedError
 from nexus.master.resource_guard import ResourceGuard
 from nexus.master.services.vault import Vault
 from nexus.shared.constants import TASK_DEFAULT_TIMEOUT
-from nexus.shared.notifications.service import NotificationService
 from nexus.shared.fleet_redis import (
     FLEET_SCAN_TASK_TYPES,
     get_fleet_counter_snapshot,
@@ -57,6 +56,7 @@ from nexus.shared.fleet_redis import (
     publish_fleet_scan_event,
     reset_fleet_member_counters,
 )
+from nexus.shared.notifications.service import NotificationService
 from nexus.shared.schemas import (
     FleetAuditResults,
     FleetScanEvent,
@@ -195,6 +195,10 @@ class Dispatcher:
         asyncio.create_task(self._heartbeat_loop(), name="master-heartbeat")
         asyncio.create_task(self.cron.run(), name="cron-scheduler")
         asyncio.create_task(self._news_digest_scheduler_loop(), name="news-digest-scheduler")
+        asyncio.create_task(
+            self._israeli_meme_ingest_scheduler_loop(),
+            name="israeli-meme-ingest-scheduler",
+        )
         log.info(
             "dispatcher_started",
             node_id=self.node_id,
@@ -478,6 +482,59 @@ class Dispatcher:
                 log.warning("news_digest_dispatch_failed", error=str(exc))
             await asyncio.sleep(float(interval))
 
+    async def _israeli_meme_ingest_scheduler_loop(self) -> None:
+        """
+        Enqueue ``swarm.israeli_media.ingest`` on a fixed interval (default 86400 s).
+
+        Opt-in: set ``NEXUS_ISRAELI_MEME_INGEST_ENABLED=1`` or define
+        ``NEXUS_MEME_TG_CHANNELS``. Set ``ISRAELI_MEME_INGEST_INTERVAL_SEC=0`` to disable.
+        """
+        import os as _os
+
+        ch = (_os.getenv("NEXUS_MEME_TG_CHANNELS") or "").strip()
+        enabled = (_os.getenv("NEXUS_ISRAELI_MEME_INGEST_ENABLED") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if not enabled and not ch:
+            log.info(
+                "israeli_meme_ingest_scheduler_disabled",
+                hint="set NEXUS_MEME_TG_CHANNELS or NEXUS_ISRAELI_MEME_INGEST_ENABLED=1",
+            )
+            return
+
+        raw = (_os.getenv("ISRAELI_MEME_INGEST_INTERVAL_SEC") or "86400").strip()
+        try:
+            interval = int(raw)
+        except ValueError:
+            interval = 86400
+        if interval <= 0:
+            log.info("israeli_meme_ingest_scheduler_interval_disabled")
+            return
+        await asyncio.sleep(180.0)
+        log.info("israeli_meme_ingest_scheduler_started", interval_s=interval)
+        while True:
+            try:
+                if self._arq:
+                    try:
+                        raw_ttl = (_os.getenv("ISRAELI_MEME_INGEST_JOB_TTL_S") or "7200").strip()
+                        ttl = int(raw_ttl or "7200")
+                    except ValueError:
+                        ttl = 7200
+                    task = TaskPayload(
+                        task_type="swarm.israeli_media.ingest",
+                        parameters={},
+                        project_id="nexus-swarm",
+                        job_expires_seconds=max(3600, ttl),
+                    )
+                    job_id = await self.dispatch(task)
+                    log.debug("israeli_meme_ingest_dispatched", job_id=job_id)
+            except Exception as exc:
+                log.warning("israeli_meme_ingest_dispatch_failed", error=str(exc))
+            await asyncio.sleep(float(interval))
+
     async def _heartbeat_loop(self, interval: float = 30.0) -> None:
         """
         Publish a NodeHeartbeat every `interval` seconds.
@@ -488,6 +545,7 @@ class Dispatcher:
         - Redis pub/sub channel "nexus:heartbeats" — for real-time subscribers.
         """
         import os as _os
+
         from nexus.worker.hardware import get_cpu_temperature, get_hardware_info
         hw = get_hardware_info()
 

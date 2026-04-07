@@ -1223,12 +1223,22 @@ class CommunityFactoryInitiateBody(BaseModel):
     )
     phases: list[str] = Field(
         default_factory=lambda: ["allocate", "create", "join", "chat"],
-        description="allocate | create | join | chat",
+        description="allocate | create | join | chat | export_invites",
     )
     dry_run: bool = Field(default=False, description="Compute roles only; do not write Redis or enqueue")
     reset: bool = Field(default=False, description="Clear factory Redis keys before run")
     max_joins_per_tick: int = Field(default=1, ge=1, le=50)
     converse_chain_limit: int = Field(default=5000, ge=1, le=1_000_000)
+    rankseo_mode: bool = Field(
+        default=False,
+        description="All sessions create (round-robin) and join others; use with export_invites phase",
+    )
+    groups_per_owner_target: int | None = Field(
+        default=None,
+        ge=1,
+        le=200,
+        description="Override groups per owner (default 20); Telefix Group Factory maps groups_per_day here",
+    )
 
 
 @router.post("/initiate", summary="Start Community Factory pipeline (enqueue bootstrap task)")
@@ -1255,15 +1265,25 @@ async def community_factory_initiate(
         "reset": body.reset,
         "max_joins_per_tick": body.max_joins_per_tick,
         "converse_chain_limit": body.converse_chain_limit,
+        "rankseo_mode": body.rankseo_mode,
+        "groups_per_owner_target": body.groups_per_owner_target,
     }
 
     if body.dry_run:
         # Run allocation logic synchronously via a lightweight inline import
-        from nexus.worker.tasks.swarm import _discover_session_bases, _resolve_sessions_dir, _split_roles
+        from nexus.worker.tasks.swarm import (
+            _discover_session_bases,
+            _resolve_sessions_dir,
+            _split_roles,
+            _split_roles_rankseo,
+        )
 
         d = _resolve_sessions_dir(body.sessions_dir.strip() or None)
         bases = _discover_session_bases(d)
-        owners, members = _split_roles(bases)
+        if body.rankseo_mode:
+            owners, members = _split_roles_rankseo(bases)
+        else:
+            owners, members = _split_roles(bases)
         return {
             "ok": True,
             "dry_run": True,
@@ -1273,6 +1293,8 @@ async def community_factory_initiate(
             "owners": len(owners),
             "members": len(members),
             "roles": {"owners": owners, "members": members},
+            "rankseo_mode": body.rankseo_mode,
+            "groups_per_owner_target": body.groups_per_owner_target,
         }
 
     task_id = str(uuid.uuid4())

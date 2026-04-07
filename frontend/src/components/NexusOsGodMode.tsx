@@ -37,6 +37,8 @@ import {
   ChevronRight,
   Crosshair,
   PlayCircle,
+  Copy,
+  Link2,
 } from "lucide-react";
 import {
   XAxis,
@@ -1133,6 +1135,20 @@ type GroupFactorySettingsForm = {
 
 type ActivityEntry = { ts?: string; level?: string; message?: string };
 
+type CommunityFactorySnapshot = {
+  phase: string | null;
+  total_groups: number;
+  joins_ok: number;
+  active_sessions?: number;
+};
+
+type RankseoFactoryReport = {
+  updated_at: string | null;
+  private_groups_total: number;
+  private_invite_links_total: number;
+  links_text: string;
+};
+
 function GroupFactoryView() {
   const [warmupGroups, setWarmupGroups] = useState<TelefixGroup[]>([]);
   const [dbGroups, setDbGroups] = useState<TelefixDbGroup[]>([]);
@@ -1152,6 +1168,11 @@ function GroupFactoryView() {
     groups_in_warmup: number;
     groups_in_public_trial: number;
   } | null>(null);
+  const [cfSnapshot, setCfSnapshot] = useState<CommunityFactorySnapshot | null>(null);
+  const [rankseoReport, setRankseoReport] = useState<RankseoFactoryReport | null>(null);
+  const [rankseoReportLoading, setRankseoReportLoading] = useState(false);
+  const [showPrivateLinksReport, setShowPrivateLinksReport] = useState(false);
+  const [copyAllLoading, setCopyAllLoading] = useState(false);
 
   const showToast = (msg: string, ok = true) => {
     setToast({ msg, ok });
@@ -1228,6 +1249,80 @@ function GroupFactoryView() {
     return () => clearInterval(t);
   }, [loadActivity]);
 
+  const loadCfSnapshot = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/swarm/community-factory/status`);
+      if (!res.ok) return;
+      const j = (await res.json()) as Record<string, unknown>;
+      setCfSnapshot({
+        phase: typeof j.phase === "string" ? j.phase : null,
+        total_groups: Number(j.total_groups) || 0,
+        joins_ok: Number(j.joins_ok) || 0,
+        active_sessions: typeof j.active_sessions === "number" ? j.active_sessions : undefined,
+      });
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadCfSnapshot();
+    const t = setInterval(() => {
+      void loadCfSnapshot();
+    }, 8000);
+    return () => clearInterval(t);
+  }, [loadCfSnapshot]);
+
+  const loadRankseoReport = useCallback(async () => {
+    setRankseoReportLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/telefix/group-factory/rankseo-report`);
+      if (!res.ok) throw new Error(`שגיאה ${res.status}`);
+      const j = (await res.json()) as Record<string, unknown>;
+      setRankseoReport({
+        updated_at: typeof j.updated_at === "string" ? j.updated_at : null,
+        private_groups_total: Number(j.private_groups_total) || 0,
+        private_invite_links_total: Number(j.private_invite_links_total) || 0,
+        links_text: typeof j.links_text === "string" ? j.links_text : "",
+      });
+    } catch {
+      setToast({ msg: "טעינת דוח נכשלה", ok: false });
+      setTimeout(() => setToast(null), 5000);
+    } finally {
+      setRankseoReportLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showPrivateLinksReport) return;
+    void loadRankseoReport();
+  }, [showPrivateLinksReport, loadRankseoReport]);
+
+  useEffect(() => {
+    if (!showPrivateLinksReport) return;
+    const t = setInterval(() => {
+      void loadRankseoReport();
+    }, 12000);
+    return () => clearInterval(t);
+  }, [showPrivateLinksReport, loadRankseoReport]);
+
+  const handleCopyAllLinks = async () => {
+    const text = (rankseoReport?.links_text ?? "").trim();
+    if (!text) {
+      showToast("אין קישורים להעתקה", false);
+      return;
+    }
+    setCopyAllLoading(true);
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("הכל הועתק ללוח ✅");
+    } catch {
+      showToast("העתקה נכשלה", false);
+    } finally {
+      setCopyAllLoading(false);
+    }
+  };
+
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!settingsForm) return;
@@ -1256,7 +1351,12 @@ function GroupFactoryView() {
     setStartFactoryLoading(true);
     try {
       const res = await fetch(`${API_BASE}/api/telefix/group-factory/start`, { method: "POST" });
-      const j = (await res.json().catch(() => ({}))) as { detail?: string; ok?: boolean };
+      const j = (await res.json().catch(() => ({}))) as {
+        detail?: string;
+        ok?: boolean;
+        enqueue_error?: string;
+        rankseo_enqueued?: boolean;
+      };
       if (!res.ok) {
         const errDetail =
           typeof j.detail === "string"
@@ -1264,9 +1364,15 @@ function GroupFactoryView() {
             : `שגיאה ${res.status}`;
         throw new Error(errDetail);
       }
-      showToast(j.detail ?? "מפעל הקבוצות הופעל ✅");
+      const detail =
+        typeof j.detail === "string" && j.detail.trim()
+          ? j.detail.trim()
+          : "מפעל הופעל — worker יוצר קבוצות RANKSEO (דורש worker + סשנים).";
+      showToast(j.enqueue_error ? `${detail} (${j.enqueue_error})` : detail, !j.enqueue_error);
       await loadSchedule();
       await loadActivity();
+      await loadCfSnapshot();
+      await loadRankseoReport();
     } catch (e) {
       showToast(e instanceof Error ? e.message : "הפעלה נכשלה", false);
     } finally {
@@ -1416,7 +1522,7 @@ function GroupFactoryView() {
               onClick={() => void handleStartFactory()}
               disabled={startFactoryLoading}
               className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white px-4 py-3 rounded-2xl font-bold transition flex items-center gap-2"
-              title="מסמן שהמפעל פעיל ורושם בלוג"
+              title="POST /api/telefix/group-factory/start — RANKSEO: יצירה round-robin, join, ייצוא קישורים (worker)"
             >
               <PlayCircle size={18} />
               {startFactoryLoading ? "..." : "התחל מפעל"}
@@ -1451,6 +1557,40 @@ function GroupFactoryView() {
           </div>
         </div>
 
+        {cfSnapshot && (
+          <div
+            className={`mb-4 rounded-2xl border px-4 py-3 flex items-center gap-3 ${
+              cfSnapshot.phase && cfSnapshot.phase !== "complete" && cfSnapshot.phase !== "idle"
+                ? "bg-cyan-950/40 border-cyan-500/40 text-cyan-100"
+                : "bg-slate-950/50 border-slate-800 text-slate-400"
+            }`}
+          >
+            <Radio
+              size={18}
+              className={
+                cfSnapshot.phase && cfSnapshot.phase !== "complete" && cfSnapshot.phase !== "idle"
+                  ? "text-cyan-400 animate-pulse shrink-0"
+                  : "shrink-0 opacity-60"
+              }
+            />
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-0.5">
+                Community Factory (worker) · עדכון כל ~8 שניות
+              </div>
+              <div className="font-bold text-sm leading-snug break-words">
+                שלב: <span className="text-white">{cfSnapshot.phase ?? "—"}</span>
+                {" · "}
+                קבוצות ב-Redis: {cfSnapshot.total_groups}
+                {" · "}
+                הצטרפויות מוצלחות: {cfSnapshot.joins_ok}
+                {typeof cfSnapshot.active_sessions === "number"
+                  ? ` · סשנים פעילים (הערכה): ${cfSnapshot.active_sessions}`
+                  : ""}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Stats bar */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           <div className="bg-slate-950/60 rounded-2xl p-4 border border-slate-800 text-center">
@@ -1470,6 +1610,73 @@ function GroupFactoryView() {
             <div className="text-xs text-violet-600 font-bold mt-0.5">יעד יצירה ליום (לא ספירת קבוצות)</div>
           </div>
         </div>
+
+        <div className="mb-6 bg-slate-950/60 border border-teal-500/25 rounded-2xl overflow-hidden" dir="rtl">
+          <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-slate-800">
+            <div className="flex items-center gap-2 min-w-0">
+              <Link2 className="text-teal-400 shrink-0" size={20} />
+              <span className="font-black text-white truncate">דוח קישורים פרטיים</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setShowPrivateLinksReport((v) => !v)}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-xl font-bold text-sm transition"
+              >
+                {showPrivateLinksReport ? "הסתר" : "הצג דוח"}
+              </button>
+              {showPrivateLinksReport ? (
+                <button
+                  type="button"
+                  onClick={() => void loadRankseoReport()}
+                  disabled={rankseoReportLoading}
+                  className="bg-teal-800 hover:bg-teal-700 disabled:opacity-50 text-white px-4 py-2 rounded-xl font-bold text-sm transition flex items-center gap-2"
+                >
+                  <RefreshCw size={15} className={rankseoReportLoading ? "animate-spin" : ""} />
+                  רענן
+                </button>
+              ) : null}
+            </div>
+          </div>
+          {showPrivateLinksReport ? (
+            <div className="p-4 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-slate-400">
+                  קבוצות פרטיות / קישורים פרטיים:{" "}
+                  <span className="text-teal-400 font-black text-lg tabular-nums">
+                    {rankseoReportLoading
+                      ? "…"
+                      : `${rankseoReport?.private_groups_total ?? "—"} / ${rankseoReport?.private_invite_links_total ?? "—"}`}
+                  </span>
+                  {rankseoReport?.updated_at ? (
+                    <span className="block text-[11px] text-slate-600 mt-1 font-mono" dir="ltr">
+                      עודכן: {rankseoReport.updated_at}
+                    </span>
+                  ) : null}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyAllLinks()}
+                  disabled={copyAllLoading || !(rankseoReport?.links_text?.trim())}
+                  className="bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white px-6 py-3 rounded-2xl font-black text-sm transition flex items-center gap-2"
+                >
+                  <Copy size={18} />
+                  {copyAllLoading ? "…" : "העתק הכל"}
+                </button>
+              </div>
+              <textarea
+                readOnly
+                value={rankseoReport?.links_text ?? ""}
+                placeholder={
+                  rankseoReportLoading ? "טוען…" : "אין דוח עדיין — יופיע אחרי שלב ייצוא הקישורים ב-worker"
+                }
+                className="w-full min-h-[220px] bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-200 font-mono focus:outline-none focus:border-teal-500/50 resize-y"
+                dir="ltr"
+              />
+            </div>
+          ) : null}
+        </div>
+
         {factoryScheduleCounts && (
           <p className="text-[11px] text-slate-500 mb-4 leading-relaxed">
             מחזור חיים בקובץ state (מאסטר): {factoryScheduleCounts.groups_total} במעקב · חימום{" "}
