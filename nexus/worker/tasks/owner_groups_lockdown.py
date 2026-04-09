@@ -21,6 +21,9 @@ timezone               ברירת מחדל Asia/Jerusalem (חישוב ״היום
 max_sessions           מספר מקסימלי של קבצי סשן לעיבוד (ברירת מחדל: כולם)
 purge_all_messages     אם True — מחיקת היסטוריה עד max_messages_per_chat; אם False (ברירת מחדל) — רק הודעות מהיום
 include_admin_groups   אם True (ברירת מחדל) — גם קבוצות שבהן אתה אדמין עם delete_messages (מחיקה בלבד; נעילת הגדרות רק לבעלים)
+auto_create_meta_json  אם True (ברירת מחדל) — יוצר ליד כל *.session קובץ *.json מ־TELEFIX_API_ID / TELEFIX_API_HASH (אם חסר)
+write_audit_csv        אם True (ברירת מחדל) — כותב דוח CSV בשורש הפרויקט בתיקייה «דוחות -סריקות סשנים + בעלי/אדמיני קבוצות»
+audit_csv_dir          נתיב מותאם לדוח CSV (אופציונלי; יחסי לפרויקט או מוחלט)
 max_messages_per_chat  תקרה למחיקה מלאה (ברירת מחדל 20000)
 only_own_messages      אם True — במצב מחיקה מלאה רק הודעות של הסשן (בדרך כלל False לבעלים)
 """
@@ -28,18 +31,42 @@ only_own_messages      אם True — במצב מחיקה מלאה רק הודע�
 from __future__ import annotations
 
 import asyncio
+import csv
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import structlog
 
-from nexus.services.session_vault import discover_all_meta_json_files
-from nexus.worker.services.tg_session import async_telegram_client
+from nexus.services.session_vault import (
+    discover_all_meta_json_files,
+    ensure_sidecar_json_for_vault,
+    repo_root,
+)
+from nexus.worker.services.tg_session import async_telegram_client, global_telethon_credentials
 from nexus.worker.task_registry import registry
 
 log = structlog.get_logger(__name__)
+
+# דוח CSV — תואם ל־nexus_group_audit.csv (עמודות)
+_SESSION_AUDIT_REPORT_DIR = "דוחות -סריקות סשנים + בעלי/אדמיני קבוצות"
+_AUDIT_CSV_COLUMNS = [
+    "Session_Name",
+    "Original_Session_Path",
+    "Final_Session_Path",
+    "Group_Name",
+    "Group_ID",
+    "Entity_Type",
+    "Member_Count",
+    "Premium_Count",
+    "Boost_Premiums",
+    "Role",
+    "JSON_File_Path",
+    "TData_Folder_Path",
+    "Archive_File_Path",
+]
 
 # MarkdownV2 escape — תואם ל־TelegramProvider
 _MD_ESCAPE_RE = re.compile(r"([_\*\[\]\(\)~`>#+\-=|{}.!\\])")
@@ -55,6 +82,44 @@ def _esc_lines(lines: list[str]) -> str:
 
 def _chunks(ids: list[int], size: int) -> list[list[int]]:
     return [ids[i : i + size] for i in range(0, len(ids), size)]
+
+
+def _entity_member_count(entity: Any) -> int:
+    try:
+        c = getattr(entity, "participants_count", None)
+        if c is not None:
+            return int(c)
+    except (TypeError, ValueError):
+        pass
+    return 0
+
+
+def _resolve_audit_report_dir(parameters: dict[str, Any]) -> Path:
+    raw = parameters.get("audit_csv_dir")
+    root = repo_root()
+    if raw:
+        p = Path(str(raw)).expanduser()
+        if p.is_absolute():
+            return p.resolve()
+        return (root / p).resolve()
+    return (root / _SESSION_AUDIT_REPORT_DIR).resolve()
+
+
+def _write_session_audit_csv(
+    rows: list[dict[str, Any]],
+    report_dir: Path,
+) -> Path | None:
+    if not rows:
+        return None
+    report_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = report_dir / f"session_group_audit_{ts}.csv"
+    with out.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=_AUDIT_CSV_COLUMNS, extrasaction="ignore")
+        w.writeheader()
+        for row in rows:
+            w.writerow(row)
+    return out
 
 
 async def _collect_today_message_ids(
@@ -368,6 +433,13 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
         else None
     )
 
+    auto_create_meta_json = bool(parameters.get("auto_create_meta_json", True))
+    sidecar_created = 0
+    if auto_create_meta_json:
+        gid, ghash = global_telethon_credentials(parameters)
+        if gid and ghash:
+            sidecar_created = ensure_sidecar_json_for_vault(gid, ghash)
+
     meta_paths = discover_all_meta_json_files()
     if allow_stems is not None:
         meta_paths = [p for p in meta_paths if p.stem in allow_stems]
@@ -412,11 +484,14 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
     report_groups: list[dict[str, Any]] = []
     session_notes: list[dict[str, Any]] = []
     seen_peer: set[int] = set()
+    write_audit_csv = bool(parameters.get("write_audit_csv", True))
+    audit_csv_rows: list[dict[str, Any]] = []
 
     await _notify_he(
         [
             "🔔 נעילת קבוצות בעלים — התחלה",
             f"סשנים בסריקה: {len(meta_paths)}",
+            f"קבצי json שנוצרו ליד session: {sidecar_created}",
             f"מחיקה מלאה: {purge_all_messages}",
             f"כולל אדמין (מחיקה בלבד): {include_admin_groups}",
             f"dry_run: {dry_run}",
@@ -468,6 +543,14 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
                         continue
 
                     title = _entity_label(entity)
+                    entity_type_str = (
+                        "group"
+                        if isinstance(entity, Channel) and entity.megagroup
+                        else "channel"
+                        if isinstance(entity, Channel)
+                        else "chat"
+                    )
+                    member_count = _entity_member_count(entity)
                     entry: dict[str, Any] = {
                         "session": stem,
                         "peer_id": peer_id,
@@ -532,6 +615,27 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
                         entry["steps"] = ["lockdown_skipped_not_owner"]
                         entry["errors"] = list(entry.get("delete_errors", []))
 
+                    if write_audit_csv:
+                        final_sess = str(Path(session_base).with_suffix(".session").resolve())
+                        meta_path_str = str(meta_json.resolve())
+                        audit_csv_rows.append(
+                            {
+                                "Session_Name": stem,
+                                "Original_Session_Path": final_sess,
+                                "Final_Session_Path": final_sess,
+                                "Group_Name": title.replace("\r", " ").replace("\n", " "),
+                                "Group_ID": str(peer_id),
+                                "Entity_Type": entity_type_str,
+                                "Member_Count": str(member_count),
+                                "Premium_Count": "0",
+                                "Boost_Premiums": "0",
+                                "Role": "owner" if is_owner else "admin",
+                                "JSON_File_Path": meta_path_str,
+                                "TData_Folder_Path": "",
+                                "Archive_File_Path": "",
+                            },
+                        )
+
                     seen_peer.add(peer_id)
                     report_groups.append(entry)
                     n_grp_session += 1
@@ -556,12 +660,33 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
             )
             await _notify_he([f"❌ שגיאה בסשן {stem}: {str(exc)[:350]}"])
 
+    audit_csv_path: Path | None = None
+    if write_audit_csv and audit_csv_rows:
+        try:
+            audit_csv_path = _write_session_audit_csv(
+                audit_csv_rows,
+                _resolve_audit_report_dir(parameters),
+            )
+        except Exception as exc:
+            log.warning("owner_groups_lockdown_audit_csv_failed", error=str(exc))
+    if audit_csv_path:
+        await _notify_he(
+            [
+                "📄 דוח CSV נשמר בתיקיית הפרויקט",
+                str(audit_csv_path),
+            ],
+        )
+
     summary = {
         "status": "ok",
         "dry_run": dry_run,
         "timezone": tz_name,
         "purge_all_messages": purge_all_messages,
         "include_admin_groups": include_admin_groups,
+        "auto_create_meta_json": auto_create_meta_json,
+        "sidecar_json_created": sidecar_created,
+        "write_audit_csv": write_audit_csv,
+        "audit_csv_path": str(audit_csv_path) if audit_csv_path else None,
         "progress_notify": progress_notify,
         "sessions_considered": len(meta_paths),
         "max_sessions_applied": raw_max,

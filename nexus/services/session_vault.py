@@ -37,6 +37,12 @@ log = structlog.get_logger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
+
+def repo_root() -> Path:
+    """Repository root (Nexus-Orchestrator)."""
+    return _REPO_ROOT
+
+
 INDEX_KEY = "nexus:session_vault:index"
 META_PREFIX = "nexus:session_vault:meta:"
 LEASE_PREFIX = "nexus:session_vault:lease:"
@@ -87,6 +93,36 @@ def vault_candidate_roots() -> list[Path]:
     if repo_sessions.is_dir() and repo_sessions not in {r.resolve() for r in roots}:
         roots.append(repo_sessions)
     return roots
+
+
+def ensure_sidecar_json_for_vault(api_id: int, api_hash: str) -> int:
+    """
+    Create missing ``<stem>.json`` (api_id / api_hash) next to each Telethon ``*.session``
+    under :func:`vault_candidate_roots`. Does not overwrite existing JSON files.
+    """
+    if not api_id or not api_hash:
+        return 0
+    created = 0
+    payload = json.dumps(
+        {"api_id": api_id, "api_hash": api_hash},
+        ensure_ascii=False,
+        indent=2,
+    )
+    for root in vault_candidate_roots():
+        if not root.is_dir():
+            continue
+        for sess in root.rglob("*.session"):
+            if sess.name.endswith("-journal"):
+                continue
+            meta = sess.with_suffix(".json")
+            if meta.is_file():
+                continue
+            try:
+                meta.write_text(payload + "\n", encoding="utf-8")
+                created += 1
+            except OSError as exc:
+                log.warning("ensure_sidecar_json_write_failed", path=str(meta), error=str(exc))
+    return created
 
 
 def meta_key(stem: str) -> str:

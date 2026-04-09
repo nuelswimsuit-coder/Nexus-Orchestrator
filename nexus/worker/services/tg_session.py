@@ -34,6 +34,11 @@ def _global_telethon_creds(parameters: dict[str, Any]) -> tuple[int, str]:
     return api_id, api_hash
 
 
+def global_telethon_credentials(parameters: dict[str, Any]) -> tuple[int, str]:
+    """``TELEFIX_*`` from task ``__secrets__`` or environment (fallback when no per-session JSON)."""
+    return _global_telethon_creds(parameters)
+
+
 def resolve_telethon_creds(session_base: str, parameters: dict[str, Any]) -> tuple[int, str]:
     """
     Prefer ``<session_base>.json`` with api_id / api_hash (Telethon vault pairing);
