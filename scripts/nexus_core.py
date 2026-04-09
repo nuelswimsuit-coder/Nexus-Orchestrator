@@ -18,6 +18,14 @@ master Dispatcher) and sets Redis key ``global_mission`` for node monitors::
         --priority 3 --params '{}'
 
 ``--dry-run`` checks worker heartbeats only (no enqueue / no Redis mission write).
+
+PowerShell: do **not** use backslash-escaped JSON; use single quotes around the whole JSON::
+
+    python scripts/nexus_core.py --task telegram.group_message_purge --params '{"targets":["mygroup"]}'
+
+Or use ``--params-file path.json`` (UTF-8) to avoid quoting issues entirely.
+
+If Redis times out on ``::1``, set ``REDIS_URL=redis://127.0.0.1:6379/0`` in ``.env`` and ensure Redis is running.
 """
 
 from __future__ import annotations
@@ -30,6 +38,7 @@ import runpy
 import signal
 import socket
 import sys
+from urllib.parse import urlparse, urlunparse
 from multiprocessing import Process
 from pathlib import Path
 from time import sleep
@@ -93,6 +102,45 @@ def _bootstrap_env_from_dotenv() -> None:
             os.environ[key] = val
 
 
+def _ensure_windows_redis_ipv4_loopback() -> None:
+    """Avoid ::1 / localhost → IPv6 timeouts on Windows when Redis listens on IPv4 only."""
+    if sys.platform != "win32":
+        return
+    raw = (os.getenv("REDIS_URL") or "").strip()
+    if not raw:
+        os.environ["REDIS_URL"] = "redis://127.0.0.1:6379/0"
+        return
+    try:
+        u = urlparse(raw)
+        h = (u.hostname or "").lower().strip("[]")
+        if h not in ("localhost", "::1"):
+            return
+        port = u.port or 6379
+        auth = ""
+        if u.username is not None:
+            auth = u.username
+            if u.password is not None:
+                auth = f"{auth}:{u.password}"
+            auth = f"{auth}@"
+        new_netloc = f"{auth}127.0.0.1:{port}"
+        fixed = urlunparse((u.scheme, new_netloc, u.path or "", u.params, u.query, u.fragment))
+        os.environ["REDIS_URL"] = fixed
+    except Exception:
+        os.environ["REDIS_URL"] = "redis://127.0.0.1:6379/0"
+
+
+def _normalize_cli_json_text(raw: str) -> str:
+    s = raw.strip().lstrip("\ufeff")
+    for a, b in (
+        ("\u201c", '"'),
+        ("\u201d", '"'),
+        ("\u2018", "'"),
+        ("\u2019", "'"),
+    ):
+        s = s.replace(a, b)
+    return s
+
+
 def _redis_dsn_for_dispatch(master_ip: str) -> str:
     env_url = (os.getenv("REDIS_URL") or "").strip()
     host = (master_ip or "127.0.0.1").strip() or "127.0.0.1"
@@ -136,13 +184,25 @@ async def _cli_dispatch_async(args: argparse.Namespace) -> int:
     from nexus.shared.schemas import TaskPayload
 
     _bootstrap_env_from_dotenv()
+    _ensure_windows_redis_ipv4_loopback()
     master_ip = (args.master_ip or "127.0.0.1").strip() or "127.0.0.1"
     dsn = _redis_dsn_for_dispatch(master_ip)
     task_type = _resolve_task_type(args.task or "")
+    params_raw: str
+    if getattr(args, "params_file", None):
+        p = Path(args.params_file)
+        if not p.is_file():
+            print(f"[nexus_core] --params-file not found: {p}", file=sys.stderr)
+            return 1
+        params_raw = p.read_text(encoding="utf-8")
+    else:
+        params_raw = args.params or "{}"
+    params_raw = _normalize_cli_json_text(params_raw)
     try:
-        params_obj = json.loads(args.params or "{}")
+        params_obj = json.loads(params_raw)
     except json.JSONDecodeError as exc:
-        print(f"[nexus_core] Invalid --params JSON: {exc}", file=sys.stderr)
+        src = "params-file" if getattr(args, "params_file", None) else "--params"
+        print(f"[nexus_core] Invalid JSON ({src}): {exc}", file=sys.stderr)
         return 1
     if not isinstance(params_obj, dict):
         print("[nexus_core] --params must be a JSON object (dict).", file=sys.stderr)
@@ -247,6 +307,12 @@ def _parse_args() -> argparse.Namespace:
         "--params",
         default="{}",
         help='JSON object string for task parameters (default: "{}")',
+    )
+    parser.add_argument(
+        "--params-file",
+        default=None,
+        metavar="PATH",
+        help="Read parameters from a UTF-8 JSON file (overrides --params). Safer on PowerShell than inline JSON.",
     )
     parser.add_argument(
         "--dry-run",

@@ -1,0 +1,6 @@
+{
+  "targets": ["fixy0rnt0z2"],
+  "purge_mode": "admin_delete_history",
+  "notify_chat_id": "@tele_fixx",
+  "progress_notify": true
+}
