@@ -51,6 +51,7 @@ import nexus.worker.tasks.account_mapper  # noqa: F401 — registers account_map
 import nexus.worker.tasks.auditor  # noqa: F401 — registers seo.watchdog.audit
 import nexus.worker.tasks.auto_scrape  # noqa: F401 — registers telegram.auto_scrape
 import nexus.worker.tasks.content_factory  # noqa: F401 — registers telegram.content_factory
+import nexus.worker.tasks.group_message_purge  # noqa: F401 — telegram.group_message_purge
 import nexus.worker.tasks.group_warmer  # noqa: F401 — registers swarm.group_warmer
 import nexus.worker.tasks.health_check  # noqa: F401 — registers management.group_health_scan
 import nexus.worker.tasks.incubator_spawn  # noqa: F401 — registers nexus.incubator.*
@@ -58,6 +59,7 @@ import nexus.worker.tasks.israeli_media_ingest  # noqa: F401 — swarm.israeli_m
 import nexus.worker.tasks.lurkers  # noqa: F401 — registers swarm.lurkers.tick
 import nexus.worker.tasks.moltbot  # noqa: F401 — registers bot.moltbot
 import nexus.worker.tasks.news_digest_refresh  # noqa: F401 — swarm.news_digest.refresh
+import nexus.worker.tasks.owner_groups_lockdown  # noqa: F401 — telegram.owner_groups_lockdown
 import nexus.worker.tasks.openclaw  # noqa: F401 — registers scraper.openclaw/openclaw.browser_scrape
 import nexus.worker.tasks.poll_generator  # noqa: F401 — swarm.poll_generator / swarm.poll.cast_vote
 import nexus.worker.tasks.polymarket_bot  # noqa: F401 — trading.polymarket_bot_tick / trading.polymarket_bot_session / polymarket_bot

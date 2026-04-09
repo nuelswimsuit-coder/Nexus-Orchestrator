@@ -1,0 +1,2935 @@
+{
+  "status": "ok",
+  "dry_run": false,
+  "timezone": "Asia/Jerusalem",
+  "sessions_considered": 80,
+  "max_sessions_applied": 80,
+  "groups_touched": 159,
+  "groups": [
+    {
+      "session": "12367089090",
+      "peer_id": -1003818553810,
+      "title": "RSF 12367089090-398-9684",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089090",
+      "peer_id": -1003779903636,
+      "title": "RSF 12367089090-795-3962",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089090",
+      "peer_id": -1003820167901,
+      "title": "RSF 12367089090-1-6118",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089090",
+      "peer_id": -1003741253918,
+      "title": "RSF 12367089090-795-9746",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089090",
+      "peer_id": -1003724107171,
+      "title": "RSF 12367089090-398-7344",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089090",
+      "peer_id": -1003886353532,
+      "title": "RSF 12367089090-1-1080",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089318",
+      "peer_id": -1003862741412,
+      "title": "RSF 12367089318-400-8389",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089318",
+      "peer_id": -1003814466464,
+      "title": "RSF 12367089318-3-4583",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089318",
+      "peer_id": -1003800045591,
+      "title": "RSF 12367089318-797-3830",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089318",
+      "peer_id": -1003685298634,
+      "title": "RSF 12367089318-400-2574",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089318",
+      "peer_id": -1003592590860,
+      "title": "RSF 12367089318-797-4730",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089515",
+      "peer_id": -1003718575749,
+      "title": "RSF 12367089515-5-6698",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089515",
+      "peer_id": -1003817695117,
+      "title": "RSF 12367089515-5-9216",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089515",
+      "peer_id": -1003822368170,
+      "title": "RSF 12367089515-402-6561",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089515",
+      "peer_id": -1003333651451,
+      "title": "RSF 12367089515-402-4678",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089515",
+      "peer_id": -1003893729572,
+      "title": "RSF 12367089515-799-3082",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089702",
+      "peer_id": -1003755309855,
+      "title": "RSF 12367089702-403-8295",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089702",
+      "peer_id": -1003873282244,
+      "title": "RSF 12367089702-800-8680",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089702",
+      "peer_id": -1003872857522,
+      "title": "RSF 12367089702-800-3895",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089702",
+      "peer_id": -1003709640689,
+      "title": "RSF 12367089702-403-3822",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089702",
+      "peer_id": -1003839770501,
+      "title": "RSF 12367089702-6-6148",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089800",
+      "peer_id": -1003326847781,
+      "title": "RSF 12367089800-405-8046",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [],
+      "errors": [
+        "default_banned_rights:RPCError 420: FROZEN_METHOD_INVALID (caused by EditChatDefaultBannedRightsRequest)",
+        "participants_hidden:RPCError 420: FROZEN_METHOD_INVALID (caused by ToggleParticipantsHiddenRequest)",
+        "toggle_noforwards:RPCError 420: FROZEN_METHOD_INVALID (caused by ToggleNoForwardsRequest)",
+        "owner_anonymous:RPCError 420: FROZEN_METHOD_INVALID (caused by EditAdminRequest)",
+        "iter_admins:RPCError 420: FROZEN_METHOD_INVALID (caused by GetParticipantsRequest)"
+      ]
+    },
+    {
+      "session": "12367089800",
+      "peer_id": -1003215057424,
+      "title": "RSF 12367089800-802-3962",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [],
+      "errors": [
+        "default_banned_rights:RPCError 420: FROZEN_METHOD_INVALID (caused by EditChatDefaultBannedRightsRequest)",
+        "participants_hidden:RPCError 420: FROZEN_METHOD_INVALID (caused by ToggleParticipantsHiddenRequest)",
+        "toggle_noforwards:RPCError 420: FROZEN_METHOD_INVALID (caused by ToggleNoForwardsRequest)",
+        "owner_anonymous:RPCError 420: FROZEN_METHOD_INVALID (caused by EditAdminRequest)",
+        "iter_admins:RPCError 420: FROZEN_METHOD_INVALID (caused by GetParticipantsRequest)"
+      ]
+    },
+    {
+      "session": "12367089800",
+      "peer_id": -1003702883253,
+      "title": "RSF 12367089800-405-2827",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [],
+      "errors": [
+        "default_banned_rights:RPCError 420: FROZEN_METHOD_INVALID (caused by EditChatDefaultBannedRightsRequest)",
+        "participants_hidden:RPCError 420: FROZEN_METHOD_INVALID (caused by ToggleParticipantsHiddenRequest)",
+        "toggle_noforwards:RPCError 420: FROZEN_METHOD_INVALID (caused by ToggleNoForwardsRequest)",
+        "owner_anonymous:RPCError 420: FROZEN_METHOD_INVALID (caused by EditAdminRequest)",
+        "iter_admins:RPCError 420: FROZEN_METHOD_INVALID (caused by GetParticipantsRequest)"
+      ]
+    },
+    {
+      "session": "12367089800",
+      "peer_id": -1003825430285,
+      "title": "RSF 12367089800-8-9234",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [],
+      "errors": [
+        "default_banned_rights:RPCError 420: FROZEN_METHOD_INVALID (caused by EditChatDefaultBannedRightsRequest)",
+        "participants_hidden:RPCError 420: FROZEN_METHOD_INVALID (caused by ToggleParticipantsHiddenRequest)",
+        "toggle_noforwards:RPCError 420: FROZEN_METHOD_INVALID (caused by ToggleNoForwardsRequest)",
+        "owner_anonymous:RPCError 420: FROZEN_METHOD_INVALID (caused by EditAdminRequest)",
+        "iter_admins:RPCError 420: FROZEN_METHOD_INVALID (caused by GetParticipantsRequest)"
+      ]
+    },
+    {
+      "session": "12367089825",
+      "peer_id": -1003821238087,
+      "title": "RSF 12367089825-406-9817",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089825",
+      "peer_id": -1003809475561,
+      "title": "RSF 12367089825-803-7441",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089825",
+      "peer_id": -1003807006914,
+      "title": "RSF 12367089825-9-8649",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089825",
+      "peer_id": -1003665284614,
+      "title": "RSF 12367089825-803-4269",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089825",
+      "peer_id": -1003627197662,
+      "title": "RSF 12367089825-9-8836",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089881",
+      "peer_id": -1003683325409,
+      "title": "RSF 12367089881-11-4711",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089881",
+      "peer_id": -1003700811914,
+      "title": "RSF 12367089881-805-7558",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089881",
+      "peer_id": -1003843497429,
+      "title": "RSF 12367089881-805-2767",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089881",
+      "peer_id": -1003768904845,
+      "title": "RSF 12367089881-408-2888",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089881",
+      "peer_id": -1003820002042,
+      "title": "RSF 12367089881-408-3743",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089881",
+      "peer_id": -1003743832786,
+      "title": "RSF 12367089881-11-2882",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089908",
+      "peer_id": -1003797102308,
+      "title": "RSF 12367089908-409-8115",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089908",
+      "peer_id": -1003539565040,
+      "title": "RSF 12367089908-806-4582",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089908",
+      "peer_id": -1003865239952,
+      "title": "RSF 12367089908-806-5952",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089908",
+      "peer_id": -1003755626994,
+      "title": "RSF 12367089908-12-1431",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089908",
+      "peer_id": -1003831453003,
+      "title": "RSF 12367089908-409-9484",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089908",
+      "peer_id": -1003877317021,
+      "title": "RSF 12367089908-12-2952",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089929",
+      "peer_id": -1003799345283,
+      "title": "RSF 12367089929-807-6441",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089929",
+      "peer_id": -1003836252332,
+      "title": "RSF 12367089929-807-9926",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089929",
+      "peer_id": -1003724350526,
+      "title": "RSF 12367089929-410-1724",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089929",
+      "peer_id": -1003815277144,
+      "title": "RSF 12367089929-410-9289",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089929",
+      "peer_id": -1003750387498,
+      "title": "RSF 12367089929-13-2201",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367089929",
+      "peer_id": -1003809063479,
+      "title": "RSF 12367089929-13-5801",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367090080",
+      "peer_id": -1003620494078,
+      "title": "RSF 12367090080-14-1052",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367090080",
+      "peer_id": -1003367196922,
+      "title": "RSF 12367090080-411-4936",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367090080",
+      "peer_id": -1003884428178,
+      "title": "RSF 12367090080-808-8559",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367090080",
+      "peer_id": -1003809530995,
+      "title": "RSF 12367090080-808-3268",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367090080",
+      "peer_id": -1003737065864,
+      "title": "RSF 12367090080-411-6329",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367090080",
+      "peer_id": -1003829286156,
+      "title": "RSF 12367090080-14-4972",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367091142",
+      "peer_id": -1003720486544,
+      "title": "RSF 12367091142-16-2899",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367091142",
+      "peer_id": -1003828127206,
+      "title": "RSF 12367091142-810-9154",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367091142",
+      "peer_id": -1003877695022,
+      "title": "RSF 12367091142-16-7433",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367091142",
+      "peer_id": -1003564948075,
+      "title": "RSF 12367091142-810-7081",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367091142",
+      "peer_id": -1003772243568,
+      "title": "RSF 12367091142-413-7585",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367092893",
+      "peer_id": -1003729425261,
+      "title": "RSF 12367092893-811-7204",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367092893",
+      "peer_id": -1003480596558,
+      "title": "RSF 12367092893-414-5398",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367092893",
+      "peer_id": -1003748696977,
+      "title": "RSF 12367092893-17-6839",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367092893",
+      "peer_id": -1003785746886,
+      "title": "RSF 12367092893-811-5366",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367092893",
+      "peer_id": -1003802786243,
+      "title": "RSF 12367092893-414-5196",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367092893",
+      "peer_id": -1003873495747,
+      "title": "RSF 12367092893-17-8389",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367093230",
+      "peer_id": -1003713961334,
+      "title": "RSF 12367093230-18-7930",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367093230",
+      "peer_id": -1003856167135,
+      "title": "RSF 12367093230-812-3369",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367093230",
+      "peer_id": -1003857091693,
+      "title": "RSF 12367093230-415-2300",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367093230",
+      "peer_id": -1003597695846,
+      "title": "RSF 12367093230-415-8897",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367093230",
+      "peer_id": -1003743782266,
+      "title": "RSF 12367093230-18-9601",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367093890",
+      "peer_id": -1003816659972,
+      "title": "RSF 12367093890-416-3817",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367093890",
+      "peer_id": -1003793870441,
+      "title": "RSF 12367093890-416-3552",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367093890",
+      "peer_id": -1003747246454,
+      "title": "RSF 12367093890-813-6215",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367093890",
+      "peer_id": -1003347671481,
+      "title": "RSF 12367093890-813-5451",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367093890",
+      "peer_id": -1003836360798,
+      "title": "RSF 12367093890-19-9857",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105328",
+      "peer_id": -1003883723359,
+      "title": "RSF 12367105328-417-1402",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105328",
+      "peer_id": -1003798521594,
+      "title": "RSF 12367105328-417-1084",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105328",
+      "peer_id": -1003508445761,
+      "title": "RSF 12367105328-20-8499",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105328",
+      "peer_id": -1003832410931,
+      "title": "RSF 12367105328-814-6882",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105389",
+      "peer_id": -1003850984572,
+      "title": "RSF 12367105389-21-2286",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105389",
+      "peer_id": -1003189531630,
+      "title": "RSF 12367105389-418-3160",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105389",
+      "peer_id": -1003893520951,
+      "title": "RSF 12367105389-815-3220",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105389",
+      "peer_id": -1003661462827,
+      "title": "RSF 12367105389-815-9319",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105389",
+      "peer_id": -1003785599323,
+      "title": "RSF 12367105389-418-7011",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105389",
+      "peer_id": -1003867907022,
+      "title": "RSF 12367105389-21-2142",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105750",
+      "peer_id": -1003717160412,
+      "title": "RSF 12367105750-420-8850",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105750",
+      "peer_id": -1003719199259,
+      "title": "RSF 12367105750-23-8348",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105750",
+      "peer_id": -1003878899858,
+      "title": "RSF 12367105750-817-4070",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105750",
+      "peer_id": -1003700142643,
+      "title": "RSF 12367105750-420-8251",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105750",
+      "peer_id": -1003868041134,
+      "title": "RSF 12367105750-23-4732",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105886",
+      "peer_id": -1003815655905,
+      "title": "RSF 12367105886-820-9059",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105886",
+      "peer_id": -1003691779499,
+      "title": "RSF 12367105886-423-5036",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105886",
+      "peer_id": -1003701193420,
+      "title": "RSF 12367105886-820-3142",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105886",
+      "peer_id": -1003790581366,
+      "title": "RSF 12367105886-423-5957",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105886",
+      "peer_id": -1003865278032,
+      "title": "RSF 12367105886-26-3180",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367105886",
+      "peer_id": -1003881338111,
+      "title": "RSF 12367105886-26-5840",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367603015",
+      "peer_id": -1003840949087,
+      "title": "RSF 12367603015-30-8489",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367603015",
+      "peer_id": -1003824829901,
+      "title": "RSF 12367603015-427-1682",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367603015",
+      "peer_id": -1003816672690,
+      "title": "RSF 12367603015-824-9073",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367603015",
+      "peer_id": -1003655602598,
+      "title": "RSF 12367603015-824-8107",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367603015",
+      "peer_id": -1003649073872,
+      "title": "RSF 12367603015-427-7594",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367603015",
+      "peer_id": -1003782068967,
+      "title": "RSF 12367603015-30-9908",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605483",
+      "peer_id": -1003820567547,
+      "title": "RSF 12367605483-826-2799",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605483",
+      "peer_id": -1003764315044,
+      "title": "RSF 12367605483-429-6051",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605483",
+      "peer_id": -1003621125067,
+      "title": "RSF 12367605483-826-1215",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605483",
+      "peer_id": -1003568164303,
+      "title": "RSF 12367605483-429-5260",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605483",
+      "peer_id": -1003644195561,
+      "title": "RSF 12367605483-32-1495",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605483",
+      "peer_id": -1003807814599,
+      "title": "RSF 12367605483-32-2140",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605525",
+      "peer_id": -1003794109078,
+      "title": "RSF 12367605525-827-3413",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605525",
+      "peer_id": -1003874340187,
+      "title": "RSF 12367605525-827-8137",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605525",
+      "peer_id": -1003870016825,
+      "title": "RSF 12367605525-430-1590",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605525",
+      "peer_id": -1003764850068,
+      "title": "RSF 12367605525-33-8064",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605525",
+      "peer_id": -1003886367566,
+      "title": "RSF 12367605525-33-8781",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605975",
+      "peer_id": -1003755028678,
+      "title": "RSF 12367605975-34-5622",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605975",
+      "peer_id": -1003896120856,
+      "title": "RSF 12367605975-828-8446",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605975",
+      "peer_id": -1003726518678,
+      "title": "RSF 12367605975-828-9962",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605975",
+      "peer_id": -1003887659101,
+      "title": "RSF 12367605975-431-6984",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605975",
+      "peer_id": -1003763611147,
+      "title": "RSF 12367605975-431-4885",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367605975",
+      "peer_id": -1003732842210,
+      "title": "RSF 12367605975-34-9454",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367606337",
+      "peer_id": -1003394851786,
+      "title": "RSF 12367606337-35-7532",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367606337",
+      "peer_id": -1003879968753,
+      "title": "RSF 12367606337-829-2307",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367606337",
+      "peer_id": -1003633131480,
+      "title": "RSF 12367606337-829-5721",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367606337",
+      "peer_id": -1003705705209,
+      "title": "RSF 12367606337-432-5919",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367606337",
+      "peer_id": -1003694317091,
+      "title": "RSF 12367606337-35-9624",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367606339",
+      "peer_id": -1003826752990,
+      "title": "RSF 12367606339-433-5676",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367606339",
+      "peer_id": -1003775521729,
+      "title": "RSF 12367606339-830-9378",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367606339",
+      "peer_id": -1003784737119,
+      "title": "RSF 12367606339-830-9059",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367606339",
+      "peer_id": -1003770049719,
+      "title": "RSF 12367606339-433-7789",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367606339",
+      "peer_id": -1003818736980,
+      "title": "RSF 12367606339-36-4725",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367606339",
+      "peer_id": -1003777357352,
+      "title": "RSF 12367606339-36-6557",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367607182",
+      "peer_id": -1003745942580,
+      "title": "RSF 12367607182-37-9926",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367607182",
+      "peer_id": -1003728824422,
+      "title": "RSF 12367607182-37-9090",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367607182",
+      "peer_id": -1003753931878,
+      "title": "RSF 12367607182-831-7606",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367607182",
+      "peer_id": -1003730592749,
+      "title": "RSF 12367607182-831-9025",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367607182",
+      "peer_id": -1003720078581,
+      "title": "RSF 12367607182-434-1449",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367607182",
+      "peer_id": -1003839751763,
+      "title": "RSF 12367607182-434-3144",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367608119",
+      "peer_id": -1003730537176,
+      "title": "RSF 12367608119-39-2391",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367608119",
+      "peer_id": -1003790892162,
+      "title": "RSF 12367608119-436-7599",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367608119",
+      "peer_id": -1003823270157,
+      "title": "RSF 12367608119-833-1296",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367608119",
+      "peer_id": -1003835933662,
+      "title": "RSF 12367608119-833-7049",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367608119",
+      "peer_id": -1003779970226,
+      "title": "RSF 12367608119-436-5024",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367608119",
+      "peer_id": -1003717519596,
+      "title": "RSF 12367608119-39-2464",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367609901",
+      "peer_id": -1003695112719,
+      "title": "RSF 12367609901-834-7204",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367609901",
+      "peer_id": -1003169837958,
+      "title": "RSF 12367609901-834-1337",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367609901",
+      "peer_id": -1003672179589,
+      "title": "RSF 12367609901-437-7999",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367609901",
+      "peer_id": -1003882248099,
+      "title": "RSF 12367609901-437-9100",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367609901",
+      "peer_id": -1003821635279,
+      "title": "RSF 12367609901-40-7604",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367609901",
+      "peer_id": -1003703608790,
+      "title": "RSF 12367609901-40-7136",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367610465",
+      "peer_id": -1003649858721,
+      "title": "RSF 12367610465-41-1079",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367610465",
+      "peer_id": -1003855920426,
+      "title": "RSF 12367610465-835-8777",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367610465",
+      "peer_id": -1003860279799,
+      "title": "RSF 12367610465-835-2185",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367610465",
+      "peer_id": -1003821352657,
+      "title": "RSF 12367610465-438-1489",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367610465",
+      "peer_id": -1003870986574,
+      "title": "RSF 12367610465-438-2073",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367610465",
+      "peer_id": -1003864506040,
+      "title": "RSF 12367610465-41-2248",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367612546",
+      "peer_id": -1003893502591,
+      "title": "RSF 12367612546-439-8572",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367612546",
+      "peer_id": -1003329955294,
+      "title": "RSF 12367612546-836-2405",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367612546",
+      "peer_id": -1003636267655,
+      "title": "RSF 12367612546-439-4269",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367612546",
+      "peer_id": -1003864285807,
+      "title": "RSF 12367612546-42-8466",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    },
+    {
+      "session": "12367612546",
+      "peer_id": -1003582892680,
+      "title": "RSF 12367612546-42-2473",
+      "type": "megagroup",
+      "today_message_ids_count": 0,
+      "messages_deleted": 0,
+      "delete_errors": [],
+      "steps": [
+        "default_banned_rights",
+        "protected_content_noforwards",
+        "owner_anonymous_admin"
+      ],
+      "errors": [
+        "participants_hidden:Not enough participants (caused by ToggleParticipantsHiddenRequest)"
+      ]
+    }
+  ],
+  "session_notes": [
+    {
+      "session": "12267437386",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12267437391",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12267437392",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12267437394",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12267437416",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12267437417",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12267437432",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12267437436",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12267437440",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12267437459",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12267437494",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367085997",
+      "skipped": true,
+      "reason": "database is locked"
+    },
+    {
+      "session": "12367089161",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367089231",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367089245",
+      "skipped": true,
+      "reason": "database is locked"
+    },
+    {
+      "session": "12367089373",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367089483",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367089529",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367089620",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367089686",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367089797",
+      "skipped": true,
+      "reason": "database is locked"
+    },
+    {
+      "session": "12367089891",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367089951",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367089960",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367090468",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367091642",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367095583",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367095661",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367105420",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367105433",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367105466",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367105728",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367105734",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367105771",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367105809",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367105814",
+      "skipped": true,
+      "reason": "database is locked"
+    },
+    {
+      "session": "12367602569",
+      "skipped": true,
+      "reason": "database is locked"
+    },
+    {
+      "session": "12367604447",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367604939",
+      "skipped": true,
+      "reason": "database is locked"
+    },
+    {
+      "session": "12367607120",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367607565",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367607884",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367608088",
+      "skipped": true,
+      "reason": "not_authorized"
+    },
+    {
+      "session": "12367611226",
+      "skipped": true,
+      "reason": "not_authorized"
+    }
+  ]
+}

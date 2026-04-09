@@ -116,19 +116,23 @@ async def async_telegram_client(
         raw_stem if raw_stem else None,
     )
 
+    # Do not use ``async with TelegramClient`` — Telethon's ``__aenter__`` calls
+    # ``start()``, which prompts for phone interactively when the session is empty.
+    # Workers must only ``connect()`` to existing authorized sessions.
     async with telegram_network_slot(task_name="async_telegram_client"):
         if leased:
-            async with TelegramClient(
+            client = TelegramClient(
                 StringSession(leased),
                 api_id,
                 api_hash,
                 **extra,
-            ) as client:
-                setattr(client, "_nexus_human_hesitation_tasks", [])
-                yield client
-                await await_human_hesitation_tasks(client)
+            )
         else:
-            async with TelegramClient(session_base, api_id, api_hash, **extra) as client:
-                setattr(client, "_nexus_human_hesitation_tasks", [])
-                yield client
-                await await_human_hesitation_tasks(client)
+            client = TelegramClient(session_base, api_id, api_hash, **extra)
+        await client.connect()
+        try:
+            setattr(client, "_nexus_human_hesitation_tasks", [])
+            yield client
+            await await_human_hesitation_tasks(client)
+        finally:
+            await client.disconnect()
