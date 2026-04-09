@@ -16,15 +16,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from nexus.api.auth import require_nexus_api_key_if_configured
 from nexus.master.services import session_factory as session_factory_svc
 from nexus.services.session_vault import lease_key as vault_lease_key
 
 log = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/sessions", tags=["telegram-sessions"])
+router = APIRouter(
+    prefix="/sessions",
+    tags=["telegram-sessions"],
+    dependencies=[Depends(require_nexus_api_key_if_configured)],
+)
 
 
 class SendCodeRequest(BaseModel):

@@ -20,7 +20,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_BASE, apiSseBase, getDeployStatus, triggerSync } from "@/lib/api";
+import { API_BASE, getDeployStatus, openDeployProgressStream, triggerSync } from "@/lib/api";
 import { useNexus } from "@/lib/nexus-context";
 import type { DeployPhase } from "@/lib/nexus-context";
 import type { DeployProgressEvent } from "@/lib/api";
@@ -171,9 +171,7 @@ export default function DeployTerminal() {
     (nodeId: string) => {
       if (streamsRef.current.has(nodeId)) return;
       setDeployingNode(nodeId, true);
-      const es = new EventSource(
-        `${apiSseBase()}/api/deploy/progress/${encodeURIComponent(nodeId)}`,
-      );
+      const es = openDeployProgressStream(nodeId);
       streamsRef.current.set(nodeId, es);
 
       es.onmessage = (e) => {

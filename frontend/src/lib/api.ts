@@ -17,6 +17,16 @@ const _SERVER_API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8
 
 export const API_BASE = _SERVER_API_BASE;
 
+const _NEXT_PUBLIC_NEXUS_API_KEY = (process.env.NEXT_PUBLIC_NEXUS_API_KEY ?? "").trim();
+
+/**
+ * Headers for routes gated by ``NEXUS_API_KEY`` on the FastAPI host.
+ * Set ``NEXT_PUBLIC_NEXUS_API_KEY`` in ``.env.local`` to match the server secret.
+ */
+export function nexusAuthHeaders(): Record<string, string> {
+  return _NEXT_PUBLIC_NEXUS_API_KEY ? { "X-Nexus-Api-Key": _NEXT_PUBLIC_NEXUS_API_KEY } : {};
+}
+
 /** WebSocket base for the active API target. */
 export function apiWsBase(): string {
   return API_BASE.replace(/^https/, "wss").replace(/^http/, "ws");
@@ -70,7 +80,11 @@ async function apiFetch<T>(path: string, init?: ApiFetchInit): Promise<T> {
   }
   try {
     const res = await fetch(_resolveApiUrl(path), {
-      headers: { "Content-Type": "application/json", ...rest.headers },
+      headers: {
+        "Content-Type": "application/json",
+        ...nexusAuthHeaders(),
+        ...(rest.headers as Record<string, string> | undefined),
+      },
       ...rest,
       ...(signal ? { signal } : {}),
     });
@@ -890,7 +904,11 @@ export function getDeployStatus(): Promise<DeployStatusResponse> {
  * Returns an EventSource — caller is responsible for closing it.
  */
 export function openDeployProgressStream(node_id: string): EventSource {
-  return new EventSource(`${apiSseBase()}/api/deploy/progress/${node_id}`);
+  const base = `${apiSseBase()}/api/deploy/progress/${encodeURIComponent(node_id)}`;
+  const k = _NEXT_PUBLIC_NEXUS_API_KEY;
+  if (!k) return new EventSource(base);
+  const sep = base.includes("?") ? "&" : "?";
+  return new EventSource(`${base}${sep}api_key=${encodeURIComponent(k)}`);
 }
 
 // ── Paper Trading ─────────────────────────────────────────────────────────────

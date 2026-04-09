@@ -53,7 +53,7 @@ import {
   ReferenceLine,
 } from "recharts";
 import { SwarmRichText } from "@/components/swarm/SwarmRichText";
-import { API_BASE, apiSseBase, apiWsBase, triggerPanic, swrFetcher } from "@/lib/api";
+import { API_BASE, apiSseBase, apiWsBase, nexusAuthHeaders, triggerPanic, swrFetcher } from "@/lib/api";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -1251,7 +1251,9 @@ function GroupFactoryView() {
 
   const loadCfSnapshot = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/swarm/community-factory/status`);
+      const res = await fetch(`${API_BASE}/api/swarm/community-factory/status`, {
+        headers: nexusAuthHeaders(),
+      });
       if (!res.ok) return;
       const j = (await res.json()) as Record<string, unknown>;
       setCfSnapshot({
@@ -4855,7 +4857,9 @@ function SwarmMonitorView() {
       sessions_by_machine: {},
     };
     try {
-      const res = await fetch(`${API_BASE}/api/swarm/sessions/inventory`);
+      const res = await fetch(`${API_BASE}/api/swarm/sessions/inventory`, {
+        headers: nexusAuthHeaders(),
+      });
       if (!res.ok) {
         setInventory(empty);
         return;
@@ -4925,7 +4929,7 @@ function SwarmMonitorView() {
     try {
       const res = await fetch(`${API_BASE}/api/v1/swarm/force-sync`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...nexusAuthHeaders() },
       });
       if (!res.ok) throw new Error(String(res.status));
       setGitPullStatus("ok");
@@ -4952,7 +4956,9 @@ function SwarmMonitorView() {
       if (!res.ok) throw new Error(String(res.status));
 
       // Pull first 5 sessions as queue targets
-      const invRes = await fetch(`${API_BASE}/api/swarm/sessions/all_scanned`);
+      const invRes = await fetch(`${API_BASE}/api/swarm/sessions/all_scanned`, {
+        headers: nexusAuthHeaders(),
+      });
       if (invRes.ok) {
         const invData = (await invRes.json()) as AllScannedResponse;
         const allTargets: string[] = [];
@@ -5390,7 +5396,9 @@ function SessionSwarmView() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/swarm/sessions/all_scanned`);
+      const res = await fetch(`${API_BASE}/api/swarm/sessions/all_scanned`, {
+        headers: nexusAuthHeaders(),
+      });
       if (!res.ok) throw new Error(String(res.status));
       const j = (await res.json()) as AllScannedResponse;
       setData(j);
@@ -5572,7 +5580,9 @@ function GlobalSwarmTableView() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/swarm/sessions/inventory`);
+      const res = await fetch(`${API_BASE}/api/swarm/sessions/inventory`, {
+        headers: nexusAuthHeaders(),
+      });
       if (!res.ok) throw new Error(String(res.status));
       const j = (await res.json()) as InventoryResponse;
       setData(j);
@@ -6942,7 +6952,7 @@ function NodeCard({
     try {
       await fetch(`${API_BASE}/api/swarm/nodes/${encodeURIComponent(nodeId)}/pause`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...nexusAuthHeaders() },
         body: JSON.stringify({ reason: "thermal_shutdown", temp: cpuTemp }),
       });
     } catch { /* best-effort */ }
@@ -7677,7 +7687,7 @@ function LiveSwarmView() {
 
   const fetchFeed = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/swarm/live-feed`);
+      const res = await fetch(`${API_BASE}/api/swarm/live-feed`, { headers: nexusAuthHeaders() });
       if (!res.ok) return;
       const data = (await res.json()) as SwarmFeedData;
       setFeed(data);
@@ -7699,7 +7709,9 @@ function LiveSwarmView() {
         massJoinTaskId && massJoinTaskId.trim()
           ? `?task_id=${encodeURIComponent(massJoinTaskId.trim())}`
           : "";
-      const res = await fetch(`${API_BASE}/api/swarm/mass-join-status${q}`);
+      const res = await fetch(`${API_BASE}/api/swarm/mass-join-status${q}`, {
+        headers: nexusAuthHeaders(),
+      });
       if (res.status === 503) {
         setMassJoinStatus(null);
         setMassJoinPollErr("מצב מקומי — אין סנכרון Redis לסטטוס צירוף");
@@ -7727,7 +7739,7 @@ function LiveSwarmView() {
     let cancelled = false;
     async function loadWarmer(pickDefault: boolean) {
       try {
-        const res = await fetch(`${API_BASE}/api/swarm/dashboard`);
+        const res = await fetch(`${API_BASE}/api/swarm/dashboard`, { headers: nexusAuthHeaders() });
         if (!res.ok || cancelled) return;
         const d = (await res.json()) as { groups?: WarmerDashRow[] };
         const rows = Array.isArray(d.groups) ? d.groups : [];
@@ -7765,7 +7777,7 @@ function LiveSwarmView() {
           chatSource === "israeli"
             ? `${API_BASE}/api/swarm/israeli/group-messages?limit=60`
             : `${API_BASE}/api/swarm/warmer/${encodeURIComponent(warmerKey.trim())}/group-messages?limit=60`;
-        const res = await fetch(url);
+        const res = await fetch(url, { headers: nexusAuthHeaders() });
         const data = (await res.json().catch(() => ({}))) as {
           ok?: boolean;
           detail?: string;
@@ -7815,7 +7827,7 @@ function LiveSwarmView() {
     try {
       const res = await fetch(`${API_BASE}/api/swarm/start`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...nexusAuthHeaders() },
         body: JSON.stringify({ target_group: targetGroup }),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -7865,7 +7877,7 @@ function LiveSwarmView() {
     try {
       const res = await fetch(`${API_BASE}/api/swarm/join-all-sessions`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...nexusAuthHeaders() },
         body: JSON.stringify({ target_group: targetGroup }),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -7906,7 +7918,10 @@ function LiveSwarmView() {
 
   async function handleStopSwarm() {
     try {
-      const res = await fetch(`${API_BASE}/api/swarm/stop`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/swarm/stop`, {
+        method: "POST",
+        headers: nexusAuthHeaders(),
+      });
       const data = (await res.json().catch(() => ({}))) as { detail?: string };
       if (!res.ok) {
         setStatusMsg(`❌ ${typeof data.detail === "string" ? data.detail : res.statusText}`);

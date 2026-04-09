@@ -6,7 +6,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import useSWR from "swr";
-import { API_BASE, swrFetcher } from "@/lib/api";
+import { API_BASE, nexusAuthHeaders, swrFetcher } from "@/lib/api";
 
 const TARGET_SLOTS = 94;
 
@@ -59,7 +59,7 @@ export default function BotFarm() {
     try {
       const res = await fetch(`${API_BASE}/api/sessions/vault/mass-message`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...nexusAuthHeaders() },
         body: JSON.stringify({ message: massText, scope: "all_active" }),
       });
       const j = await res.json().catch(() => ({}));
@@ -76,7 +76,7 @@ export default function BotFarm() {
     try {
       await fetch(`${API_BASE}/api/sessions/vault/warm-up`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...nexusAuthHeaders() },
         body: JSON.stringify({ session_stem: stem }),
       });
     } catch {

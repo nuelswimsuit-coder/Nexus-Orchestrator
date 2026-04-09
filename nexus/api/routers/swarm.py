@@ -20,8 +20,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 import structlog
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from nexus.api.auth import require_nexus_api_key_if_configured
 from nexus.api.dependencies import RedisDep
 from nexus.shared.config import settings
 from nexus.shared import redis_util
@@ -38,7 +39,11 @@ from nexus.services.tg_session_disk import (
 
 log = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/swarm", tags=["swarm"])
+router = APIRouter(
+    prefix="/swarm",
+    tags=["swarm"],
+    dependencies=[Depends(require_nexus_api_key_if_configured)],
+)
 
 _SWARM_DEGRADED_MSG = (
     "הדשבורד רץ במצב זמני מקומי ולא מסונכן עם שירות הנחיל שמפעיל חשבונות טלגרם מהסריקה. "

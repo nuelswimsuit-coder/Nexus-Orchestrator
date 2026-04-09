@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import unquote, urlparse
 
 import structlog
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from redis.asyncio import Redis
@@ -31,6 +31,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
+from nexus.api.auth import require_nexus_api_key_if_configured
 from nexus.api.hitl_store import HitlStore
 from nexus.api.routers import (
     ahu,
@@ -1464,6 +1465,7 @@ def create_app() -> FastAPI:
         methods=["POST"],
         tags=["swarm"],
         summary="Broadcast FORCE_GIT_PULL (v1 path alias)",
+        dependencies=[Depends(require_nexus_api_key_if_configured)],
     )
     app.include_router(system.router, prefix="/api")
     app.include_router(flight_mode.router, prefix="/api")

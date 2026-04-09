@@ -5,7 +5,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, nexusAuthHeaders } from "@/lib/api";
 
 const STORAGE_KEY = "nexus:vault:blocked_ips";
 
@@ -68,7 +68,7 @@ export default function Vault() {
     try {
       const res = await fetch(`${API_BASE}/api/sessions/vault/proxy-rotate-all`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...nexusAuthHeaders() },
         body: JSON.stringify({ strategy: "fresh_residential", scope: "swarm" }),
       });
       const j = await res.json().catch(() => ({}));

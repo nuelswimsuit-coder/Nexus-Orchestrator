@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     # ── API server ────────────────────────────────────────────────────────────
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=8001, ge=1, le=65535)
+    # When set, ``/api/sessions/*``, ``/api/swarm/*``, ``/api/deploy/*`` require
+    # ``X-Nexus-Api-Key``, ``Authorization: Bearer``, or ``?api_key=`` (SSE).
+    nexus_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("NEXUS_API_KEY", "NEXUS_SECRET_API_KEY"),
+    )
 
     # ── Notifications — WhatsApp ──────────────────────────────────────────────
     # Set to "twilio" or "evolution" to activate live WhatsApp delivery.

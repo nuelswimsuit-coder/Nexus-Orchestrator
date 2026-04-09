@@ -1,6 +1,18 @@
 .env
 config/night_watch_manifest.json
 
+# Telethon session DB + sidecars (api_hash, 2FA hints, device hints) — never commit
+vault/sessions/*.session
+vault/sessions/*.json
+vault/sessions/**/*.session
+vault/sessions/**/*.json
+vault/sessions/*.session-journal
+vault/sessions/**/*.session-journal
+vault/sessions/*.session-wal
+vault/sessions/**/*.session-wal
+vault/sessions/*.session-shm
+vault/sessions/**/*.session-shm
+
 # Runtime / local — do not commit (GitHub 100 MB limit on blobs)
 logs/
 .cursor/debug*.log

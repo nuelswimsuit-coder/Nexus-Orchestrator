@@ -30,10 +30,11 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from nexus.api.auth import require_nexus_api_key_if_configured
 from nexus.api.dependencies import RedisDep
 from nexus.master.services.deployer import DeployerService
 from nexus.master.services.vault import Vault
@@ -66,7 +67,11 @@ def _agent_dbg(hypothesis_id: str, location: str, message: str, data: dict) -> N
 
 # #endregion
 
-router = APIRouter(prefix="/deploy", tags=["deploy"])
+router = APIRouter(
+    prefix="/deploy",
+    tags=["deploy"],
+    dependencies=[Depends(require_nexus_api_key_if_configured)],
+)
 
 # ── Schemas ────────────────────────────────────────────────────────────────────
 
