@@ -264,6 +264,48 @@ def _entity_label(entity: Any) -> str:
     return getattr(entity, "title", None) or str(getattr(entity, "id", "?"))
 
 
+async def _is_group_owner(client: Any, entity: Any, me_id: int | None) -> bool:
+    """
+    האם הסשן הוא יוצר הבקשה. ב־iter_dialogs השדה entity.creator לעיתים לא ממולא —
+    משלימים עם get_permissions ו־GetFullChannelRequest (creator_id).
+    """
+    from telethon.tl.functions.channels import GetFullChannelRequest  # type: ignore
+    from telethon.tl.types import Channel, Chat  # type: ignore
+
+    if isinstance(entity, Channel):
+        if getattr(entity, "creator", None) is True:
+            return True
+        try:
+            perm = await client.get_permissions(entity)
+            if perm is not None and getattr(perm, "is_creator", False):
+                return True
+        except Exception as exc:
+            log.debug("owner_groups_lockdown_perm_channel", error=str(exc))
+        if me_id:
+            try:
+                r = await client(GetFullChannelRequest(channel=entity))
+                fc = getattr(r, "full_chat", None)
+                cid = int(getattr(fc, "creator_id", 0) or 0) if fc else 0
+                if cid and cid == me_id:
+                    return True
+            except Exception as exc:
+                log.debug("owner_groups_lockdown_full_channel", error=str(exc))
+        return False
+
+    if isinstance(entity, Chat):
+        if getattr(entity, "creator", None) is True:
+            return True
+        try:
+            perm = await client.get_permissions(entity)
+            if perm is not None and getattr(perm, "is_creator", False):
+                return True
+        except Exception as exc:
+            log.debug("owner_groups_lockdown_perm_chat", error=str(exc))
+        return False
+
+    return False
+
+
 @registry.register("telegram.owner_groups_lockdown")
 async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
     from telethon import utils  # type: ignore[import-untyped]
@@ -315,15 +357,27 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
 
         prov_notify = TelegramProvider.from_task_parameters(parameters)
 
+    notify_gave_up = False
+
     async def _notify_he(lines: list[str]) -> None:
-        if skip_notify or not progress_notify:
+        nonlocal notify_gave_up
+        if skip_notify or not progress_notify or notify_gave_up:
             return
         if prov_notify is None or not prov_notify._is_configured():
             return
         try:
             await prov_notify.send_message(_esc_lines(lines))
         except Exception as exc:
-            log.warning("owner_groups_lockdown_progress_notify_failed", error=str(exc))
+            err = str(exc).lower()
+            if "chat not found" in err or "chat_id is empty" in err:
+                notify_gave_up = True
+                log.warning(
+                    "owner_groups_lockdown_notify_stopped",
+                    hint="הגדר notify_chat_id למזהה מספרי (מ־@userinfobot) או /start מול הבוט; מדלגים על התראות",
+                    error=str(exc),
+                )
+            else:
+                log.warning("owner_groups_lockdown_progress_notify_failed", error=str(exc))
 
     report_groups: list[dict[str, Any]] = []
     session_notes: list[dict[str, Any]] = []
@@ -362,7 +416,7 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
                 n_grp_session = 0
                 async for dialog in client.iter_dialogs():
                     entity = dialog.entity
-                    is_owner = getattr(entity, "creator", None) is True
+                    is_owner = await _is_group_owner(client, entity, me_id)
                     if not is_owner:
                         continue
 

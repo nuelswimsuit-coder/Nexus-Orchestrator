@@ -1,5 +1,5 @@
 {
-  "notify_chat_id": "@tele_fixx",
+  "notify_chat_id": "",
   "progress_notify": true,
   "purge_all_messages": true,
   "max_messages_per_chat": 20000,
