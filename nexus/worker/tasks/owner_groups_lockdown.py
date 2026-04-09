@@ -352,8 +352,14 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
                     session_notes.append(
                         {"session": stem, "skipped": True, "reason": "not_authorized"},
                     )
+                    await _notify_he([f"⚠️ סשן {stem} לא מחובר — מדלג"])
                     continue
 
+                me_for_purge = await client.get_me()
+                me_id = getattr(me_for_purge, "id", None) if me_for_purge else None
+                await _notify_he([f"📂 סשן {stem}: סורק דיאלוגים…"])
+
+                n_grp_session = 0
                 async for dialog in client.iter_dialogs():
                     entity = dialog.entity
                     is_owner = getattr(entity, "creator", None) is True
@@ -385,16 +391,39 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
                     }
 
                     if not dry_run:
-                        ids = await _collect_today_message_ids(client, entity, tz)
-                        entry["today_message_ids_count"] = len(ids)
-                        del_stats, del_errs = await _delete_ids(client, entity, ids)
-                        entry["messages_deleted"] = del_stats
-                        entry["delete_errors"] = del_errs
+                        if purge_all_messages:
+                            from nexus.worker.tasks.group_message_purge import _purge_entity
+
+                            del_stats, del_errs = await _purge_entity(
+                                client,
+                                entity,
+                                max_messages=max_per_chat,
+                                only_own_messages=only_own,
+                                me_id=me_id,
+                            )
+                            entry["messages_deleted"] = del_stats
+                            entry["delete_errors"] = del_errs
+                            entry["today_message_ids_count"] = 0
+                            entry["purge_mode"] = "full"
+                        else:
+                            ids = await _collect_today_message_ids(client, entity, tz)
+                            entry["today_message_ids_count"] = len(ids)
+                            del_stats, del_errs = await _delete_ids(client, entity, ids)
+                            entry["messages_deleted"] = del_stats
+                            entry["delete_errors"] = del_errs
+                            entry["purge_mode"] = "today_only"
                     else:
-                        ids = await _collect_today_message_ids(client, entity, tz)
-                        entry["today_message_ids_count"] = len(ids)
-                        entry["messages_deleted"] = 0
-                        entry["delete_errors"] = []
+                        if purge_all_messages:
+                            entry["today_message_ids_count"] = 0
+                            entry["messages_deleted"] = 0
+                            entry["delete_errors"] = []
+                            entry["purge_mode"] = "full_dry_run"
+                        else:
+                            ids = await _collect_today_message_ids(client, entity, tz)
+                            entry["today_message_ids_count"] = len(ids)
+                            entry["messages_deleted"] = 0
+                            entry["delete_errors"] = []
+                            entry["purge_mode"] = "today_only_dry_run"
 
                     if isinstance(entity, Chat):
                         lock = await _lockdown_basic_chat(client, entity, dry_run=dry_run)
@@ -405,22 +434,40 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
                             dry_run=dry_run,
                         )
                     entry["steps"] = lock.get("steps", [])
-                    entry["errors"] = lock.get("errors", []) + entry.get("delete_errors", [])
+                    entry["errors"] = list(lock.get("errors", [])) + list(
+                        entry.get("delete_errors", []),
+                    )
 
                     seen_peer.add(peer_id)
                     report_groups.append(entry)
+                    n_grp_session += 1
+                    steps_short = ", ".join(str(x) for x in entry.get("steps", [])[:5])
+                    await _notify_he(
+                        [
+                            f"✅ קבוצה הושלמה: {title}",
+                            f"סשן: {stem}",
+                            f"נמחקו {entry.get('messages_deleted', 0)} הודעות (מצב: {entry.get('purge_mode', '')})",
+                            f"הרשאות/נעילה: {steps_short or '—'}",
+                            f"שגיאות: {len(entry.get('errors', []))}",
+                        ],
+                    )
                     await asyncio.sleep(0.35)
+
+                await _notify_he([f"🏁 סשן {stem} הסתיים — {n_grp_session} קבוצות בעלים"])
 
         except Exception as exc:
             log.warning("owner_groups_lockdown_session_failed", session=stem, error=str(exc))
             session_notes.append(
                 {"session": stem, "skipped": True, "reason": str(exc)},
             )
+            await _notify_he([f"❌ שגיאה בסשן {stem}: {str(exc)[:350]}"])
 
     summary = {
         "status": "ok",
         "dry_run": dry_run,
         "timezone": tz_name,
+        "purge_all_messages": purge_all_messages,
+        "progress_notify": progress_notify,
         "sessions_considered": len(meta_paths),
         "max_sessions_applied": raw_max,
         "groups_touched": len(report_groups),
@@ -430,25 +477,30 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
 
     if not skip_notify:
         try:
-            from nexus.shared.notifications.providers.telegram import TelegramProvider
+            prov = prov_notify if prov_notify is not None else None
+            if prov is None:
+                from nexus.shared.notifications.providers.telegram import TelegramProvider
 
-            prov = TelegramProvider.from_task_parameters(parameters)
+                prov = TelegramProvider.from_task_parameters(parameters)
             lines = [
-                _esc("🔒 *Owner groups lockdown*"),
-                _esc(f"dry_run={dry_run} · tz={tz_name}"),
-                _esc(f"קבוצות שעובדו: {len(report_groups)}"),
+                "🔒 סיכום נעילת קבוצות בעלים",
+                f"dry_run={dry_run} · אזור_זמן={tz_name}",
+                f"מחיקה מלאה={purge_all_messages}",
+                f"סה״כ קבוצות שעובדו: {len(report_groups)}",
                 "",
             ]
-            for g in report_groups[:40]:
+            for g in report_groups[:35]:
                 t = g.get("title", "?")
                 s = g.get("session", "?")
                 errc = len([x for x in g.get("errors", []) if x])
-                lines.append(_esc(f"• {t} ({s}) — deleted={g.get('messages_deleted', 0)} errs={errc}"))
-            if len(report_groups) > 40:
-                lines.append(_esc(f"… ועוד {len(report_groups) - 40} קבוצות"))
-            body = "\n".join(lines)
+                lines.append(
+                    f"• {t} ({s}) — נמחקו={g.get('messages_deleted', 0)} שגיאות={errc}",
+                )
+            if len(report_groups) > 35:
+                lines.append(f"… ועוד {len(report_groups) - 35} קבוצות")
+            body = _esc_lines(lines)
             if len(body) > 3900:
-                body = body[:3890] + _esc("\n…truncated")
+                body = body[:3890] + _esc("\n…נחתך")
             await prov.send_message(body)
         except Exception as exc:
             log.warning("owner_groups_lockdown_notify_failed", error=str(exc))
