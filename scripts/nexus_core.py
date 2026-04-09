@@ -150,6 +150,18 @@ def _redis_dsn_for_dispatch(master_ip: str) -> str:
     return _coerce_redis_url(raw)
 
 
+def _print_redis_broker_hint() -> None:
+    """Explain that the queue broker must be running (not a Nexus code bug)."""
+    print(
+        "\n[nexus_core] Redis לא זמין ב־127.0.0.1:6379 — צריך להפעיל שרת Redis לפני enqueue.\n"
+        "  Docker (מומלץ):\n"
+        "    docker run -d --name redis-nexus -p 6379:6379 redis:7-alpine\n"
+        "  בדיקה ב־PowerShell:\n"
+        "    Test-NetConnection -ComputerName 127.0.0.1 -Port 6379\n",
+        file=sys.stderr,
+    )
+
+
 async def _count_online_workers(redis: Any) -> tuple[int, list[str]]:
     """Workers = heartbeat keys whose payload has role ``worker``."""
     from nexus.shared.schemas import NodeHeartbeat, NodeRole
@@ -266,9 +278,13 @@ async def _cli_dispatch_async(args: argparse.Namespace) -> int:
         return 0
     except OSError as exc:
         print(f"[nexus_core] Redis connection failed: {exc}", file=sys.stderr)
+        _print_redis_broker_hint()
         return 1
     except Exception as exc:
         print(f"[nexus_core] Dispatch failed: {exc}", file=sys.stderr)
+        el = str(exc).lower()
+        if "timeout" in el or "6379" in el or "redis" in el or "connection" in el:
+            _print_redis_broker_hint()
         return 1
     finally:
         if pool is not None:
