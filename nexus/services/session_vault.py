@@ -82,6 +82,10 @@ def vault_candidate_roots() -> list[Path]:
     legacy = (_REPO_ROOT / "data" / "staged_accounts").resolve()
     if legacy.is_dir() and legacy not in {r.resolve() for r in roots}:
         roots.append(legacy)
+    # Repo-root sessions/ (e.g. sessions/validated_active/*.session + *.json)
+    repo_sessions = (_REPO_ROOT / "sessions").resolve()
+    if repo_sessions.is_dir() and repo_sessions not in {r.resolve() for r in roots}:
+        roots.append(repo_sessions)
     return roots
 
 
