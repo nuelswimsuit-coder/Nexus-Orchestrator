@@ -23,7 +23,7 @@ psutil>=6.0
 rich>=13.7
 
 # ── Telegram (MTProto client — worker sessions) ───────────────────────────────
-telethon>=1.36
+telethon>=1.42
 PySocks>=1.7.1
 cryptography>=42.0
 Pillow>=10.0
