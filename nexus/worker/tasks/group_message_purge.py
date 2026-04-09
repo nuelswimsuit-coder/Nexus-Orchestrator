@@ -1,24 +1,29 @@
 """
 telegram.group_message_purge — מחיקת המונית של הודעות בקבוצות (יעדים + אופציונלי כל הקבוצות המנוהלות)
 
+סדר ברירת מחדל (חשוב):
+  1) לכל יעד ב־targets — עוברים על **כל** הסשנים (מחיקה ממוקדת קודם).
+  2) רק אחר כך, אם purge_all_managed_groups=True — סריקת דיאלוגים מנוהלים.
+
 שימושים: ניקוי ספאם/תוכן פוגעני אחרי חשיפת סשנים, או ניקוי יעד ממוקד.
 
 פרמטרים
 --------
 targets                  רשימת @username, או קישורי https://t.me/...
-purge_all_managed_groups אם True — גם מוחק בכל דיאלוג שבו הסשן יוצר או אדמין (מגה־קבוצה/ערוץ)
+purge_all_managed_groups אם True — אחרי היעדים, גם מוחק בכל דיאלוג שבו הסשן יוצר או אדמין
 max_messages_per_chat    תקרה להודעות למחיקה לכל צ׳אט (ברירת מחדל 20000)
 only_own_messages        אם True — רק הודעות שנשלחו מהסשן הנוכחי
-lockdown_owned_after     אם True — אחרי ניקוי, מפעיל נעילת הרשאות כמו ב־owner_groups_lockdown
-                         רק בקבוצות שהמשתמש הוא creator (בעלים)
-session_stems / max_sessions — כמו במשימות vault אחרות
+lockdown_owned_after     אם True — אחרי ניקוי, נעילת הרשאות לבעלים (כמו owner_groups_lockdown)
+session_stems / max_sessions
 dry_run / skip_notify
+db_locked_retries        מספר ניסיונות כש־SQLite session נעול (ברירת מחדל 5)
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+from collections import defaultdict
 from typing import Any
 
 import structlog
@@ -118,6 +123,10 @@ async def _delete_batch(client: Any, entity: Any, batch: list[int]) -> tuple[int
         return 0, [f"delete_messages:{exc!s}"]
 
 
+def _is_db_locked(exc: BaseException) -> bool:
+    return "database is locked" in str(exc).lower()
+
+
 @registry.register("telegram.group_message_purge")
 async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
     from telethon.tl.types import Channel, Chat  # type: ignore
@@ -130,6 +139,12 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
     max_per_chat = int(parameters.get("max_messages_per_chat") or 20000)
     if max_per_chat < 1:
         max_per_chat = 20000
+
+    try:
+        db_retries = int(parameters.get("db_locked_retries") or 5)
+    except (TypeError, ValueError):
+        db_retries = 5
+    db_retries = max(1, min(db_retries, 15))
 
     raw_targets = parameters.get("targets")
     if isinstance(raw_targets, str):
@@ -171,112 +186,210 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
 
     report: list[dict[str, Any]] = []
     session_errors: list[dict[str, Any]] = []
+    # peer_ids שכבר טופלו בפאזת יעדים (לפי סשן) — כדי לא לשכפל עבודה ב־purge_all
+    phase1_peers_by_session: dict[str, set[int]] = defaultdict(set)
+    targets_deleted_totals: dict[str, int] = defaultdict(int)
 
-    for meta_json in meta_paths:
-        stem = meta_json.stem
-        session_base = str(meta_json.with_suffix(""))
-        params: dict[str, Any] = {
-            "session_stem": stem,
-            **{k: v for k, v in parameters.items() if k in ("__secrets__", "string_session")},
+    async def _run_purge_on(
+        client: Any,
+        stem: str,
+        entity: Any,
+        label: str,
+        *,
+        processed_peers: set[int],
+        me_id: int | None,
+    ) -> None:
+        from telethon import utils  # type: ignore
+
+        pid = utils.get_peer_id(entity)
+        if pid in processed_peers:
+            return
+        processed_peers.add(pid)
+        title = getattr(entity, "title", None) or label
+        if dry_run:
+            report.append(
+                {
+                    "session": stem,
+                    "peer_id": pid,
+                    "title": str(title),
+                    "dry_run": True,
+                    "label": label,
+                },
+            )
+            return
+        deleted, errs = await _purge_entity(
+            client,
+            entity,
+            max_messages=max_per_chat,
+            only_own_messages=only_own,
+            me_id=me_id,
+        )
+        entry: dict[str, Any] = {
+            "session": stem,
+            "peer_id": pid,
+            "title": str(title),
+            "label": label,
+            "messages_deleted": deleted,
+            "errors": errs,
         }
+        if label.startswith("target:"):
+            un = label.split(":", 1)[1]
+            targets_deleted_totals[un] += deleted
+            log.info(
+                "group_message_purge_target_session",
+                target=un,
+                session=stem,
+                messages_deleted=deleted,
+                title=str(title)[:80],
+            )
+        if lockdown_after and isinstance(entity, Channel) and getattr(entity, "creator", None):
+            if entity.megagroup or entity.broadcast:
+                lk = await _lockdown_megagroup_or_channel(client, entity, dry_run=False)
+                entry["lockdown_steps"] = lk.get("steps", [])
+                entry["errors"] = entry["errors"] + lk.get("errors", [])
+        elif lockdown_after and isinstance(entity, Chat) and getattr(entity, "creator", None):
+            lk = await _lockdown_basic_chat(client, entity, dry_run=False)
+            entry["lockdown_steps"] = lk.get("steps", [])
+            entry["errors"] = entry["errors"] + lk.get("errors", [])
+        report.append(entry)
 
-        try:
-            async with async_telegram_client(session_base, params) as client:
-                if not await client.is_user_authorized():
-                    session_errors.append({"session": stem, "error": "not_authorized"})
-                    continue
-
-                me = await client.get_me()
-                me_id = getattr(me, "id", None) if me else None
-
-                processed_peers: set[int] = set()
-
-                async def _run_purge_on(entity: Any, label: str) -> None:
-                    from telethon import utils  # type: ignore
-
-                    pid = utils.get_peer_id(entity)
-                    if pid in processed_peers:
-                        return
-                    processed_peers.add(pid)
-                    title = getattr(entity, "title", None) or label
-                    if dry_run:
-                        report.append(
-                            {
-                                "session": stem,
-                                "peer_id": pid,
-                                "title": str(title),
-                                "dry_run": True,
-                                "label": label,
-                            },
-                        )
-                        return
-                    deleted, errs = await _purge_entity(
-                        client,
-                        entity,
-                        max_messages=max_per_chat,
-                        only_own_messages=only_own,
-                        me_id=me_id,
-                    )
-                    entry: dict[str, Any] = {
-                        "session": stem,
-                        "peer_id": pid,
-                        "title": str(title),
-                        "label": label,
-                        "messages_deleted": deleted,
-                        "errors": errs,
-                    }
-                    if lockdown_after and isinstance(entity, Channel) and getattr(
-                        entity, "creator", None
-                    ):
-                        if entity.megagroup or entity.broadcast:
-                            lk = await _lockdown_megagroup_or_channel(
-                                client, entity, dry_run=False
-                            )
-                            entry["lockdown_steps"] = lk.get("steps", [])
-                            entry["errors"] = entry["errors"] + lk.get("errors", [])
-                    elif lockdown_after and isinstance(entity, Chat) and getattr(
-                        entity, "creator", None
-                    ):
-                        lk = await _lockdown_basic_chat(client, entity, dry_run=False)
-                        entry["lockdown_steps"] = lk.get("steps", [])
-                        entry["errors"] = entry["errors"] + lk.get("errors", [])
-                    report.append(entry)
-
-                for un in targets:
+    # ── פאזה 1: לכל יעד — כל הסשנים (קודם הקבוצות שציינת) ───────────────────
+    for un in targets:
+        for meta_json in meta_paths:
+            stem = meta_json.stem
+            session_base = str(meta_json.with_suffix(""))
+            params: dict[str, Any] = {
+                "session_stem": stem,
+                **{k: v for k, v in parameters.items() if k in ("__secrets__", "string_session")},
+            }
+            try:
+                for attempt in range(db_retries):
                     try:
-                        ent = await client.get_entity(un)
-                        await _run_purge_on(ent, f"target:{un}")
+                        async with async_telegram_client(session_base, params) as client:
+                            if not await client.is_user_authorized():
+                                session_errors.append(
+                                    {"session": stem, "error": "not_authorized", "phase": "targets"},
+                                )
+                                break
+                            me = await client.get_me()
+                            me_id = getattr(me, "id", None) if me else None
+                            processed: set[int] = phase1_peers_by_session[stem]
+                            try:
+                                ent = await client.get_entity(un)
+                                await _run_purge_on(
+                                    client,
+                                    stem,
+                                    ent,
+                                    f"target:{un}",
+                                    processed_peers=processed,
+                                    me_id=me_id,
+                                )
+                            except Exception as exc:
+                                report.append(
+                                    {
+                                        "session": stem,
+                                        "target": un,
+                                        "error": str(exc),
+                                        "label": "resolve_target",
+                                    },
+                                )
+                            await asyncio.sleep(0.12)
+                        break
                     except Exception as exc:
-                        report.append(
-                            {
-                                "session": stem,
-                                "target": un,
-                                "error": str(exc),
-                                "label": "resolve_target",
-                            },
+                        if _is_db_locked(exc) and attempt < db_retries - 1:
+                            log.info(
+                                "group_message_purge_db_locked_retry",
+                                session=stem,
+                                target=un,
+                                attempt=attempt + 1,
+                            )
+                            await asyncio.sleep(0.5 * (2**attempt))
+                            continue
+                        log.warning(
+                            "group_message_purge_session_failed",
+                            session=stem,
+                            phase="targets",
+                            error=str(exc),
                         )
+                        session_errors.append(
+                            {"session": stem, "error": str(exc), "phase": "targets"},
+                        )
+                        break
+            except Exception as exc:
+                log.warning("group_message_purge_session_failed", session=stem, error=str(exc))
+                session_errors.append({"session": stem, "error": str(exc), "phase": "targets"})
 
-                if purge_all:
-                    async for dialog in client.iter_dialogs():
-                        ent = dialog.entity
-                        if not isinstance(ent, (Channel, Chat)):
+    # ── פאזה 2: דיאלוגים מנוהלים (אופציונלי) ─────────────────────────────────
+    if purge_all:
+        for meta_json in meta_paths:
+            stem = meta_json.stem
+            session_base = str(meta_json.with_suffix(""))
+            params: dict[str, Any] = {
+                "session_stem": stem,
+                **{k: v for k, v in parameters.items() if k in ("__secrets__", "string_session")},
+            }
+            try:
+                for attempt in range(db_retries):
+                    try:
+                        async with async_telegram_client(session_base, params) as client:
+                            if not await client.is_user_authorized():
+                                session_errors.append(
+                                    {"session": stem, "error": "not_authorized", "phase": "managed"},
+                                )
+                                break
+                            me = await client.get_me()
+                            me_id = getattr(me, "id", None) if me else None
+                            processed = phase1_peers_by_session[stem].copy()
+                            async for dialog in client.iter_dialogs():
+                                ent = dialog.entity
+                                if not isinstance(ent, (Channel, Chat)):
+                                    continue
+                                if not _can_moderate(ent):
+                                    continue
+                                await _run_purge_on(
+                                    client,
+                                    stem,
+                                    ent,
+                                    "managed_dialog",
+                                    processed_peers=processed,
+                                    me_id=me_id,
+                                )
+                            await asyncio.sleep(0.12)
+                        break
+                    except Exception as exc:
+                        if _is_db_locked(exc) and attempt < db_retries - 1:
+                            log.info(
+                                "group_message_purge_db_locked_retry",
+                                session=stem,
+                                phase="managed",
+                                attempt=attempt + 1,
+                            )
+                            await asyncio.sleep(0.5 * (2**attempt))
                             continue
-                        if not _can_moderate(ent):
-                            continue
-                        await _run_purge_on(ent, "managed_dialog")
+                        log.warning(
+                            "group_message_purge_session_failed",
+                            session=stem,
+                            phase="managed",
+                            error=str(exc),
+                        )
+                        session_errors.append(
+                            {"session": stem, "error": str(exc), "phase": "managed"},
+                        )
+                        break
+            except Exception as exc:
+                log.warning("group_message_purge_session_failed", session=stem, error=str(exc))
+                session_errors.append({"session": stem, "error": str(exc), "phase": "managed"})
 
-                await asyncio.sleep(0.15)
-
-        except Exception as exc:
-            log.warning("group_message_purge_session_failed", session=stem, error=str(exc))
-            session_errors.append({"session": stem, "error": str(exc)})
+    targets_summary = {k: int(targets_deleted_totals[k]) for k in targets}
 
     out: dict[str, Any] = {
         "status": "ok",
         "targets_parsed": targets,
+        "targets_deleted_totals": targets_summary,
         "purge_all_managed_groups": purge_all,
         "sessions_considered": len(meta_paths),
         "max_sessions_applied": raw_max,
+        "phase_order": "targets_first_all_sessions_then_managed",
         "operations": report,
         "session_errors": session_errors,
     }
@@ -293,7 +406,8 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
             prov = TelegramProvider()
             lines = [
                 _esc("🧹 *Group message purge*"),
-                _esc(f"targets={targets} · purge_all={purge_all}"),
+                _esc(f"targets_deleted_totals={targets_summary}"),
+                _esc(f"purge_all={purge_all}"),
                 _esc(f"פעולות: {len(report)}"),
             ]
             body = "\n".join(lines)[:3900]
