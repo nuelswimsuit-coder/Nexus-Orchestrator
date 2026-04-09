@@ -279,8 +279,6 @@ async def _cli_dispatch_async(args: argparse.Namespace) -> int:
         try:
             import json as _json
             import time as _time
-            from pathlib import Path as _Path
-
             _lf = PROJECT_ROOT / "debug-6bcb28.log"
             _lf.open("a", encoding="utf-8").write(
                 _json.dumps(
