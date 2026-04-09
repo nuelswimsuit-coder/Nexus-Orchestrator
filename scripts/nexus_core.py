@@ -25,6 +25,10 @@ PowerShell: do **not** use backslash-escaped JSON; use single quotes around the 
 
 Or use ``--params-file path.json`` (UTF-8) to avoid quoting issues entirely.
 
+Long tasks (e.g. ``telegram.owner_groups_lockdown``): the CLI only enqueues by default.
+Add ``--wait-result`` to block until the worker finishes and print ``audit_csv_path`` / summary.
+Very large vaults (thousands of sessions) can run for hours — use ``max_sessions`` in the params JSON to test; ``--wait-result`` prints progress on stderr (~10s, then every 30s).
+
 If Redis times out on ``::1``, set ``REDIS_URL=redis://127.0.0.1:6379/0`` in ``.env`` and ensure Redis is running.
 """
 
@@ -32,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import runpy
@@ -148,6 +153,47 @@ def _redis_dsn_for_dispatch(master_ip: str) -> str:
     db = os.getenv("REDIS_DB", "0")
     raw = env_url or f"redis://{host}:{port}/{db}"
     return _coerce_redis_url(raw)
+
+
+async def _wait_job_result_with_progress(
+    jref: Any,
+    job_id: str,
+    *,
+    timeout: float,
+    poll_delay: float,
+) -> Any:
+    """Wrap ``Job.result`` with periodic stderr lines so long runs do not look hung."""
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+
+    async def _heartbeat() -> None:
+        try:
+            first = True
+            while True:
+                await asyncio.sleep(10.0 if first else 30.0)
+                first = False
+                elapsed = int(loop.time() - start)
+                try:
+                    st = await jref.status()
+                    stv = st.value
+                except Exception:
+                    stv = "?"
+                print(
+                    f"[nexus_core] --wait-result: still running ({elapsed}s elapsed, "
+                    f"status={stv}) job_id={job_id}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        except asyncio.CancelledError:
+            raise
+
+    hb = asyncio.create_task(_heartbeat())
+    try:
+        return await jref.result(timeout=timeout, poll_delay=poll_delay)
+    finally:
+        hb.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await hb
 
 
 def _print_redis_broker_hint() -> None:
@@ -301,6 +347,88 @@ async def _cli_dispatch_async(args: argparse.Namespace) -> int:
         except Exception:
             pass
         # #endregion
+
+        if task_type == "telegram.owner_groups_lockdown" and not args.wait_result:
+            print(
+                "[nexus_core] המשימה רצה אצל ה-worker (לא בטרמינל הזה). "
+                "להמתין לסיום ולקבל נתיב לדוח CSV: הוסף --wait-result",
+                file=sys.stderr,
+            )
+
+        if args.wait_result and job is not None:
+            from arq.jobs import Job
+
+            jref = Job(str(jid), redis=pool, _queue_name=ARQ_QUEUE_NAME)
+            print(
+                f"[nexus_core] --wait-result: waiting up to {float(args.wait_timeout):.0f}s for job {jid}. "
+                "Large vaults (many *.session) can take hours; add \"max_sessions\" to params to limit scope. "
+                "Progress on stderr: first ping ~10s, then every 30s.",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                raw = await _wait_job_result_with_progress(
+                    jref,
+                    str(jid),
+                    timeout=float(args.wait_timeout),
+                    poll_delay=1.0,
+                )
+            except Exception as exc:
+                print(f"[nexus_core] --wait-result: timeout or error waiting for job: {exc}", file=sys.stderr)
+                return 1
+            if isinstance(raw, dict):
+                err = raw.get("error")
+                out = raw.get("output")
+                print(
+                    f"[nexus_core] Job finished worker_id={raw.get('worker_id')!r} "
+                    f"error={err!r} duration_s={raw.get('duration_seconds')!r}",
+                )
+                if isinstance(out, dict):
+                    for key in (
+                        "status",
+                        "audit_csv_path",
+                        "groups_touched",
+                        "sessions_considered",
+                        "sidecar_json_created",
+                    ):
+                        if key in out:
+                            print(f"[nexus_core]   {key}: {out[key]!r}")
+                elif out is not None:
+                    print(f"[nexus_core]   output: {out!r}")
+            else:
+                print(f"[nexus_core] Job raw result: {raw!r}")
+            # #region agent log
+            try:
+                import json as _json
+                import time as _time
+
+                _lf = PROJECT_ROOT / "debug-6bcb28.log"
+                _wait_data: dict[str, Any] = {"job_id": str(jid)}
+                if isinstance(raw, dict):
+                    o = raw.get("output")
+                    if isinstance(o, dict):
+                        _wait_data["audit_csv_path"] = o.get("audit_csv_path")
+                        _wait_data["groups_touched"] = o.get("groups_touched")
+                    _wait_data["error"] = raw.get("error")
+                _lf.open("a", encoding="utf-8").write(
+                    _json.dumps(
+                        {
+                            "sessionId": "6bcb28",
+                            "hypothesisId": "H5",
+                            "location": "nexus_core.py:wait_result",
+                            "message": "job_wait_completed",
+                            "data": _wait_data,
+                            "timestamp": int(_time.time() * 1000),
+                            "runId": "post-fix",
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+            except Exception:
+                pass
+            # #endregion
+
         return 0
     except OSError as exc:
         print(f"[nexus_core] Redis connection failed: {exc}", file=sys.stderr)
@@ -365,6 +493,18 @@ def _parse_args() -> argparse.Namespace:
         "--require-workers",
         action="store_true",
         help="Abort if no worker heartbeats (ignored with --dry-run)",
+    )
+    parser.add_argument(
+        "--wait-result",
+        action="store_true",
+        help="After enqueue, block until the job completes and print output summary (use for lockdown / CSV path).",
+    )
+    parser.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=7200.0,
+        metavar="SEC",
+        help="Max seconds to wait with --wait-result (default: 7200)",
     )
     parser.add_argument(
         "--worker",
