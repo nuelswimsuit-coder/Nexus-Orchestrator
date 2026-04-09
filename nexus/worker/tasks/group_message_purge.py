@@ -17,6 +17,10 @@ lockdown_owned_after     אם True — אחרי ניקוי, נעילת הרשא�
 session_stems / max_sessions
 dry_run / skip_notify
 db_locked_retries        מספר ניסיונות כש־SQLite session נעול (ברירת מחדל 5)
+purge_mode                 "iter_delete" (ברירת מחדל) — מחיקה לפי הודעה; "admin_delete_history" —
+                           מחיקת היסטוריה לכולם בערוץ/מגה־קבוצה (דורש סשן **אדמין** עם הרשאות)
+stop_after_target_success  אם True — אחרי הצלחה ביעד (ללא שגיאות) בפאזת יעדים, מדלגים על שאר הסשנים לאותו יעד (מתאים ל־admin_delete_history עם סשן אחד)
+verify_remaining           אם True — אחרי ניקוי, לוג של מספר הודעות שנשארו (דגימה)
 """
 
 from __future__ import annotations
@@ -117,10 +121,83 @@ async def _delete_batch(client: Any, entity: Any, batch: list[int]) -> tuple[int
     if not batch:
         return 0, []
     try:
-        await client.delete_messages(entity, batch)
-        return len(batch), []
+        results = await client.delete_messages(entity, batch)
+        reported = 0
+        if results:
+            for r in results:
+                pc = getattr(r, "pts_count", None)
+                if pc is not None:
+                    reported += int(pc)
+        if reported <= 0 and results:
+            reported = len(batch)
+            log.debug(
+                "group_message_purge_delete_batch_pts_fallback",
+                batch_size=len(batch),
+            )
+        if reported <= 0:
+            return 0, [f"delete_messages:no_effect batch={len(batch)}"]
+        return reported, []
     except Exception as exc:
         return 0, [f"delete_messages:{exc!s}"]
+
+
+async def _count_sample_messages(client: Any, entity: Any, limit: int = 20) -> int:
+    n = 0
+    async for _msg in client.iter_messages(entity, limit=limit):
+        n += 1
+    return n
+
+
+async def _purge_entity_admin_delete_history(
+    client: Any,
+    entity: Any,
+) -> tuple[int, list[str]]:
+    """מחיקת היסטוריה בערוץ/מגה־קבוצה עד max_id (לכולם). דורש הרשאות אדמין מתאימות."""
+    from telethon.tl import functions  # type: ignore
+    from telethon.tl.types import Channel  # type: ignore
+
+    if isinstance(entity, Channel) and (entity.megagroup or entity.broadcast):
+        max_id = 0
+        async for msg in client.iter_messages(entity, limit=1):
+            if msg and getattr(msg, "id", None):
+                max_id = int(msg.id)
+        if max_id <= 0:
+            return 0, []
+        try:
+            await client(
+                functions.channels.DeleteHistoryRequest(
+                    channel=entity,
+                    max_id=max_id,
+                    for_everyone=True,
+                ),
+            )
+            return max_id, []
+        except Exception as exc:
+            return 0, [f"channels.DeleteHistory:{exc!s}"]
+
+    # קבוצה קטנה (לא ערוץ)
+    from telethon.tl.types import Chat  # type: ignore
+
+    if isinstance(entity, Chat):
+        max_id = 0
+        async for msg in client.iter_messages(entity, limit=1):
+            if msg and getattr(msg, "id", None):
+                max_id = int(msg.id)
+        if max_id <= 0:
+            return 0, []
+        try:
+            await client(
+                functions.messages.DeleteHistoryRequest(
+                    entity,
+                    max_id,
+                    revoke=True,
+                ),
+            )
+            return max_id, []
+        except Exception as exc:
+            return 0, [f"messages.DeleteHistory:{exc!s}"]
+
+    return 0, ["admin_delete_history: unsupported entity"]
 
 
 def _is_db_locked(exc: BaseException) -> bool:
@@ -145,6 +222,16 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         db_retries = 5
     db_retries = max(1, min(db_retries, 15))
+
+    purge_mode = str(parameters.get("purge_mode") or "iter_delete").strip().lower()
+    if purge_mode in ("admin", "admin_delete", "channel_clear", "clear_history"):
+        purge_mode = "admin_delete_history"
+
+    stop_after_target_success = bool(parameters.get("stop_after_target_success"))
+    if parameters.get("stop_after_target_success") is None and purge_mode == "admin_delete_history":
+        stop_after_target_success = True
+
+    verify_remaining = bool(parameters.get("verify_remaining"))
 
     raw_targets = parameters.get("targets")
     if isinstance(raw_targets, str):
@@ -198,12 +285,13 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
         *,
         processed_peers: set[int],
         me_id: int | None,
-    ) -> None:
+    ) -> bool:
+        """מחזיר True אם יש לעצור את לולאת הסשנים ליעד הנוכחי (purge אדמין שהצליח)."""
         from telethon import utils  # type: ignore
 
         pid = utils.get_peer_id(entity)
         if pid in processed_peers:
-            return
+            return False
         processed_peers.add(pid)
         title = getattr(entity, "title", None) or label
         if dry_run:
@@ -214,24 +302,38 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
                     "title": str(title),
                     "dry_run": True,
                     "label": label,
+                    "purge_mode": purge_mode,
                 },
             )
-            return
-        deleted, errs = await _purge_entity(
-            client,
-            entity,
-            max_messages=max_per_chat,
-            only_own_messages=only_own,
-            me_id=me_id,
-        )
+            return False
+        if purge_mode == "admin_delete_history":
+            deleted, errs = await _purge_entity_admin_delete_history(client, entity)
+        else:
+            deleted, errs = await _purge_entity(
+                client,
+                entity,
+                max_messages=max_per_chat,
+                only_own_messages=only_own,
+                me_id=me_id,
+            )
         entry: dict[str, Any] = {
             "session": stem,
             "peer_id": pid,
             "title": str(title),
             "label": label,
+            "purge_mode": purge_mode,
             "messages_deleted": deleted,
             "errors": errs,
         }
+        if verify_remaining:
+            try:
+                entry["messages_remaining_sample"] = await _count_sample_messages(
+                    client,
+                    entity,
+                    limit=50,
+                )
+            except Exception as exc:
+                entry["verify_error"] = str(exc)
         if label.startswith("target:"):
             un = label.split(":", 1)[1]
             targets_deleted_totals[un] += deleted
@@ -252,6 +354,14 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
             entry["lockdown_steps"] = lk.get("steps", [])
             entry["errors"] = entry["errors"] + lk.get("errors", [])
         report.append(entry)
+        if (
+            stop_after_target_success
+            and purge_mode == "admin_delete_history"
+            and deleted > 0
+            and not errs
+        ):
+            return True
+        return False
 
     # ── פאזה 1: לכל יעד — כל הסשנים (קודם הקבוצות שציינת) ───────────────────
     for un in targets:
@@ -276,14 +386,15 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
                             processed: set[int] = phase1_peers_by_session[stem]
                             try:
                                 ent = await client.get_entity(un)
-                                await _run_purge_on(
+                                if await _run_purge_on(
                                     client,
                                     stem,
                                     ent,
                                     f"target:{un}",
                                     processed_peers=processed,
                                     me_id=me_id,
-                                )
+                                ):
+                                    break
                             except Exception as exc:
                                 report.append(
                                     {
@@ -387,6 +498,9 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
         "targets_parsed": targets,
         "targets_deleted_totals": targets_summary,
         "purge_all_managed_groups": purge_all,
+        "purge_mode": purge_mode,
+        "stop_after_target_success": stop_after_target_success,
+        "verify_remaining": verify_remaining,
         "sessions_considered": len(meta_paths),
         "max_sessions_applied": raw_max,
         "phase_order": "targets_first_all_sessions_then_managed",
