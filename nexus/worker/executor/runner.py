@@ -165,6 +165,30 @@ async def run_task(
             finished_at = datetime.now(timezone.utc)
             duration = (finished_at - started_at).total_seconds()
 
+            # #region agent log
+            if task.task_type == "telegram.owner_groups_lockdown":
+                try:
+                    from nexus.debug_ndjson import agent_log as _agent_log
+
+                    out_summary: dict[str, Any] = {}
+                    if isinstance(output, dict):
+                        out_summary = {
+                            "groups_touched": output.get("groups_touched"),
+                            "sessions_considered": output.get("sessions_considered"),
+                            "audit_csv_path": output.get("audit_csv_path"),
+                            "sidecar_json_created": output.get("sidecar_json_created"),
+                            "status": output.get("status"),
+                        }
+                    _agent_log(
+                        "H3",
+                        "runner.py:run_task",
+                        "owner_groups_lockdown_completed",
+                        {"worker_id": worker_id, "task_id": task.task_id, **out_summary},
+                    )
+                except Exception:
+                    pass
+            # #endregion
+
             if attempt > 1:
                 log.info(
                     "task_succeeded_after_retry",
@@ -196,6 +220,24 @@ async def run_task(
 
         except _NON_RETRYABLE as exc:
             # Configuration / logic error — do not retry
+            # #region agent log
+            if task.task_type == "telegram.owner_groups_lockdown":
+                try:
+                    from nexus.debug_ndjson import agent_log as _agent_log
+
+                    _agent_log(
+                        "H3",
+                        "runner.py:run_task",
+                        "owner_groups_lockdown_non_retryable_error",
+                        {
+                            "worker_id": worker_id,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:500],
+                        },
+                    )
+                except Exception:
+                    pass
+            # #endregion
             log.error(
                 "task_non_retryable_error",
                 task_id=task.task_id,

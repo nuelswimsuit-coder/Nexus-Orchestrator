@@ -453,6 +453,24 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             pass
 
+    # #region agent log
+    try:
+        from nexus.debug_ndjson import agent_log as _agent_log
+
+        _agent_log(
+            "H1",
+            "owner_groups_lockdown.py:after_discover",
+            "vault_meta_paths_ready",
+            {
+                "meta_paths_count": len(meta_paths),
+                "sidecar_created": sidecar_created,
+                "auto_create_meta_json": auto_create_meta_json,
+            },
+        )
+    except Exception:
+        pass
+    # #endregion
+
     prov_notify: Any = None
     if not skip_notify:
         from nexus.shared.notifications.providers.telegram import TelegramProvider
@@ -676,6 +694,25 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
                 str(audit_csv_path),
             ],
         )
+
+    # #region agent log
+    try:
+        from nexus.debug_ndjson import agent_log as _agent_log
+
+        _agent_log(
+            "H4",
+            "owner_groups_lockdown.py:before_summary",
+            "audit_csv_and_groups",
+            {
+                "audit_csv_rows": len(audit_csv_rows),
+                "audit_csv_path": str(audit_csv_path) if audit_csv_path else None,
+                "groups_touched": len(report_groups),
+                "session_notes": len(session_notes),
+            },
+        )
+    except Exception:
+        pass
+    # #endregion
 
     summary = {
         "status": "ok",

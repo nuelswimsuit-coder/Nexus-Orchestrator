@@ -278,6 +278,24 @@ async def execute_task(
             "attempts":         1,
         }
 
+    # #region agent log
+    try:
+        from nexus.debug_ndjson import agent_log as _agent_log
+
+        _agent_log(
+            "H2",
+            "listener.py:execute_task",
+            "arq_execute_task_invoked",
+            {
+                "worker_id": worker_id,
+                "task_type": str(task_payload.get("task_type", "")),
+                "project_id": str(task_payload.get("project_id", "")),
+            },
+        )
+    except Exception:
+        pass
+    # #endregion
+
     raw_result = await run_task(
         task_payload=task_payload,
         worker_id=worker_id,

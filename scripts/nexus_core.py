@@ -275,6 +275,34 @@ async def _cli_dispatch_async(args: argparse.Namespace) -> int:
             f"[nexus_core] Dispatched task_id={payload.task_id} job_id={jid} "
             f"type={task_type} project={project} {GLOBAL_MISSION_KEY}={project!r}"
         )
+        # #region agent log
+        try:
+            import json as _json
+            import time as _time
+            from pathlib import Path as _Path
+
+            _lf = PROJECT_ROOT / "debug-6bcb28.log"
+            _lf.open("a", encoding="utf-8").write(
+                _json.dumps(
+                    {
+                        "sessionId": "6bcb28",
+                        "hypothesisId": "H5",
+                        "location": "nexus_core.py:_cli_dispatch_async",
+                        "message": "enqueue_ok_cli_exits_zero",
+                        "data": {
+                            "task_type": task_type,
+                            "job_id": str(jid),
+                            "project": project,
+                        },
+                        "timestamp": int(_time.time() * 1000),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+        except Exception:
+            pass
+        # #endregion
         return 0
     except OSError as exc:
         print(f"[nexus_core] Redis connection failed: {exc}", file=sys.stderr)
