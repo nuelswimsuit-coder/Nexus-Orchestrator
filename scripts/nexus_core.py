@@ -196,6 +196,53 @@ async def _wait_job_result_with_progress(
             await hb
 
 
+def _safe_close_dispatch_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Best-effort loop teardown; swallow Ctrl+C during nested run_until_complete (Windows/asyncio.run quirk)."""
+    asyncio.set_event_loop(loop)
+    try:
+        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        for t in pending:
+            t.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+    except BaseException:
+        pass
+    try:
+        loop.run_until_complete(loop.shutdown_asyncgens())
+    except BaseException:
+        pass
+    try:
+        loop.run_until_complete(loop.shutdown_default_executor())
+    except BaseException:
+        pass
+    asyncio.set_event_loop(None)
+    try:
+        loop.close()
+    except Exception:
+        pass
+
+
+def _asyncio_run_cli_dispatch(coro: Any) -> Any:
+    """
+    Run one-shot async CLI (task dispatch). Avoid asyncio.run() here: its shutdown
+    ``finally`` can leave Ctrl+C as a traceback instead of a clean exit on Windows.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    except KeyboardInterrupt:
+        print(
+            "\n[nexus_core] Interrupted (Ctrl+C). "
+            "If you were using --wait-result, the ARQ job may still run on the worker.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 130
+    finally:
+        _safe_close_dispatch_loop(loop)
+
+
 def _print_redis_broker_hint() -> None:
     """Explain that the queue broker must be running (not a Nexus code bug)."""
     print(
@@ -248,9 +295,18 @@ async def _cli_dispatch_async(args: argparse.Namespace) -> int:
     task_type = _resolve_task_type(args.task or "")
     params_raw: str
     if getattr(args, "params_file", None):
-        p = Path(args.params_file)
+        raw_pf = str(args.params_file).strip().replace("\r", "").replace("\n", "")
+        p = Path(raw_pf).expanduser()
+        if not p.is_absolute() and not p.is_file():
+            alt = (PROJECT_ROOT / raw_pf).resolve()
+            if alt.is_file():
+                p = alt
         if not p.is_file():
-            print(f"[nexus_core] --params-file not found: {p}", file=sys.stderr)
+            print(
+                f"[nexus_core] --params-file not found: {raw_pf!r} "
+                f"(cwd={Path.cwd()} repo_root={PROJECT_ROOT})",
+                file=sys.stderr,
+            )
             return 1
         params_raw = p.read_text(encoding="utf-8")
     else:
@@ -356,7 +412,7 @@ async def _cli_dispatch_async(args: argparse.Namespace) -> int:
             )
 
         if args.wait_result and job is not None:
-            from arq.jobs import Job
+            from arq.jobs import Job, ResultNotFound
 
             jref = Job(str(jid), redis=pool, _queue_name=ARQ_QUEUE_NAME)
             print(
@@ -373,8 +429,31 @@ async def _cli_dispatch_async(args: argparse.Namespace) -> int:
                     timeout=float(args.wait_timeout),
                     poll_delay=1.0,
                 )
+            except TimeoutError:
+                # asyncio / builtin TimeoutError often has str(exc) == "" — explain explicitly.
+                print(
+                    f"[nexus_core] --wait-result: timed out after {float(args.wait_timeout):.0f}s "
+                    f"(the worker may still be running). job_id={jid} "
+                    f"— increase --wait-timeout, use max_sessions in params, or omit --wait-result.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return 1
+            except ResultNotFound as exc:
+                print(
+                    f"[nexus_core] --wait-result: result not available ({exc!s}). "
+                    f"job_id={jid} — job may have expired in Redis or worker does not keep results.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return 1
             except Exception as exc:
-                print(f"[nexus_core] --wait-result: timeout or error waiting for job: {exc}", file=sys.stderr)
+                detail = str(exc).strip() or repr(exc) or type(exc).__name__
+                print(
+                    f"[nexus_core] --wait-result: {type(exc).__name__}: {detail} (job_id={jid})",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 return 1
             if isinstance(raw, dict):
                 err = raw.get("error")
@@ -566,7 +645,7 @@ def _check_redis_socket(host: str = "127.0.0.1", port: int = 6379) -> bool:
 def main() -> None:
     args = _parse_args()
     if args.task is not None:
-        code = asyncio.run(_cli_dispatch_async(args))
+        code = _asyncio_run_cli_dispatch(_cli_dispatch_async(args))
         raise SystemExit(code)
 
     master_ip = (args.master_ip or "127.0.0.1").strip()
