@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import os
 import re
+from typing import Any
 
 import structlog
 from aiogram import Bot
@@ -124,6 +125,22 @@ class TelegramProvider(NotificationProvider):
             dashboard_url=self._dashboard_url,
             min_level=min_level.value,
         )
+
+    @classmethod
+    def from_task_parameters(cls, parameters: dict[str, Any]) -> TelegramProvider:
+        """
+        Worker task helper: optional ``notify_bot_token`` / ``notify_chat_id`` /
+        ``telegram_notify_chat_id`` override env ``TELEGRAM_BOT_TOKEN`` /
+        ``TELEGRAM_ADMIN_CHAT_ID``.
+        """
+        token = parameters.get("notify_bot_token") or parameters.get("telegram_bot_token")
+        chat = parameters.get("notify_chat_id") or parameters.get("telegram_notify_chat_id")
+        kw: dict[str, Any] = {}
+        if token is not None and str(token).strip():
+            kw["bot_token"] = str(token).strip()
+        if chat is not None and str(chat).strip():
+            kw["admin_chat_id"] = str(chat).strip()
+        return cls(**kw) if kw else cls()
 
     @property
     def name(self) -> str:

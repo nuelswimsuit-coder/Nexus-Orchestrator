@@ -388,7 +388,7 @@ async def owner_groups_lockdown(parameters: dict[str, Any]) -> dict[str, Any]:
         try:
             from nexus.shared.notifications.providers.telegram import TelegramProvider
 
-            prov = TelegramProvider()
+            prov = TelegramProvider.from_task_parameters(parameters)
             lines = [
                 _esc("🔒 *Owner groups lockdown*"),
                 _esc(f"dry_run={dry_run} · tz={tz_name}"),

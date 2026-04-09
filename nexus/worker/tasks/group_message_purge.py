@@ -16,6 +16,9 @@ only_own_messages        אם True — רק הודעות שנשלחו מהסשן
 lockdown_owned_after     אם True — אחרי ניקוי, נעילת הרשאות לבעלים (כמו owner_groups_lockdown)
 session_stems / max_sessions
 dry_run / skip_notify
+progress_notify            אם True (ברירת מחדל) — שליחת הודעת בוט אחרי כל סשן/פעולה; אם False — רק סיכום בסוף
+notify_chat_id             יעד להתראות: מזהה מספרי (למשל `123456789`) או `@username` (המשתמש חייב היכלצות עם הבוט)
+notify_bot_token           אופציונלי — טוקן בוט אם לא משתמשים ב־TELEGRAM_BOT_TOKEN מהסביבה
 db_locked_retries        מספר ניסיונות כש־SQLite session נעול (ברירת מחדל 5)
 purge_mode                 "iter_delete" (ברירת מחדל) — מחיקה לפי הודעה; "admin_delete_history" —
                            מחיקת היסטוריה לכולם בערוץ/מגה־קבוצה (דורש סשן **אדמין** עם הרשאות)
@@ -37,6 +40,14 @@ from nexus.worker.services.tg_session import async_telegram_client
 from nexus.worker.task_registry import registry
 
 log = structlog.get_logger(__name__)
+
+_MD_NOTIFY = re.compile(r"([_\*\[\]\(\)~`>#+\-=|{}.!\\])")
+
+
+def _esc_md2(t: str) -> str:
+    """MarkdownV2 escape for TelegramProvider.send_message."""
+    return _MD_NOTIFY.sub(r"\\\1", str(t))
+
 
 _TME_RE = re.compile(
     r"(?:https?://)?(?:t\.me|telegram\.me)/([a-zA-Z][a-zA-Z0-9_]{3,})",
@@ -210,6 +221,7 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
 
     dry_run = bool(parameters.get("dry_run"))
     skip_notify = bool(parameters.get("skip_notify"))
+    progress_notify = bool(parameters.get("progress_notify", True))
     purge_all = bool(parameters.get("purge_all_managed_groups"))
     lockdown_after = bool(parameters.get("lockdown_owned_after", True))
     only_own = bool(parameters.get("only_own_messages"))
@@ -265,6 +277,23 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
                 meta_paths = meta_paths[:cap]
         except (TypeError, ValueError):
             pass
+
+    prov_notify: Any | None = None
+    if not skip_notify:
+        from nexus.shared.notifications.providers.telegram import TelegramProvider
+
+        prov_notify = TelegramProvider.from_task_parameters(parameters)
+
+    async def _send_progress(lines: list[str]) -> None:
+        if skip_notify or not progress_notify:
+            return
+        if prov_notify is None or not prov_notify._is_configured():
+            return
+        try:
+            body = "\n".join(_esc_md2(x) for x in lines)[:3900]
+            await prov_notify.send_message(body)
+        except Exception as exc:
+            log.warning("group_message_purge_progress_notify_failed", error=str(exc))
 
     from nexus.worker.tasks.owner_groups_lockdown import (
         _lockdown_basic_chat,
@@ -364,6 +393,16 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
         return False
 
     # ── פאזה 1: לכל יעד — כל הסשנים (קודם הקבוצות שציינת) ───────────────────
+    await _send_progress(
+        [
+            "🧹 Group purge — התחלה",
+            f"יעדים: {', '.join('@' + t for t in targets) if targets else '(אין)'}",
+            f"סשנים בסריקה: {len(meta_paths)}",
+            f"purge_all_managed={purge_all}",
+            f"purge_mode={purge_mode}",
+        ],
+    )
+
     for un in targets:
         for meta_json in meta_paths:
             stem = meta_json.stem
@@ -380,20 +419,56 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
                                 session_errors.append(
                                     {"session": stem, "error": "not_authorized", "phase": "targets"},
                                 )
+                                await _send_progress(
+                                    [
+                                        "⚠️ סשן לא מחובר",
+                                        f"phase=targets",
+                                        f"target=@{un}",
+                                        f"session={stem}",
+                                    ],
+                                )
                                 break
                             me = await client.get_me()
                             me_id = getattr(me, "id", None) if me else None
                             processed: set[int] = phase1_peers_by_session[stem]
+                            len_report_before = len(report)
                             try:
                                 ent = await client.get_entity(un)
-                                if await _run_purge_on(
+                                stop_target = await _run_purge_on(
                                     client,
                                     stem,
                                     ent,
                                     f"target:{un}",
                                     processed_peers=processed,
                                     me_id=me_id,
-                                ):
+                                )
+                                if progress_notify and len(report) > len_report_before:
+                                    last = report[-1]
+                                    err_tail = (
+                                        (last.get("errors") or [])[:2]
+                                        if last.get("errors")
+                                        else []
+                                    )
+                                    extra = [f"err: {e}" for e in err_tail]
+                                    await _send_progress(
+                                        [
+                                            "🧹 purge יעדים",
+                                            f"target @{un}",
+                                            f"session={stem}",
+                                            f"deleted={last.get('messages_deleted', 0)}",
+                                            f"title={str(last.get('title', ''))[:120]}",
+                                            f"dry_run={last.get('dry_run', False)}",
+                                            *extra,
+                                        ],
+                                    )
+                                if stop_target:
+                                    await _send_progress(
+                                        [
+                                            "✅ יעד הושלם (stop_after_target_success)",
+                                            f"@{un}",
+                                            f"session={stem}",
+                                        ],
+                                    )
                                     break
                             except Exception as exc:
                                 report.append(
@@ -404,6 +479,14 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
                                         "label": "resolve_target",
                                     },
                                 )
+                                await _send_progress(
+                                    [
+                                        "❌ שגיאת resolve יעד",
+                                        f"target=@{un}",
+                                        f"session={stem}",
+                                        str(exc)[:500],
+                                    ],
+                                )
                             await asyncio.sleep(0.12)
                         break
                     except Exception as exc:
@@ -413,6 +496,14 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
                                 session=stem,
                                 target=un,
                                 attempt=attempt + 1,
+                            )
+                            await _send_progress(
+                                [
+                                    "⏳ DB locked — ניסיון חוזר",
+                                    f"target=@{un}",
+                                    f"session={stem}",
+                                    f"attempt={attempt + 1}/{db_retries}",
+                                ],
                             )
                             await asyncio.sleep(0.5 * (2**attempt))
                             continue
@@ -447,10 +538,18 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
                                 session_errors.append(
                                     {"session": stem, "error": "not_authorized", "phase": "managed"},
                                 )
+                                await _send_progress(
+                                    [
+                                        "⚠️ סשן לא מחובר",
+                                        "phase=managed",
+                                        f"session={stem}",
+                                    ],
+                                )
                                 break
                             me = await client.get_me()
                             me_id = getattr(me, "id", None) if me else None
                             processed = phase1_peers_by_session[stem].copy()
+                            len_managed_before = len(report)
                             async for dialog in client.iter_dialogs():
                                 ent = dialog.entity
                                 if not isinstance(ent, (Channel, Chat)):
@@ -465,6 +564,14 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
                                     processed_peers=processed,
                                     me_id=me_id,
                                 )
+                            managed_added = len(report) - len_managed_before
+                            await _send_progress(
+                                [
+                                    "🧹 purge דיאלוגים מנוהלים — סשן הושלם",
+                                    f"session={stem}",
+                                    f"פעולות_חדשות={managed_added}",
+                                ],
+                            )
                             await asyncio.sleep(0.12)
                         break
                     except Exception as exc:
@@ -474,6 +581,14 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
                                 session=stem,
                                 phase="managed",
                                 attempt=attempt + 1,
+                            )
+                            await _send_progress(
+                                [
+                                    "⏳ DB locked — ניסיון חוזר",
+                                    "phase=managed",
+                                    f"session={stem}",
+                                    f"attempt={attempt + 1}/{db_retries}",
+                                ],
                             )
                             await asyncio.sleep(0.5 * (2**attempt))
                             continue
@@ -506,26 +621,20 @@ async def group_message_purge(parameters: dict[str, Any]) -> dict[str, Any]:
         "phase_order": "targets_first_all_sessions_then_managed",
         "operations": report,
         "session_errors": session_errors,
+        "progress_notify": progress_notify,
     }
 
-    if not skip_notify:
+    if not skip_notify and prov_notify is not None:
         try:
-            from nexus.shared.notifications.providers.telegram import TelegramProvider
-
-            _MD = re.compile(r"([_\*\[\]\(\)~`>#+\-=|{}.!\\])")
-
-            def _esc(t: str) -> str:
-                return _MD.sub(r"\\\1", str(t))
-
-            prov = TelegramProvider()
             lines = [
-                _esc("🧹 *Group message purge*"),
-                _esc(f"targets_deleted_totals={targets_summary}"),
-                _esc(f"purge_all={purge_all}"),
-                _esc(f"פעולות: {len(report)}"),
+                "🧹 Group message purge — סיכום",
+                f"targets_deleted_totals={targets_summary}",
+                f"purge_all={purge_all}",
+                f"פעולות: {len(report)}",
+                f"שגיאות_סשנים: {len(session_errors)}",
             ]
-            body = "\n".join(lines)[:3900]
-            await prov.send_message(body)
+            body = "\n".join(_esc_md2(x) for x in lines)[:3900]
+            await prov_notify.send_message(body)
         except Exception as exc:
             out["notify_error"] = str(exc)
 
