@@ -4,10 +4,18 @@ One-click startup for all services. Compiles to .exe via PyInstaller.
 """
 from __future__ import annotations
 
-import os, sys, subprocess, threading, time, webbrowser, ctypes
+import os, sys, subprocess, threading, time, webbrowser, ctypes, socket
 import tkinter as tk
 from tkinter import font as tkfont
 from pathlib import Path
+
+
+def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 # ── Windows taskbar: tell Windows this is its own app (shows custom icon) ──
 try:
@@ -16,8 +24,18 @@ except Exception:
     pass
 
 # ── Root directory (works as .py and as compiled .exe) ─────────────────────
-ROOT = Path(sys.executable).parent if getattr(sys, "frozen", False) \
-       else Path(__file__).resolve().parent
+def _find_root() -> Path:
+    # When compiled to .exe, look for project markers walking up from exe location
+    if getattr(sys, "frozen", False):
+        candidate = Path(sys.executable).parent
+        for _ in range(4):
+            if (candidate / "pyproject.toml").exists() or (candidate / ".env").exists():
+                return candidate
+            candidate = candidate.parent
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent
+
+ROOT = _find_root()
 
 # ── Palette ────────────────────────────────────────────────────────────────
 C = dict(
@@ -64,8 +82,8 @@ SERVICES = [
     {
         "id":    "frontend",
         "label": "Dashboard UI",
-        "cmd":   "npm run dev",
-        "cwd":   str(ROOT / "frontend"),
+        "cmd":   f"cd /d \"{ROOT / 'frontend'}\" && npm run dev",
+        "cwd":   str(ROOT),
         "shell": True,
     },
 ]
@@ -115,9 +133,24 @@ def _stream(proc: subprocess.Popen, sid: str) -> None:
 
 def _launch_one(svc: dict) -> None:
     sid = svc["id"]
+
+    # Redis: if port 6379 already open → skip Docker entirely
+    if sid == "redis":
+        if _port_open("127.0.0.1", 6379) or _port_open("::1", 6379):
+            _set_status(sid, "RUNNING")
+            _log(f"\n▶  Redis... already running on :6379\n", "accent")
+            _log(f"  ✓  Redis reused (existing instance)\n", "success")
+            return
+
     _set_status(sid, "STARTING")
     _log(f"\n▶  {svc['label']}...\n", "accent")
-    cwd = svc.get("cwd", str(ROOT))
+
+    # Resolve cwd — fall back to ROOT if path doesn't exist
+    raw_cwd = svc.get("cwd", str(ROOT))
+    cwd = raw_cwd if Path(raw_cwd).is_dir() else str(ROOT)
+    if raw_cwd != cwd:
+        _log(f"  ! cwd {raw_cwd!r} not found, using project root\n", "warn")
+
     try:
         proc = subprocess.Popen(
             svc["cmd"],
@@ -128,7 +161,7 @@ def _launch_one(svc: dict) -> None:
             env={**os.environ, "PYTHONPATH": str(ROOT), "PYTHONUNBUFFERED": "1"},
         )
         _procs[sid] = proc
-        time.sleep(1.5 if sid == "redis" else 0.8)
+        time.sleep(0.8)
 
         if proc.poll() is None:
             _set_status(sid, "RUNNING")
