@@ -2,11 +2,13 @@
 
 
 a = Analysis(
-    ['scripts\\nexus_launcher.py'],
+    ['Launch_Nexus.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=[
+        ('nexus_icon.ico', '.'),
+    ],
+    hiddenimports=['tkinter', 'tkinter.font'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -22,7 +24,8 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='NEXUS_MASTER_V1',
+    name='Nexus Orchestrator',
+    icon='nexus_icon.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

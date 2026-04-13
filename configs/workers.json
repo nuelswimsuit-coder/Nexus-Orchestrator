@@ -1,23 +1,28 @@
 {
   "workers": [
     {
-      "node_id": "worker_laptop_linux",
-      "host": "10.100.102.20",
-      "deploy_root": "/home/yadmin/Desktop/Nexus-Orchestrator"
-    },    {
-      "node_id": "worker_laptop_windows",
-      "host": "10.100.102.28",
-      "deploy_root": "/home/yadmin/Desktop/Nexus-Orchestrator"
+      "node_id": "worker_master_windows",
+      "ip": "10.100.102.08",
+      "deploy_root": "C:\\Users\\Yarin\\Desktop\\Nexus-Orchestrator",
+      "_comment": "Master desktop — hybrid role (master + worker)"
     },
     {
-      "node_id": "worker_master_windows",
-      "host": "10.100.102.08",
-      "deploy_root": "/home/yadmin/Desktop/Nexus-Orchestrator"
+      "node_id": "worker_laptop_windows",
+      "ip": "10.100.102.28",
+      "deploy_root": "C:\\Users\\Yarin\\Desktop\\Nexus-Orchestrator",
+      "_comment": "Windows gaming laptop — powerful, GPU tasks"
+    },
+    {
+      "node_id": "worker_laptop_linux",
+      "ip": "10.100.102.20",
+      "deploy_root": "/home/yadmin/Desktop/Nexus-Orchestrator",
+      "_comment": "Linux weak laptop — light tasks only"
     },
     {
       "node_id": "worker_mac_mini",
-      "host": "10.100.102.50",
-      "deploy_root": "/Users/yadmin/Desktop/Nexus-Orchestrator"
+      "ip": "10.100.102.50",
+      "deploy_root": "/Users/yarin/Desktop/Nexus-Orchestrator",
+      "_comment": "Mac Mini M2 Pro — heaviest compute tasks"
     }
   ]
 }
