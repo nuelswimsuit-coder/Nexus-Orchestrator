@@ -1,0 +1,41 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Nexus API (FastAPI)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["scripts/start_api.py"],
+      "port": 8001
+    },
+    {
+      "name": "Frontend (Next.js)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "Nexus Master",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "scripts.start_master"],
+      "port": 8001
+    },
+    {
+      "name": "Nexus Worker",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "scripts.start_worker"],
+      "port": 8001
+    },
+    {
+      "name": "Telegram Bot",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "scripts.start_telegram_bot"],
+      "port": 8001
+    },
+    {
+      "name": "Bot (Lite Stack)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["bot.py"],
+      "port": 8001
+    }
+  ]
+}
