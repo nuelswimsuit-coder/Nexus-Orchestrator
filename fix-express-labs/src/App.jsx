@@ -696,7 +696,7 @@ function Footer({ setTab }) {
         </div>
 
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-6 border-t border-white/10 text-xs text-slate-600">
-          <span>© {new Date().getFullYear()} Fix Express Labs</span>
+          <span>© {new Date().getFullYear()} Fix Express Labs — כל הזכויות שמורות</span>
           <div className="flex gap-4">
             {TABS.map((t) => (
               <button key={t.id} onClick={() => setTab(t.id)} className="hover:text-electric transition-colors">{t.label}</button>
