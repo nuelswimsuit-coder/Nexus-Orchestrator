@@ -2,6 +2,13 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "Fix Express Labs",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "fix-express-labs",
+      "port": 5173
+    },
+    {
       "name": "Nexus API (FastAPI)",
       "runtimeExecutable": "python",
       "runtimeArgs": ["scripts/start_api.py"],
