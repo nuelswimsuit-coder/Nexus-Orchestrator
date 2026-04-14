@@ -3,7 +3,7 @@ import SignatureCanvas from 'react-signature-canvas'
 import { motion, AnimatePresence } from 'framer-motion'
 import { FileText, Trash2, CheckCircle2, Lock, Download, X } from 'lucide-react'
 
-const OWNER = 'ירין הלילי'
+const OWNER = 'Fix Express Labs'
 const ADDRESS = 'רחוב סיני, פתח תקווה'
 const TODAY = new Date().toLocaleDateString('he-IL')
 

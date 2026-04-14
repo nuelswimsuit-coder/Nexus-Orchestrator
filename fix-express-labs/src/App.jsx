@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence, useInView } from 'framer-motion'
 import {
   Zap, MessageCircle, Clock, Shield, MapPin, CheckCircle2, Star,
-  ChevronDown, Phone, Cpu, Thermometer, Wrench, Search, X,
+  ChevronDown, ChevronLeft, Phone, Cpu, Thermometer, Wrench, Search, X,
   Smartphone, Laptop, Gamepad2, Tablet,
 } from 'lucide-react'
 import HeroVideo from './components/HeroVideo'
@@ -334,35 +334,30 @@ const BENTO = [
   {
     Icon: SmartphoneRepairIcon, title: 'סמארטפונים',
     desc: 'iPhone, Samsung, Pixel, Xiaomi — מסכים, סוללות, לוחות אם, שחזור FaceID.',
-    span: 'md:col-span-2 md:row-span-2',
     brands: ['Apple', 'Samsung', 'Google Pixel', 'Xiaomi'],
     color: 'from-blue-600/20 to-electric/10', border: 'border-blue-500/30',
   },
   {
     Icon: LaptopRepairIcon, title: 'מחשבים ולפטופים',
     desc: 'MacBook, Dell, Lenovo — מיקרו-לחמה, שדרוגים, תיקוני לוח.',
-    span: 'md:col-span-1',
     brands: ['Apple', 'Dell', 'Lenovo', 'HP'],
     color: 'from-violet-600/20 to-purple-500/10', border: 'border-violet-500/30',
   },
   {
     Icon: ConsoleRepairIcon, title: 'קונסולות',
     desc: 'PS5, Xbox, Switch — HDMI, ג׳ויסטיק, פן, firmware.',
-    span: 'md:col-span-1',
     brands: ['PS5', 'Xbox Series', 'Nintendo'],
     color: 'from-rose-600/20 to-pink-500/10', border: 'border-rose-500/30',
   },
   {
     Icon: MicrosolderingIcon, title: 'מיקרו-לחמה',
     desc: 'BGA, PMIC, IC — תיקון ברמת שבב עם JBC + מיקרוסקופ 40X.',
-    span: 'md:col-span-1',
     brands: ['ציוד JBC', 'מיקרוסקופ 40X', 'FLIR Thermal'],
     color: 'from-amber-600/20 to-orange-500/10', border: 'border-amber-500/30',
   },
   {
     Icon: () => <Tablet className="w-10 h-10 text-electric" />, title: 'טאבלטים ולבישים',
     desc: 'iPad Pro/Air/Mini, Apple Watch — מסכים, סוללות, חיבורים.',
-    span: 'md:col-span-1',
     brands: ['iPad Pro', 'iPad Air', 'Apple Watch'],
     color: 'from-teal-600/20 to-cyan-500/10', border: 'border-teal-500/30',
   },
@@ -385,7 +380,7 @@ function BentoCard({ item }) {
       onMouseMove={onMove}
       whileHover={{ scale: 1.02 }}
       transition={{ duration: 0.2 }}
-      className={`group relative rounded-2xl p-6 bg-gradient-to-br ${item.color} border ${item.border} hover:border-electric/60 transition-all duration-300 overflow-hidden flex flex-col gap-4 ${item.span}`}
+      className={`group relative rounded-2xl p-6 bg-gradient-to-br ${item.color} border ${item.border} hover:border-electric/60 transition-all duration-300 overflow-hidden flex flex-col gap-4 min-h-[220px]`}
       style={{ cursor: 'none' }}
     >
       {/* Mouse-tracking glow */}
@@ -396,12 +391,16 @@ function BentoCard({ item }) {
 
       <item.Icon className="w-12 h-12 flex-shrink-0 relative z-10" />
       <div className="relative z-10">
-        <h3 className="text-xl font-black mb-2">{item.title}</h3>
+        <h3 className="text-lg font-semibold mb-2">{item.title}</h3>
         <p className="text-slate-400 text-sm leading-relaxed mb-3">{item.desc}</p>
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5 mb-3">
           {item.brands.map((b) => (
             <span key={b} className="text-xs px-2 py-0.5 rounded-full glass text-slate-300 border border-white/10">{b}</span>
           ))}
+        </div>
+        <div className="mt-auto flex items-center gap-1 text-xs text-electric opacity-0 group-hover:opacity-100 transition-opacity">
+          <span>פרטים נוספים</span>
+          <ChevronLeft className="w-3.5 h-3.5" />
         </div>
       </div>
     </motion.div>
@@ -417,13 +416,13 @@ function Services() {
             <div className="inline-flex items-center gap-2 glass-blue rounded-full px-4 py-1.5 mb-4 text-sm text-electric-light font-medium">
               השירותים שלנו
             </div>
-            <h2 className="text-5xl font-black mb-4 tracking-tight">כל מכשיר. כל תקלה.</h2>
+            <h2 className="text-4xl font-bold mb-4" style={{letterSpacing:'-0.03em'}}>כל מכשיר. כל תקלה.</h2>
             <p className="text-slate-400 text-lg">ציוד מקצועי שנוסע אליך — לא מעבדה שגרתית.</p>
           </motion.div>
         </Reveal>
-        <Reveal className="grid md:grid-cols-3 grid-rows-auto gap-5">
+        <Reveal className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
           {BENTO.map((item, i) => (
-            <motion.div key={item.title} variants={fadeUp} custom={i} className={item.span}>
+            <motion.div key={item.title} variants={fadeUp} custom={i}>
               <BentoCard item={item} />
             </motion.div>
           ))}
@@ -449,7 +448,7 @@ function TechGear() {
         <Reveal>
           <motion.div variants={fadeUp} className="text-center mb-14">
             <div className="inline-flex items-center gap-2 glass-blue rounded-full px-4 py-1.5 mb-4 text-sm text-electric-light font-medium">ציוד המעבדה</div>
-            <h2 className="text-5xl font-black mb-4 tracking-tight">טכנולוגיה תעשייתית, ישירות אצלך</h2>
+            <h2 className="text-4xl font-bold mb-4" style={{letterSpacing:'-0.03em'}}>טכנולוגיה תעשייתית, ישירות אצלך</h2>
             <p className="text-slate-400 text-lg max-w-lg mx-auto">ציוד שלא תמצא בשום מעבדה שגרתית בישראל — נוסע אליך.</p>
           </motion.div>
         </Reveal>
@@ -697,7 +696,7 @@ function Footer({ setTab }) {
         </div>
 
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-6 border-t border-white/10 text-xs text-slate-600">
-          <span>© {new Date().getFullYear()} Fix Express Labs | ירין הלילי</span>
+          <span>© {new Date().getFullYear()} Fix Express Labs</span>
           <div className="flex gap-4">
             {TABS.map((t) => (
               <button key={t.id} onClick={() => setTab(t.id)} className="hover:text-electric transition-colors">{t.label}</button>

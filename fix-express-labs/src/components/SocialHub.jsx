@@ -28,7 +28,7 @@ const SOCIALS = [
   {
     id: 'whatsapp',
     name: 'WhatsApp',
-    handle: WA_NUMBER,
+    handle: '050-495-1109',
     tagline: 'הדרך הכי מהירה לקבוע תיקון',
     Icon: MessageCircle,
     gradient: 'from-[#25D366] to-[#128C7E]',
