@@ -159,31 +159,31 @@ function Navbar({ activeTab, setTab }) {
     <header className={`fixed top-0 inset-x-0 z-50 transition-all duration-300 ${scrolled ? 'glass border-b border-white/10' : ''}`}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
         {/* Logo */}
-        <button onClick={() => setTab('home')} className="flex items-center gap-2.5 flex-shrink-0">
-          <div className="w-8 h-8 rounded-lg bg-electric flex items-center justify-center glow-blue">
-            <Zap className="w-4 h-4 text-white" fill="white" />
+        <button onClick={() => setTab('home')} className="flex items-center gap-2.5 flex-shrink-0 group">
+          <div className="w-7 h-7 rounded-lg bg-electric/90 flex items-center justify-center transition-all duration-300 group-hover:bg-electric">
+            <Zap className="w-3.5 h-3.5 text-white" fill="white" />
           </div>
-          <span className="font-black text-base tracking-tight leading-tight">
+          <span className="font-bold text-sm tracking-tight">
             Fix <span className="text-gradient">Express</span> Labs
           </span>
         </button>
 
         {/* Desktop tabs */}
-        <nav className="hidden md:flex items-center gap-1 glass rounded-full px-2 py-1.5 border border-white/10">
+        <nav className="hidden md:flex items-center gap-0.5 rounded-full px-1.5 py-1" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
           {TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setTab(tab.id)}
-              className={`relative px-4 py-1.5 rounded-full text-sm font-semibold transition-colors ${
-                activeTab === tab.id ? 'text-white' : 'text-slate-400 hover:text-white'
+              className={`relative px-4 py-1.5 rounded-full text-xs font-medium transition-colors tracking-wide ${
+                activeTab === tab.id ? 'text-white' : 'text-slate-400 hover:text-slate-200'
               }`}
             >
               {activeTab === tab.id && (
                 <motion.div
                   layoutId="tab-pill"
-                  className="absolute inset-0 bg-electric rounded-full"
+                  className="absolute inset-0 bg-electric/90 rounded-full"
                   style={{ zIndex: -1 }}
-                  transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+                  transition={{ type: 'spring', stiffness: 380, damping: 35 }}
                 />
               )}
               {tab.label}
@@ -195,9 +195,9 @@ function Navbar({ activeTab, setTab }) {
         <div className="flex items-center gap-2">
           <MagneticBtn
             href={WA_URL}
-            className="hidden sm:flex items-center gap-2 px-4 py-2 rounded-full bg-[#25D366] hover:bg-[#1fb957] text-white font-bold text-sm shadow-lg shadow-green-900/30"
+            className="hidden sm:flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#25D366] hover:bg-[#1fb957] text-white font-medium text-xs shadow-md shadow-green-900/20 transition-all duration-300"
           >
-            <MessageCircle className="w-4 h-4" />
+            <MessageCircle className="w-3.5 h-3.5" />
             {WA_DISPLAY}
           </MagneticBtn>
 
@@ -263,53 +263,64 @@ function Hero({ setTab }) {
             zIndex: 4,
           }}
         />
-        <div className="relative min-h-screen flex items-center justify-center pt-16 px-6" style={{ zIndex: 5 }}>
-          <div className="max-w-5xl mx-auto text-center">
-            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
-              className="inline-flex items-center gap-2 glass-blue rounded-full px-4 py-1.5 mb-6 text-sm text-electric-light font-medium">
-              <span className="w-2 h-2 rounded-full bg-electric animate-pulse" />
-              מעבדה ניידת | פתח תקווה | {WA_DISPLAY}
+        {/* Elegant dark overlay for readability */}
+        <div className="hero-overlay absolute inset-0 pointer-events-none" style={{ zIndex: 4 }} />
+
+        <div className="relative min-h-screen flex items-center justify-center pt-20 px-6 pb-12" style={{ zIndex: 5 }}>
+          <div className="max-w-4xl mx-auto text-center">
+
+            {/* Label pill */}
+            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
+              className="inline-flex items-center gap-2 glass-blue rounded-full px-5 py-2 mb-8 text-xs tracking-widest text-blue-300 font-medium uppercase">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+              מעבדה ניידת · פתח תקווה · {WA_DISPLAY}
             </motion.div>
 
-            <motion.h1 initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.35 }}
-              className="text-5xl sm:text-6xl md:text-7xl lg:text-8xl font-black leading-[1.05] mb-5 tracking-tight drop-shadow-2xl">
+            {/* Main headline */}
+            <motion.h1 initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.35 }}
+              className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-bold leading-[1.1] mb-6"
+              style={{ fontWeight: 700, letterSpacing: '-0.03em' }}>
               המעבדה המתקדמת
-              <br /><span className="text-gradient">בישראל — אצלך בחנייה</span>
+              <br />
+              <span className="text-gradient font-extrabold">בישראל — אצלך בחנייה</span>
             </motion.h1>
 
-            <motion.p initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}
-              className="text-lg sm:text-xl text-slate-200 max-w-2xl mx-auto mb-10 leading-relaxed drop-shadow-lg">
+            {/* Subtitle */}
+            <motion.p initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}
+              className="text-base sm:text-lg text-slate-300 max-w-xl mx-auto mb-10 leading-loose font-light">
               תיקון סמארטפונים, מחשבים וקונסולות עם ציוד קצה טכנולוגי — ישירות אליך.
             </motion.p>
 
-            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.65 }}
-              className="flex flex-col sm:flex-row gap-4 justify-center items-center">
+            {/* CTA buttons */}
+            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.65 }}
+              className="flex flex-col sm:flex-row gap-3 justify-center items-center">
               <MagneticBtn href={WA_URL}
-                className="flex items-center gap-2 px-10 py-4 rounded-full bg-electric hover:bg-electric-light text-white font-black text-lg glow-blue shadow-2xl shadow-electric/40">
-                <MessageCircle className="w-5 h-5" />
+                className="flex items-center gap-2.5 px-8 py-3.5 rounded-full bg-electric hover:bg-electric-light text-white font-semibold text-base glow-blue transition-all duration-300">
+                <MessageCircle className="w-4 h-4" />
                 קבע תור עכשיו
               </MagneticBtn>
               <MagneticBtn onClick={() => setTab('pricing')}
-                className="flex items-center gap-2 px-10 py-4 rounded-full glass border border-white/30 hover:border-electric/60 text-white font-bold text-lg backdrop-blur">
+                className="flex items-center gap-2.5 px-8 py-3.5 rounded-full glass border border-white/20 hover:border-white/40 text-white/90 font-medium text-base transition-all duration-300">
                 מחירון מלא
               </MagneticBtn>
             </motion.div>
 
+            {/* Trust badges */}
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.85 }}
-              className="flex flex-wrap justify-center gap-4 mt-12 text-sm text-slate-300">
+              className="flex flex-wrap justify-center gap-3 mt-10 text-xs text-slate-400">
               {[
                 { icon: Clock, label: 'תגובה תוך שעה' },
                 { icon: Shield, label: 'אחריות 90 יום' },
                 { icon: MapPin, label: ADDRESS },
               ].map(({ icon: Icon, label }) => (
-                <div key={label} className="flex items-center gap-1.5 glass rounded-full px-3 py-1 backdrop-blur border border-white/20">
-                  <Icon className="w-3.5 h-3.5 text-electric" />
-                  {label}
+                <div key={label} className="flex items-center gap-1.5 rounded-full px-3.5 py-1.5 border border-white/10 bg-white/[0.03]">
+                  <Icon className="w-3 h-3 text-blue-400" />
+                  <span className="font-light">{label}</span>
                 </div>
               ))}
             </motion.div>
 
-            {/* ── Mobile social strip (visible only on small screens) ── */}
+            {/* Mobile social strip */}
             <MobileSocialStrip />
           </div>
         </div>
