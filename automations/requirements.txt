@@ -1,0 +1,15 @@
+# Fix Express Labs — Automation Requirements
+# Install: pip install -r requirements.txt
+# Playwright browsers: playwright install chromium
+
+# ── Web Scraping ─────────────────────────────────────────────────────────────
+playwright>=1.42.0
+
+# ── Telegram notifications ────────────────────────────────────────────────────
+requests>=2.31.0
+
+# ── LLM evaluation ───────────────────────────────────────────────────────────
+anthropic>=0.25.0
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
