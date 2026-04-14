@@ -10,6 +10,7 @@ import { SmartphoneRepairIcon, LaptopRepairIcon, ConsoleRepairIcon, Microsolderi
 import PriceEstimator from './components/PriceEstimator'
 import FAQ from './components/FAQ'
 import SocialHub from './components/SocialHub'
+import FloatingSocialBar, { MobileSocialStrip } from './components/FloatingSocialBar'
 import About from './pages/About'
 import Store from './pages/Store'
 import AdminDashboard from './pages/AdminDashboard'
@@ -307,6 +308,9 @@ function Hero({ setTab }) {
                 </div>
               ))}
             </motion.div>
+
+            {/* ── Mobile social strip (visible only on small screens) ── */}
+            <MobileSocialStrip />
           </div>
         </div>
       </HeroVideo>
@@ -784,6 +788,7 @@ export default function App() {
 
       <Footer setTab={setTab} />
       <FloatingCTA />
+      <FloatingSocialBar />
     </div>
   )
 }
