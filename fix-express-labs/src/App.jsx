@@ -698,30 +698,20 @@ function Footer({ setTab }) {
   )
 }
 
-// ─── Floating CTA ─────────────────────────────────────────────────────────────
+// ─── Sticky Mobile Bar (bottom, mobile only) ──────────────────────────────────
 function FloatingCTA() {
   return (
-    <>
-      <motion.a href={WA_URL} target="_blank" rel="noopener noreferrer"
-        initial={{ scale: 0 }} animate={{ scale: 1 }}
-        transition={{ delay: 1.5, type: 'spring', stiffness: 200 }}
-        whileHover={{ scale: 1.1 }}
-        className="fixed bottom-24 left-6 sm:bottom-8 z-50 w-14 h-14 rounded-full bg-[#25D366] flex items-center justify-center shadow-2xl shadow-green-900/50 animate-float">
-        <MessageCircle className="w-7 h-7 text-white" fill="white" />
-      </motion.a>
-      {/* Mobile bar */}
-      <motion.div initial={{ y: 80 }} animate={{ y: 0 }} transition={{ delay: 1 }}
-        className="fixed bottom-0 inset-x-0 z-40 sm:hidden glass border-t border-white/15 px-4 py-3 flex gap-3">
-        <a href={`tel:+${WA_NUMBER}`}
-          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl glass border border-white/15 text-white font-semibold text-sm">
-          <Phone className="w-4 h-4 text-electric" />{WA_DISPLAY}
-        </a>
-        <a href={WA_URL} target="_blank" rel="noopener noreferrer"
-          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-[#25D366] text-white font-bold text-sm">
-          <MessageCircle className="w-4 h-4" fill="white" />WhatsApp
-        </a>
-      </motion.div>
-    </>
+    <motion.div initial={{ y: 80 }} animate={{ y: 0 }} transition={{ delay: 1 }}
+      className="fixed bottom-0 inset-x-0 z-40 sm:hidden glass border-t border-white/15 px-4 py-3 flex gap-3">
+      <a href={`tel:+${WA_NUMBER}`}
+        className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl glass border border-white/15 text-white font-semibold text-sm">
+        <Phone className="w-4 h-4 text-electric" />{WA_DISPLAY}
+      </a>
+      <a href={WA_URL} target="_blank" rel="noopener noreferrer"
+        className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-[#25D366] text-white font-bold text-sm">
+        <MessageCircle className="w-4 h-4" fill="white" />WhatsApp
+      </a>
+    </motion.div>
   )
 }
 
