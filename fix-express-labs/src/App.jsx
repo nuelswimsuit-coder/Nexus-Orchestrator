@@ -407,18 +407,24 @@ function BentoCard({ item }) {
   )
 }
 
+function SectionHeader({ tag, title, subtitle }) {
+  return (
+    <motion.div variants={fadeUp} className="text-center mb-14">
+      <span className="inline-block text-xs font-semibold tracking-[0.2em] uppercase text-electric/80 mb-4 px-4 py-1.5 rounded-full border border-electric/20 bg-electric/5">
+        {tag}
+      </span>
+      <h2 className="text-4xl md:text-5xl font-bold mb-4 text-white" style={{letterSpacing:'-0.03em'}}>{title}</h2>
+      {subtitle && <p className="text-slate-400 text-base max-w-xl mx-auto leading-relaxed">{subtitle}</p>}
+    </motion.div>
+  )
+}
+
 function Services() {
   return (
-    <section id="services" className="py-24 px-6">
+    <section id="services" className="py-28 px-6" style={{background:'linear-gradient(180deg, #020617 0%, #050d1f 100%)'}}>
       <div className="max-w-6xl mx-auto">
         <Reveal>
-          <motion.div variants={fadeUp} className="text-center mb-14">
-            <div className="inline-flex items-center gap-2 glass-blue rounded-full px-4 py-1.5 mb-4 text-sm text-electric-light font-medium">
-              השירותים שלנו
-            </div>
-            <h2 className="text-4xl font-bold mb-4" style={{letterSpacing:'-0.03em'}}>כל מכשיר. כל תקלה.</h2>
-            <p className="text-slate-400 text-lg">ציוד מקצועי שנוסע אליך — לא מעבדה שגרתית.</p>
-          </motion.div>
+          <SectionHeader tag="השירותים שלנו" title="כל מכשיר. כל תקלה." subtitle="ציוד מקצועי שנוסע אליך — לא מעבדה שגרתית." />
         </Reveal>
         <Reveal className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
           {BENTO.map((item, i) => (
@@ -446,11 +452,7 @@ function TechGear() {
       <div className="absolute inset-0 bg-gradient-to-b from-transparent via-electric/4 to-transparent pointer-events-none" />
       <div className="max-w-6xl mx-auto relative z-10">
         <Reveal>
-          <motion.div variants={fadeUp} className="text-center mb-14">
-            <div className="inline-flex items-center gap-2 glass-blue rounded-full px-4 py-1.5 mb-4 text-sm text-electric-light font-medium">ציוד המעבדה</div>
-            <h2 className="text-4xl font-bold mb-4" style={{letterSpacing:'-0.03em'}}>טכנולוגיה תעשייתית, ישירות אצלך</h2>
-            <p className="text-slate-400 text-lg max-w-lg mx-auto">ציוד שלא תמצא בשום מעבדה שגרתית בישראל — נוסע אליך.</p>
-          </motion.div>
+          <SectionHeader tag="ציוד המעבדה" title="טכנולוגיה תעשייתית, ישירות אצלך" subtitle="ציוד שלא תמצא בשום מעבדה שגרתית בישראל — נוסע אליך." />
         </Reveal>
         <Reveal className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
           {GEAR.map((item, i) => (
@@ -496,10 +498,7 @@ function WhyUs() {
     <section className="py-20 px-6">
       <div className="max-w-4xl mx-auto">
         <Reveal>
-          <motion.div variants={fadeUp} className="text-center mb-12">
-            <div className="inline-flex items-center gap-2 glass-blue rounded-full px-4 py-1.5 mb-4 text-sm text-electric-light font-medium">למה אנחנו?</div>
-            <h2 className="text-5xl font-black mb-4 tracking-tight">לא סתם עוד מעבדה</h2>
-          </motion.div>
+          <SectionHeader tag="למה אנחנו?" title="לא סתם עוד מעבדה" />
           <div className="grid sm:grid-cols-2 gap-4">
             {WHY_US.map((item, i) => (
               <motion.div key={item} variants={fadeUp} custom={i}
@@ -527,22 +526,27 @@ function Reviews() {
     <section className="py-20 px-6">
       <div className="max-w-6xl mx-auto">
         <Reveal>
-          <motion.div variants={fadeUp} className="text-center mb-12">
-            <div className="inline-flex items-center gap-2 glass-blue rounded-full px-4 py-1.5 mb-4 text-sm text-electric-light font-medium">ביקורות</div>
-            <h2 className="text-5xl font-black tracking-tight">מה אומרים עלינו</h2>
-          </motion.div>
+          <SectionHeader tag="ביקורות" title="מה אומרים עלינו" />
           <div className="grid md:grid-cols-3 gap-6">
             {REVIEWS.map((r, i) => (
               <motion.div key={r.name} variants={fadeUp} custom={i}
-                whileHover={{ y: -4 }}
-                className="glass rounded-2xl p-6 border border-white/10 hover:border-electric/30 transition-all flex flex-col gap-4">
-                <div className="flex gap-1">
+                whileHover={{ y: -6, transition: { duration: 0.2 } }}
+                className="relative rounded-2xl p-6 flex flex-col gap-4 overflow-hidden"
+                style={{background:'linear-gradient(135deg, rgba(0,112,243,0.08) 0%, rgba(255,255,255,0.03) 100%)', border:'1px solid rgba(0,112,243,0.2)'}}>
+                {/* Top accent */}
+                <div className="absolute top-0 right-0 w-24 h-24 rounded-full pointer-events-none" style={{background:'radial-gradient(circle, rgba(0,112,243,0.15) 0%, transparent 70%)'}} />
+                <div className="flex gap-0.5">
                   {Array.from({ length: r.stars }).map((_, j) => (
-                    <Star key={j} className="w-4 h-4 text-yellow-400" fill="currentColor" />
+                    <Star key={j} className="w-4 h-4 text-amber-400" fill="currentColor" />
                   ))}
                 </div>
-                <p className="text-slate-300 text-sm leading-relaxed flex-1">"{r.text}"</p>
-                <span className="text-slate-500 text-sm font-semibold">{r.name}</span>
+                <p className="text-slate-200 text-sm leading-relaxed flex-1 font-light">״{r.text}״</p>
+                <div className="flex items-center gap-2 pt-2 border-t border-white/5">
+                  <div className="w-7 h-7 rounded-full bg-electric/20 border border-electric/30 flex items-center justify-center text-xs text-electric font-bold">
+                    {r.name[0]}
+                  </div>
+                  <span className="text-slate-400 text-sm">{r.name}</span>
+                </div>
               </motion.div>
             ))}
           </div>
@@ -696,7 +700,7 @@ function Footer({ setTab }) {
         </div>
 
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-6 border-t border-white/10 text-xs text-slate-600">
-          <span>© {new Date().getFullYear()} Fix Express Labs — כל הזכויות שמורות</span>
+          <span className="text-slate-500">© {new Date().getFullYear()} Fix Express Labs</span>
           <div className="flex gap-4">
             {TABS.map((t) => (
               <button key={t.id} onClick={() => setTab(t.id)} className="hover:text-electric transition-colors">{t.label}</button>
