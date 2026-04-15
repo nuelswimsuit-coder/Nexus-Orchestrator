@@ -329,78 +329,116 @@ function Hero({ setTab }) {
   )
 }
 
-// ─── Bento Services ───────────────────────────────────────────────────────────
+// ─── True Bento Grid Services ─────────────────────────────────────────────────
 const BENTO = [
   {
-    Icon: SmartphoneRepairIcon, title: 'סמארטפונים',
-    desc: 'iPhone, Samsung, Pixel, Xiaomi — מסכים, סוללות, לוחות אם, שחזור FaceID.',
+    Icon: SmartphoneRepairIcon,
+    title: 'תיקון סמארטפונים',
+    desc: 'iPhone, Samsung, Pixel, Xiaomi — מסכים, סוללות, שחזור FaceID ולוחות אם. תיקון מהיר בשעה אחת.',
     brands: ['Apple', 'Samsung', 'Google Pixel', 'Xiaomi'],
-    color: 'from-blue-600/20 to-electric/10', border: 'border-blue-500/30',
+    col: 'md:col-span-2',
+    row: 'md:row-span-2',
+    accent: 'rgba(0,112,243,0.15)',
+    border: 'rgba(0,112,243,0.3)',
+    iconColor: '#3b82f6',
   },
   {
-    Icon: LaptopRepairIcon, title: 'מחשבים ולפטופים',
-    desc: 'MacBook, Dell, Lenovo — מיקרו-לחמה, שדרוגים, תיקוני לוח.',
-    brands: ['Apple', 'Dell', 'Lenovo', 'HP'],
-    color: 'from-violet-600/20 to-purple-500/10', border: 'border-violet-500/30',
+    Icon: LaptopRepairIcon,
+    title: 'מחשבים ולפטופים',
+    desc: 'MacBook, Dell, Lenovo — מיקרו-לחמה, שדרוגי SSD/RAM, תיקוני לוח אם.',
+    brands: ['MacBook', 'Dell', 'Lenovo', 'HP'],
+    col: 'md:col-span-1',
+    row: '',
+    accent: 'rgba(139,92,246,0.12)',
+    border: 'rgba(139,92,246,0.3)',
+    iconColor: '#8b5cf6',
   },
   {
-    Icon: ConsoleRepairIcon, title: 'קונסולות',
-    desc: 'PS5, Xbox, Switch — HDMI, ג׳ויסטיק, פן, firmware.',
-    brands: ['PS5', 'Xbox Series', 'Nintendo'],
-    color: 'from-rose-600/20 to-pink-500/10', border: 'border-rose-500/30',
+    Icon: ConsoleRepairIcon,
+    title: 'קונסולות',
+    desc: 'PS5, Xbox Series X, Nintendo Switch — HDMI, ג׳ויסטיק drift, פן ו-firmware.',
+    brands: ['PS5', 'Xbox', 'Switch'],
+    col: 'md:col-span-1',
+    row: '',
+    accent: 'rgba(244,63,94,0.12)',
+    border: 'rgba(244,63,94,0.3)',
+    iconColor: '#f43f5e',
   },
   {
-    Icon: MicrosolderingIcon, title: 'מיקרו-לחמה',
-    desc: 'BGA, PMIC, IC — תיקון ברמת שבב עם JBC + מיקרוסקופ 40X.',
-    brands: ['ציוד JBC', 'מיקרוסקופ 40X', 'FLIR Thermal'],
-    color: 'from-amber-600/20 to-orange-500/10', border: 'border-amber-500/30',
+    Icon: MicrosolderingIcon,
+    title: 'מיקרו-לחמה',
+    desc: 'תיקון ברמת שבב — BGA, PMIC, IC. מיקרוסקופ 40X + JBC T210-A + FLIR תרמי.',
+    brands: ['BGA', 'PMIC', 'IC Repair'],
+    col: 'md:col-span-1',
+    row: '',
+    accent: 'rgba(245,158,11,0.12)',
+    border: 'rgba(245,158,11,0.3)',
+    iconColor: '#f59e0b',
   },
   {
-    Icon: () => <Tablet className="w-10 h-10 text-electric" />, title: 'טאבלטים ולבישים',
-    desc: 'iPad Pro/Air/Mini, Apple Watch — מסכים, סוללות, חיבורים.',
+    Icon: () => <Tablet className="w-10 h-10" style={{ color: '#06b6d4' }} />,
+    title: 'טאבלטים ולבישים',
+    desc: 'iPad Pro/Air/Mini, Apple Watch — מסכים, סוללות, חיבורי Lightning/USB-C.',
     brands: ['iPad Pro', 'iPad Air', 'Apple Watch'],
-    color: 'from-teal-600/20 to-cyan-500/10', border: 'border-teal-500/30',
+    col: 'md:col-span-1',
+    row: '',
+    accent: 'rgba(6,182,212,0.12)',
+    border: 'rgba(6,182,212,0.3)',
+    iconColor: '#06b6d4',
   },
 ]
 
 function BentoCard({ item }) {
   const [mouse, setMouse] = useState({ x: 0, y: 0 })
   const ref = useRef(null)
-
   const onMove = (e) => {
-    const rect = ref.current?.getBoundingClientRect()
-    if (!rect) return
-    setMouse({ x: e.clientX - rect.left, y: e.clientY - rect.top })
+    const r = ref.current?.getBoundingClientRect()
+    if (r) setMouse({ x: e.clientX - r.left, y: e.clientY - r.top })
   }
+  const isWide = item.col === 'md:col-span-2'
 
   return (
     <motion.div
       ref={ref}
       variants={fadeUp}
       onMouseMove={onMove}
-      whileHover={{ scale: 1.02 }}
-      transition={{ duration: 0.2 }}
-      className={`group relative rounded-2xl p-6 bg-gradient-to-br ${item.color} border ${item.border} hover:border-electric/60 transition-all duration-300 overflow-hidden flex flex-col gap-4 min-h-[220px]`}
-      style={{ cursor: 'none' }}
+      whileHover={{ y: -4 }}
+      transition={{ duration: 0.25 }}
+      className={`group relative rounded-2xl overflow-hidden flex flex-col ${isWide ? 'p-8 min-h-[280px]' : 'p-6 min-h-[200px]'}`}
+      style={{
+        background: `linear-gradient(135deg, ${item.accent} 0%, rgba(9,9,11,0.8) 100%)`,
+        border: `1px solid ${item.border}`,
+        transition: 'border-color 0.3s, box-shadow 0.3s',
+      }}
+      onMouseEnter={e => {
+        e.currentTarget.style.borderColor = item.iconColor
+        e.currentTarget.style.boxShadow = `0 0 30px ${item.accent}`
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.borderColor = item.border
+        e.currentTarget.style.boxShadow = 'none'
+      }}
     >
-      {/* Mouse-tracking glow */}
-      <div
-        className="absolute w-40 h-40 rounded-full bg-electric/10 blur-2xl pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity"
-        style={{ left: mouse.x - 80, top: mouse.y - 80 }}
-      />
+      {/* Mouse glow */}
+      <div className="absolute rounded-full blur-3xl pointer-events-none opacity-0 group-hover:opacity-60 transition-opacity duration-500"
+        style={{ width: 180, height: 180, left: mouse.x - 90, top: mouse.y - 90, background: item.accent }} />
 
-      <item.Icon className="w-12 h-12 flex-shrink-0 relative z-10" />
-      <div className="relative z-10">
-        <h3 className="text-lg font-semibold mb-2">{item.title}</h3>
-        <p className="text-slate-400 text-sm leading-relaxed mb-3">{item.desc}</p>
-        <div className="flex flex-wrap gap-1.5 mb-3">
-          {item.brands.map((b) => (
-            <span key={b} className="text-xs px-2 py-0.5 rounded-full glass text-slate-300 border border-white/10">{b}</span>
+      {/* Icon */}
+      <div className={`relative z-10 mb-4 ${isWide ? 'w-14 h-14' : 'w-12 h-12'} rounded-xl flex items-center justify-center`}
+        style={{ background: `${item.iconColor}20`, border: `1px solid ${item.iconColor}40` }}>
+        <item.Icon className={`${isWide ? 'w-7 h-7' : 'w-6 h-6'}`} style={{ color: item.iconColor }} />
+      </div>
+
+      <div className="relative z-10 flex flex-col flex-1">
+        <h3 className={`font-semibold mb-2 text-white ${isWide ? 'text-xl' : 'text-base'}`}>{item.title}</h3>
+        <p className={`text-zinc-400 leading-relaxed mb-4 flex-1 ${isWide ? 'text-sm' : 'text-xs'}`}>{item.desc}</p>
+        <div className="flex flex-wrap gap-1.5">
+          {item.brands.map(b => (
+            <span key={b} className="text-xs px-2 py-0.5 rounded-full text-zinc-300"
+              style={{ background: `${item.iconColor}15`, border: `1px solid ${item.iconColor}30` }}>
+              {b}
+            </span>
           ))}
-        </div>
-        <div className="mt-auto flex items-center gap-1 text-xs text-electric opacity-0 group-hover:opacity-100 transition-opacity">
-          <span>פרטים נוספים</span>
-          <ChevronLeft className="w-3.5 h-3.5" />
         </div>
       </div>
     </motion.div>
@@ -426,9 +464,9 @@ function Services() {
         <Reveal>
           <SectionHeader tag="השירותים שלנו" title="כל מכשיר. כל תקלה." subtitle="ציוד מקצועי שנוסע אליך — לא מעבדה שגרתית." />
         </Reveal>
-        <Reveal className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+        <Reveal className="grid grid-cols-1 md:grid-cols-3 gap-4 auto-rows-min">
           {BENTO.map((item, i) => (
-            <motion.div key={item.title} variants={fadeUp} custom={i}>
+            <motion.div key={item.title} variants={fadeUp} custom={i} className={`${item.col} ${item.row}`}>
               <BentoCard item={item} />
             </motion.div>
           ))}
