@@ -152,7 +152,7 @@ def generate_technical_explanation(case: RepairCase) -> str:
 {'**מחיר:** ₪' + str(case.price) if case.price else ''}
 
 ---
-*Fix Express Labs | ירין הלילי | 050-495-1109*
+*Fix Express Labs | 050-495-1109*
     """).strip()
 
     return explanation
