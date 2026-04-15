@@ -18,7 +18,7 @@ from pathlib import Path
 
 from scraper import run_scraper, KEYWORDS
 from evaluator import evaluate_item, PROFIT_THRESHOLD
-from notifier import send_deal_alert_async, send_startup_message
+from notifier import send_deal_alert, send_startup_ping
 
 
 RESULTS_DIR = Path("results")
@@ -106,7 +106,7 @@ async def run_pipeline(
         # 3. Notify if profitable
         if analysis.is_profitable:
             print(f"[Main] 💰 PROFITABLE: {item.title} | Flip ₪{analysis.flip_score_min}–{analysis.flip_score_max}")
-            await send_deal_alert_async(analysis, item.url)
+            send_deal_alert(analysis, item.url)
         else:
             print(f"[Main] ⏭️  Skip: {item.title} | Score ₪{analysis.flip_score_min} < ₪{PROFIT_THRESHOLD}")
 
@@ -127,7 +127,7 @@ async def main_loop(
     global SEEN_URLS
     SEEN_URLS = load_seen_urls()
 
-    await send_startup_message()
+    send_startup_ping()
 
     while True:
         try:
