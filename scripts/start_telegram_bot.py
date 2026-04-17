@@ -3759,6 +3759,41 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
         ~F.text.startswith("/"),
     )
 
+    # ── Neural Link (Remote DevOps Bridge) ────────────────────────────────────
+    # /claude <instruction>  → Claude Code CLI → streams output back to Telegram
+    # /claude_stop           → kill running process
+    # /claude_logs           → last 30 audit lines
+    # /claude_prompt         → structured prompt template picker
+    try:
+        import sys as _sys
+        from pathlib import Path as _Path
+        _root = _Path(__file__).resolve().parents[1]
+        if str(_root) not in _sys.path:
+            _sys.path.insert(0, str(_root))
+        from nexus_supreme.core.dev_link import DevLink as _DevLink
+        _DevLink(bot).register(dp)
+        log.info("neural_link_registered")
+    except Exception as _dev_exc:
+        log.warning("neural_link_unavailable", error=str(_dev_exc))
+
+    # ── Utility Tools (27-tool suite) ─────────────────────────────────────────
+    try:
+        import sys as _sys2
+        _root2 = _Path(__file__).resolve().parents[1]
+        if str(_root2) not in _sys2.path:
+            _sys2.path.insert(0, str(_root2))
+        from nexus_supreme.core.tools.telegram_handlers import register_all_tools as _reg_tools
+        import os as _os2
+        _reg_tools(
+            dp, bot,
+            owner_id = int(_os2.environ.get("TELEGRAM_ADMIN_CHAT_ID", "0")),
+            api_id   = int(_os2.environ.get("TELEGRAM_API_ID", "0")),
+            api_hash = _os2.environ.get("TELEGRAM_API_HASH", ""),
+        )
+        log.info("nexus_tools_registered", count=27)
+    except Exception as _tools_exc:
+        log.warning("nexus_tools_unavailable", error=str(_tools_exc))
+
     return bot, dp
 
 
