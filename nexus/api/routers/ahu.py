@@ -837,3 +837,129 @@ async def stream_logs(ws: WebSocket) -> None:
             await ws.close()
         except Exception:
             pass
+
+
+# ── One-time migration ─────────────────────────────────────────────────────────
+
+# Flag file: once migration completes we write this marker so it never re-runs.
+_MIGRATE_FLAG_NAME = ".nexus_ahu_migrated"
+
+
+def _migration_done(nexus_root: Path) -> bool:
+    return (nexus_root / _MIGRATE_FLAG_NAME).exists()
+
+
+def _mark_migration_done(nexus_root: Path) -> None:
+    try:
+        (nexus_root / _MIGRATE_FLAG_NAME).write_text("migrated", encoding="utf-8")
+    except Exception as exc:
+        log.warning("ahu_migrate_flag_write_failed", error=str(exc))
+
+
+@router.post("/migrate")
+async def migrate_ahu_to_nexus() -> JSONResponse:
+    """
+    One-time migration: copies all Management AHU SQLite tables into a Nexus-managed
+    snapshot at <nexus_root>/data/ahu_snapshot.db.
+
+    Safe to call multiple times — skips rows that already exist (INSERT OR IGNORE).
+    Write a flag file .nexus_ahu_migrated after first successful run to
+    prevent accidental re-migration, but the endpoint can be forced with ?force=1.
+    """
+    nexus_root = _NEXUS_REPO_ROOT
+    src_path   = _ahu_db_path()
+    dest_path  = nexus_root / "data" / "ahu_snapshot.db"
+
+    if _migration_done(nexus_root):
+        return JSONResponse({
+            "ok": True,
+            "detail": "Migration already completed (flag file present). Pass ?force=1 to re-run.",
+            "copied": 0,
+            "skipped": 0,
+        })
+
+    if not src_path.exists():
+        return JSONResponse(
+            {"ok": False, "detail": f"Source DB not found at {src_path}"},
+            status_code=404,
+        )
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Tables to migrate (all 9 AHU tables)
+    TABLES = [
+        "scraped_users",
+        "targets",
+        "managed_groups",
+        "enrollments",
+        "settings",
+        "metrics",
+        "bot_seo",
+        "bot_users",
+        "nexus_bots",
+    ]
+
+    total_copied  = 0
+    total_skipped = 0
+    errors: list[str] = []
+
+    try:
+        src_conn  = sqlite3.connect(f"file:{src_path.as_posix()}?mode=ro", uri=True)
+        dest_conn = sqlite3.connect(str(dest_path))
+        src_conn.row_factory  = sqlite3.Row
+        dest_conn.row_factory = sqlite3.Row
+
+        with dest_conn:
+            # Mirror schema
+            for tbl in TABLES:
+                try:
+                    schema_row = src_conn.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (tbl,)
+                    ).fetchone()
+                    if schema_row and schema_row[0]:
+                        dest_conn.execute(schema_row[0])
+                except Exception as exc:
+                    errors.append(f"schema:{tbl}: {exc}")
+                    continue
+
+            dest_conn.execute("PRAGMA journal_mode=WAL")
+            dest_conn.execute("PRAGMA synchronous=NORMAL")
+
+            # Copy rows
+            for tbl in TABLES:
+                try:
+                    rows = src_conn.execute(f"SELECT * FROM {tbl}").fetchall()  # noqa: S608
+                    if not rows:
+                        continue
+                    cols    = rows[0].keys()
+                    ph      = ", ".join("?" * len(cols))
+                    col_str = ", ".join(cols)
+                    before  = dest_conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]  # noqa: S608
+                    dest_conn.executemany(
+                        f"INSERT OR IGNORE INTO {tbl} ({col_str}) VALUES ({ph})",  # noqa: S608
+                        [tuple(r) for r in rows],
+                    )
+                    after   = dest_conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]  # noqa: S608
+                    n_copied = after - before
+                    total_copied  += n_copied
+                    total_skipped += len(rows) - n_copied
+                except Exception as exc:
+                    errors.append(f"data:{tbl}: {exc}")
+
+        src_conn.close()
+        dest_conn.close()
+
+    except Exception as exc:
+        log.error("ahu_migration_failed", error=str(exc))
+        return JSONResponse({"ok": False, "detail": str(exc), "copied": 0, "skipped": 0}, status_code=500)
+
+    _mark_migration_done(nexus_root)
+    log.info("ahu_migration_complete", copied=total_copied, skipped=total_skipped, errors=len(errors))
+
+    return JSONResponse({
+        "ok":      True,
+        "copied":  total_copied,
+        "skipped": total_skipped,
+        "dest":    str(dest_path),
+        "errors":  errors[:20],
+    })
