@@ -293,15 +293,16 @@ class NexusBrain:
         )
 
         try:
-            import google.generativeai as genai  # type: ignore[import-untyped]
-            genai.configure(api_key=self._gemini_api_key)
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            response = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: model.generate_content(prompt)
+            from google import genai  # type: ignore[import-untyped]
+
+            client = genai.Client(api_key=self._gemini_api_key)
+            response = await client.aio.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
             )
             return response.text.strip()
         except ImportError:
-            return "(google-generativeai not installed — run: pip install google-generativeai)"
+            return "(google-genai not installed — run: pip install google-genai)"
         except Exception as exc:
             log.warning("brain_gemini_failed", error=str(exc))
             return f"(Gemini analysis failed: {exc})"

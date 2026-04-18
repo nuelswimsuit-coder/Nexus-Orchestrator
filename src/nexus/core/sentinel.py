@@ -641,20 +641,16 @@ Return ONLY a valid JSON object with this exact shape:
 Do not include any text outside the JSON."""
 
         try:
-            import google.generativeai as genai  # type: ignore[import]
-            genai.configure(api_key=self._api_key)
-            model = genai.GenerativeModel(GEMINI_MODEL)
+            from google import genai  # type: ignore[import]
 
-            loop = asyncio.get_event_loop()
+            client = genai.Client(api_key=self._api_key)
             response = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: model.generate_content(
-                        prompt,
-                        generation_config=genai.GenerationConfig(
-                            temperature=0.2,
-                            max_output_tokens=512,
-                        ),
+                client.aio.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=prompt,
+                    config=genai.types.GenerateContentConfig(
+                        temperature=0.2,
+                        max_output_tokens=512,
                     ),
                 ),
                 timeout=GEMINI_TIMEOUT,
