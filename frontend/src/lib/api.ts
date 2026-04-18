@@ -71,7 +71,7 @@ type ApiFetchInit = RequestInit & { timeoutMs?: number };
 async function apiFetch<T>(path: string, init?: ApiFetchInit): Promise<T> {
   const { timeoutMs, signal: userSignal, ...rest } = init ?? {};
   let clearTimer: (() => void) | undefined;
-  let signal: AbortSignal | undefined = userSignal;
+  let signal: AbortSignal | undefined = userSignal ?? undefined;
   if (!userSignal && typeof timeoutMs === "number" && timeoutMs > 0) {
     const ctl = new AbortController();
     const tid = setTimeout(() => ctl.abort(), timeoutMs);

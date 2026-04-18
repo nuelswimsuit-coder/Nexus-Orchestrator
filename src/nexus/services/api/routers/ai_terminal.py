@@ -114,29 +114,25 @@ async def _gemini_reply_local(user: str) -> str | None:
     if not key:
         return None
     try:
-        import google.generativeai as genai  # type: ignore[import-untyped]
+        from google import genai  # type: ignore[import-untyped]
     except ImportError:
         log.warning("ai_terminal_genai_missing")
         return None
 
-    genai.configure(api_key=key)
-    model = genai.GenerativeModel(GEMINI_MODEL)
+    client = genai.Client(api_key=key)
     prompt = (
         "You are Nexus OS — a concise bilingual (Hebrew + English) operations copilot. "
         "Answer the operator's command in plain language. Be actionable and under 400 words.\n\n"
         f"Operator message:\n{user}"
     )
-    loop = asyncio.get_event_loop()
     try:
         response = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: model.generate_content(
-                    prompt,
-                    generation_config=genai.GenerationConfig(
-                        temperature=0.35,
-                        max_output_tokens=1024,
-                    ),
+            client.aio.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=genai.types.GenerateContentConfig(
+                    temperature=0.35,
+                    max_output_tokens=1024,
                 ),
             ),
             timeout=GEMINI_TIMEOUT,
@@ -319,20 +315,16 @@ async def post_personality_analysis(
     key = (settings.gemini_api_key or os.environ.get("GEMINI_API_KEY", "")).strip()
     if key:
         try:
-            import google.generativeai as genai  # type: ignore[import-untyped]
+            from google import genai  # type: ignore[import-untyped]
 
-            genai.configure(api_key=key)
-            model = genai.GenerativeModel(GEMINI_MODEL)
-            loop = asyncio.get_event_loop()
+            client = genai.Client(api_key=key)
             response = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: model.generate_content(
-                        combined,
-                        generation_config=genai.GenerationConfig(
-                            temperature=0.35,
-                            max_output_tokens=1024,
-                        ),
+                client.aio.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=combined,
+                    config=genai.types.GenerateContentConfig(
+                        temperature=0.35,
+                        max_output_tokens=1024,
                     ),
                 ),
                 timeout=GEMINI_TIMEOUT,

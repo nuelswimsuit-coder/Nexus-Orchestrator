@@ -64,7 +64,7 @@ GRADUATION_USERS_THRESHOLD = 100   # users added before a project "graduates"
 GRADUATION_DAYS            = 2     # days window for graduation check
 
 # ── Gemini model ──────────────────────────────────────────────────────────────
-GEMINI_MODEL = "gemini-1.5-pro"
+GEMINI_MODEL = "gemini-2.0-flash"
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
@@ -147,27 +147,22 @@ Keep it to 8 packages maximum. Return ONLY the requirements, one per line.
 
 
 async def _call_gemini(prompt: str, api_key: str) -> str:
-    """Call Gemini 1.5 Pro and return the text response."""
+    """Call Gemini and return the text response."""
     try:
-        import google.generativeai as genai  # type: ignore[import]
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(GEMINI_MODEL)
+        from google import genai  # type: ignore[import]
 
-        # Run in executor to avoid blocking the event loop
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: model.generate_content(
-                prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.7,
-                    max_output_tokens=2048,
-                ),
+        client = genai.Client(api_key=api_key)
+        response = await client.aio.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=genai.types.GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=2048,
             ),
         )
         return response.text.strip()
     except ImportError:
-        log.warning("architect_gemini_not_installed", hint="pip install google-generativeai")
+        log.warning("architect_gemini_not_installed", hint="pip install google-genai")
         raise
     except Exception as exc:
         log.error("architect_gemini_error", error=str(exc))

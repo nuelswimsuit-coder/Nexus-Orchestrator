@@ -352,6 +352,9 @@ def get_start_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📋 קרא פרומפטים",           callback_data="cursor_read_prompts"),
         ],
         [
+            InlineKeyboardButton(text="🏢 Management AHU",         callback_data="ahu_menu"),
+        ],
+        [
             InlineKeyboardButton(text="🔗 Dashboard",              callback_data="dashboard_btn"),
             InlineKeyboardButton(text="❓ Help & Commands",         callback_data="help_btn"),
         ],
@@ -3302,6 +3305,344 @@ async def handle_system_recovery_callback(callback: CallbackQuery) -> None:
     await callback.answer("✅ System Recovery activated!", show_alert=True)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ── Management AHU — embedded panel ──────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# All data is served by the Nexus API (/api/ahu/*) which reads directly from
+# the Management AHU SQLite at TELEFIX_ROOT/data/telefix.db.
+# No direct DB access from the bot — everything goes through FastAPI.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ahu_back_kb() -> InlineKeyboardMarkup:
+    """Minimal 'back' keyboard for AHU sub-screens."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="◀️ חזרה ל-AHU", callback_data="ahu_menu"),
+        InlineKeyboardButton(text="🏠 תפריט ראשי", callback_data="start_menu"),
+    ]])
+
+
+def _ahu_main_kb() -> InlineKeyboardMarkup:
+    """Keyboard that mirrors the Management AHU main menu."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📂 סשנים",            callback_data="ahu_sessions"),
+            InlineKeyboardButton(text="🌍 סטטיסטיקה",        callback_data="ahu_stats"),
+        ],
+        [
+            InlineKeyboardButton(text="🎯 קבוצות יעד",       callback_data="ahu_targets"),
+            InlineKeyboardButton(text="🔍 Bot SEO",           callback_data="ahu_bot_seo"),
+        ],
+        [
+            InlineKeyboardButton(text="📝 לוגים",            callback_data="ahu_logs"),
+            InlineKeyboardButton(text="⚙️ סטטוס בוט AHU",   callback_data="ahu_bot_status"),
+        ],
+        [
+            InlineKeyboardButton(text="▶️ הפעל בוט AHU",    callback_data="ahu_bot_start"),
+            InlineKeyboardButton(text="⏹️ עצור בוט AHU",    callback_data="ahu_bot_stop"),
+        ],
+        [
+            InlineKeyboardButton(text="🔄 מגרציה ראשונית",  callback_data="ahu_migrate"),
+        ],
+        [
+            InlineKeyboardButton(text="🏠 תפריט ראשי",      callback_data="start_menu"),
+        ],
+    ])
+
+
+async def handle_ahu_menu(callback: CallbackQuery) -> None:
+    """Management AHU — main panel, reads live data from /api/ahu/status + /api/ahu/stats."""
+    await callback.answer()
+    status  = await _api_get("/api/ahu/status") or {}
+    stats   = await _api_get("/api/ahu/stats")  or {}
+
+    bot_running  = status.get("bot_running", False)
+    total_sess   = status.get("total_sessions", 0)
+    db_ok        = status.get("db_available", False)
+
+    users        = stats.get("users", {})
+    total_users  = users.get("total", 0)
+    premium_pct  = users.get("premium_pct", 0)
+    enroll_total = stats.get("enrollments", {}).get("total", 0)
+
+    status_icon = "🟢" if bot_running else "🔴"
+    db_icon     = "✅" if db_ok       else "❌"
+
+    text = (
+        "🏢 *Management AHU — Control Panel*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 בוט AHU:  {status_icon} {'פועל' if bot_running else 'כבוי'}\n"
+        f"💾 מסד נתונים: {db_icon}\n"
+        f"🔌 סשנים פעילים: *{total_sess:,}*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 משתמשים שנאספו: *{total_users:,}*\n"
+        f"💎 פרימיום: *{premium_pct}%*\n"
+        f"📥 הצטרפויות: *{enroll_total:,}*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "_נתונים מוגשים דרך תשתית Nexus_"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=_ahu_main_kb(), parse_mode="MarkdownV2")
+    except Exception:
+        await callback.message.answer(text, reply_markup=_ahu_main_kb(), parse_mode="MarkdownV2")
+
+
+async def handle_ahu_sessions(callback: CallbackQuery) -> None:
+    """AHU — session inventory from /api/ahu/sessions."""
+    await callback.answer()
+    data = await _api_get("/api/ahu/sessions") or {}
+
+    if not data:
+        lines = ["_אין נתוני סשן — ודא ש\\-TELEFIX\\_ROOT מוגדר_"]
+    else:
+        lines = ["📂 *סשנים לפי תיקייה:*\n"]
+        for folder, info in sorted(data.items()):
+            if isinstance(info, dict):
+                cnt = info.get("count", 0)
+                lines.append(f"• `{_esc(folder)}` — *{cnt}* סשנים")
+            else:
+                lines.append(f"• `{_esc(folder)}`")
+
+    text = "\n".join(lines)
+    try:
+        await callback.message.edit_text(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+    except Exception:
+        await callback.message.answer(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+
+
+async def handle_ahu_stats(callback: CallbackQuery) -> None:
+    """AHU — user & enrollment stats from /api/ahu/stats."""
+    await callback.answer()
+    data = await _api_get("/api/ahu/stats") or {}
+
+    users      = data.get("users", {})
+    enroll     = data.get("enrollments", {})
+    targets    = data.get("targets", {})
+
+    total_u    = users.get("total", 0)
+    premium_u  = users.get("premium", 0)
+    pct        = users.get("premium_pct", 0)
+    sources    = users.get("sources", 0)
+    disk_extra = users.get("disk_only_count", 0)
+
+    enroll_tot   = enroll.get("total", 0)
+    enroll_by    = enroll.get("by_status", {})
+
+    tgt_src  = targets.get("source", 0)
+    tgt_tgt  = targets.get("target", 0)
+
+    enroll_lines = "\n".join(
+        f"  • {_esc(s)}: *{c}*" for s, c in enroll_by.items()
+    ) or "  _אין_"
+
+    text = (
+        "🌍 *סטטיסטיקות AHU*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 משתמשים: *{total_u:,}*\n"
+        f"💎 פרימיום: *{premium_u:,}* \\({pct}%\\)\n"
+        f"📡 מקורות: *{sources}*\n"
+        f"💾 נוספו מדיסק: *{disk_extra}*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 קבוצות מקור: *{tgt_src}*\n"
+        f"🎯 קבוצות יעד: *{tgt_tgt}*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📥 הצטרפויות סה\"כ: *{enroll_tot:,}*\n"
+        f"{enroll_lines}"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+    except Exception:
+        await callback.message.answer(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+
+
+async def handle_ahu_targets(callback: CallbackQuery) -> None:
+    """AHU — target group list from /api/ahu/targets."""
+    await callback.answer()
+    data = await _api_get("/api/ahu/targets") or {}
+    targets = data.get("targets", [])
+
+    if not targets:
+        text = "🎯 *קבוצות יעד*\n\n_אין קבוצות מוגדרות_"
+    else:
+        lines = [f"🎯 *קבוצות יעד \\({len(targets)}\\)*\n"]
+        sources = [t for t in targets if t.get("role") == "source"]
+        dests   = [t for t in targets if t.get("role") == "target"]
+        others  = [t for t in targets if t.get("role") not in ("source", "target")]
+
+        if sources:
+            lines.append("*📡 מקורות:*")
+            for t in sources[:10]:
+                title = _esc(t.get("title") or t.get("link") or "ללא שם")
+                lines.append(f"  • {title}")
+            if len(sources) > 10:
+                lines.append(f"  _\\+ {len(sources)-10} נוספים_")
+
+        if dests:
+            lines.append("\n*🎯 יעדים:*")
+            for t in dests[:10]:
+                title = _esc(t.get("title") or t.get("link") or "ללא שם")
+                lines.append(f"  • {title}")
+            if len(dests) > 10:
+                lines.append(f"  _\\+ {len(dests)-10} נוספים_")
+
+        if others:
+            lines.append("\n*📋 אחר:*")
+            for t in others[:5]:
+                title = _esc(t.get("title") or t.get("link") or "ללא שם")
+                role  = _esc(t.get("role", ""))
+                lines.append(f"  • {title} \\[{role}\\]")
+
+        text = "\n".join(lines)
+
+    try:
+        await callback.message.edit_text(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+    except Exception:
+        await callback.message.answer(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+
+
+async def handle_ahu_bot_seo(callback: CallbackQuery) -> None:
+    """AHU — Bot SEO data (scraper stats proxy)."""
+    await callback.answer()
+    stats = await _api_get("/api/ahu/stats") or {}
+    users = stats.get("users", {})
+
+    text = (
+        "🔍 *Bot SEO — AHU*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 משתמשים שנסרקו: *{users.get('total', 0):,}*\n"
+        f"💎 פרימיום: *{users.get('premium', 0):,}*\n"
+        f"📡 מקורות: *{users.get('sources', 0)}*\n"
+        f"💾 מדיסק: *{users.get('disk_only_count', 0)}*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "_לסטטיסטיקות מפורטות השתמש בדשבורד_"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+    except Exception:
+        await callback.message.answer(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+
+
+async def handle_ahu_logs(callback: CallbackQuery) -> None:
+    """AHU — last 20 log lines from /api/ahu/logs."""
+    await callback.answer()
+    data = await _api_get("/api/ahu/logs?lines=20") or {}
+    lines = data.get("lines", [])
+
+    if not lines:
+        text = "📝 *לוגי AHU*\n\n_אין לוגים זמינים_"
+    else:
+        # Keep last 20, truncate each line to 80 chars to fit Telegram
+        truncated = [_esc(ln[:80]) for ln in lines[-20:]]
+        body = "\n".join(f"`{ln}`" for ln in truncated)
+        text = f"📝 *לוגי AHU \\(20 שורות אחרונות\\)*\n\n{body}"
+
+    try:
+        await callback.message.edit_text(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+    except Exception:
+        await callback.message.answer(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+
+
+async def handle_ahu_bot_status(callback: CallbackQuery) -> None:
+    """AHU — detailed bot process status."""
+    await callback.answer()
+    data = await _api_get("/api/ahu/status") or {}
+
+    running = data.get("bot_running", False)
+    pid     = data.get("bot_pid")
+    db_ok   = data.get("db_available", False)
+    sess_ok = data.get("sessions_available", False)
+    sess_n  = data.get("total_sessions", 0)
+    root    = _esc(str(data.get("ahu_root", "לא מוגדר")))
+
+    counts = data.get("session_counts", {})
+    counts_lines = "\n".join(
+        f"  • `{_esc(k)}`: {v}" for k, v in sorted(counts.items())
+    ) or "  _אין_"
+
+    text = (
+        "⚙️ *סטטוס בוט AHU*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"{'🟢 פועל' if running else '🔴 כבוי'}"
+        + (f" \\(PID {pid}\\)" if pid else "") + "\n"
+        f"💾 DB: {'✅' if db_ok else '❌'}  |  📁 סשנים: {'✅' if sess_ok else '❌'}\n"
+        f"🔌 סה\"כ סשנים: *{sess_n}*\n"
+        f"📂 שורש: `{root}`\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"*ספירה לפי תיקייה:*\n{counts_lines}"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+    except Exception:
+        await callback.message.answer(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+
+
+async def handle_ahu_bot_start(callback: CallbackQuery) -> None:
+    """AHU — start the AHU bot via /api/ahu/bot/start."""
+    await callback.answer("⏳ מפעיל בוט AHU…", show_alert=False)
+    result = await _api_post("/api/ahu/bot/start") or {}
+    ok  = result.get("ok", False)
+    pid = result.get("pid")
+    msg = result.get("detail", "")
+
+    if ok:
+        text = f"✅ *בוט AHU הופעל בהצלחה*\nPID: `{pid}`"
+    else:
+        text = f"❌ *שגיאה בהפעלת בוט AHU*\n_{_esc(msg)}_"
+
+    try:
+        await callback.message.edit_text(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+    except Exception:
+        await callback.message.answer(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+
+
+async def handle_ahu_bot_stop(callback: CallbackQuery) -> None:
+    """AHU — stop the AHU bot via /api/ahu/bot/stop."""
+    await callback.answer("⏳ עוצר בוט AHU…", show_alert=False)
+    result = await _api_post("/api/ahu/bot/stop") or {}
+    ok  = result.get("ok", False)
+    pid = result.get("pid")
+    msg = result.get("detail", "")
+
+    if ok:
+        text = f"✅ *בוט AHU נעצר*\nPID שנסגר: `{pid}`"
+    else:
+        text = f"❌ *שגיאה בעצירת בוט AHU*\n_{_esc(msg)}_"
+
+    try:
+        await callback.message.edit_text(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+    except Exception:
+        await callback.message.answer(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+
+
+async def handle_ahu_migrate(callback: CallbackQuery) -> None:
+    """AHU — trigger one-time data migration via /api/ahu/migrate."""
+    await callback.answer("⏳ מריץ מיגרציה…", show_alert=False)
+    result = await _api_post("/api/ahu/migrate") or {}
+    ok      = result.get("ok", False)
+    copied  = result.get("copied", 0)
+    skipped = result.get("skipped", 0)
+    errors  = result.get("errors", [])
+    detail  = _esc(result.get("detail", ""))
+
+    if ok:
+        err_line = f"\n⚠️ {len(errors)} שגיאות" if errors else ""
+        text = (
+            f"✅ *מיגרציה הושלמה*\n"
+            f"📥 הועתקו: *{copied}* רשומות\n"
+            f"⏭️ דולגו \\(כבר קיים\\): *{skipped}*{err_line}"
+        )
+    else:
+        text = (
+            f"⚠️ *מיגרציה — {'אין צורך' if 'already' in detail.lower() else 'שגיאה'}*\n"
+            f"_{detail}_"
+        )
+
+    try:
+        await callback.message.edit_text(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+    except Exception:
+        await callback.message.answer(text, reply_markup=_ahu_back_kb(), parse_mode="MarkdownV2")
+
+
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 
 def register_polymarket_handlers(dp: TgDispatcher) -> None:
@@ -3379,6 +3720,18 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
     dp.callback_query.register(handle_cursor_prompt_btn,   F.data == "cursor_prompt_btn")
     dp.callback_query.register(handle_cursor_read_prompts, F.data == "cursor_read_prompts")
 
+    # Management AHU embedded panel
+    dp.callback_query.register(handle_ahu_menu,       F.data == "ahu_menu")
+    dp.callback_query.register(handle_ahu_sessions,   F.data == "ahu_sessions")
+    dp.callback_query.register(handle_ahu_stats,      F.data == "ahu_stats")
+    dp.callback_query.register(handle_ahu_targets,    F.data == "ahu_targets")
+    dp.callback_query.register(handle_ahu_bot_seo,    F.data == "ahu_bot_seo")
+    dp.callback_query.register(handle_ahu_logs,       F.data == "ahu_logs")
+    dp.callback_query.register(handle_ahu_bot_status, F.data == "ahu_bot_status")
+    dp.callback_query.register(handle_ahu_bot_start,  F.data == "ahu_bot_start")
+    dp.callback_query.register(handle_ahu_bot_stop,   F.data == "ahu_bot_stop")
+    dp.callback_query.register(handle_ahu_migrate,    F.data == "ahu_migrate")
+
     register_polymarket_handlers(dp)
 
     # HITL and control handlers
@@ -3405,6 +3758,41 @@ def build_bot_dispatcher(token: str) -> tuple["Bot", "TgDispatcher"]:
         F.from_user.id == _JACOB_USER_ID,
         ~F.text.startswith("/"),
     )
+
+    # ── Neural Link (Remote DevOps Bridge) ────────────────────────────────────
+    # /claude <instruction>  → Claude Code CLI → streams output back to Telegram
+    # /claude_stop           → kill running process
+    # /claude_logs           → last 30 audit lines
+    # /claude_prompt         → structured prompt template picker
+    try:
+        import sys as _sys
+        from pathlib import Path as _Path
+        _root = _Path(__file__).resolve().parents[1]
+        if str(_root) not in _sys.path:
+            _sys.path.insert(0, str(_root))
+        from nexus_supreme.core.dev_link import DevLink as _DevLink
+        _DevLink(bot).register(dp)
+        log.info("neural_link_registered")
+    except Exception as _dev_exc:
+        log.warning("neural_link_unavailable", error=str(_dev_exc))
+
+    # ── Utility Tools (27-tool suite) ─────────────────────────────────────────
+    try:
+        import sys as _sys2
+        _root2 = _Path(__file__).resolve().parents[1]
+        if str(_root2) not in _sys2.path:
+            _sys2.path.insert(0, str(_root2))
+        from nexus_supreme.core.tools.telegram_handlers import register_all_tools as _reg_tools
+        import os as _os2
+        _reg_tools(
+            dp, bot,
+            owner_id = int(_os2.environ.get("TELEGRAM_ADMIN_CHAT_ID", "0")),
+            api_id   = int(_os2.environ.get("TELEGRAM_API_ID", "0")),
+            api_hash = _os2.environ.get("TELEGRAM_API_HASH", ""),
+        )
+        log.info("nexus_tools_registered", count=27)
+    except Exception as _tools_exc:
+        log.warning("nexus_tools_unavailable", error=str(_tools_exc))
 
     return bot, dp
 
@@ -3528,6 +3916,18 @@ async def run() -> None:
     dp.callback_query.register(handle_start_menu,        F.data == "start_menu")
     dp.callback_query.register(handle_cursor_prompt_btn,   F.data == "cursor_prompt_btn")
     dp.callback_query.register(handle_cursor_read_prompts, F.data == "cursor_read_prompts")
+
+    # Management AHU embedded panel
+    dp.callback_query.register(handle_ahu_menu,       F.data == "ahu_menu")
+    dp.callback_query.register(handle_ahu_sessions,   F.data == "ahu_sessions")
+    dp.callback_query.register(handle_ahu_stats,      F.data == "ahu_stats")
+    dp.callback_query.register(handle_ahu_targets,    F.data == "ahu_targets")
+    dp.callback_query.register(handle_ahu_bot_seo,    F.data == "ahu_bot_seo")
+    dp.callback_query.register(handle_ahu_logs,       F.data == "ahu_logs")
+    dp.callback_query.register(handle_ahu_bot_status, F.data == "ahu_bot_status")
+    dp.callback_query.register(handle_ahu_bot_start,  F.data == "ahu_bot_start")
+    dp.callback_query.register(handle_ahu_bot_stop,   F.data == "ahu_bot_stop")
+    dp.callback_query.register(handle_ahu_migrate,    F.data == "ahu_migrate")
 
     register_polymarket_handlers(dp)
 

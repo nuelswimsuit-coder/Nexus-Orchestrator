@@ -22,18 +22,19 @@ async def _gemini_ask(prompt: str) -> str:
     if not api_key:
         return "GEMINI_API_KEY not configured."
     try:
-        import google.generativeai as genai  # type: ignore[import]
+        from google import genai  # type: ignore[import]
 
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        loop = asyncio.get_event_loop()
+        client = genai.Client(api_key=api_key)
         response = await asyncio.wait_for(
-            loop.run_in_executor(None, lambda: model.generate_content(prompt)),
+            client.aio.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+            ),
             timeout=GEMINI_TIMEOUT,
         )
         return response.text.strip()
     except ImportError:
-        return "google-generativeai not installed."
+        return "google-genai not installed."
     except asyncio.TimeoutError:
         return "Gemini timeout."
     except Exception as exc:  # noqa: BLE001

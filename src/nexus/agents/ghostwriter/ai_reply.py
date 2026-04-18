@@ -121,23 +121,23 @@ async def generate_reply_gemini(
     max_tokens: int,
     temperature: float,
 ) -> str:
-    import google.generativeai as genai
+    from google import genai  # type: ignore[import]
 
     key = api_key or os.getenv("GEMINI_API_KEY", "")
-    genai.configure(api_key=key)
 
     system_prompt = _build_system_prompt(personality)
     user_prompt = _build_user_prompt(trigger_word, context_messages)
     full_prompt = f"{system_prompt}\n\n{user_prompt}"
 
-    gemini_model = genai.GenerativeModel(
-        model_name=model,
-        generation_config=genai.GenerationConfig(
+    client = genai.Client(api_key=key)
+    response = await client.aio.models.generate_content(
+        model=model,
+        contents=full_prompt,
+        config=genai.types.GenerateContentConfig(
             max_output_tokens=max_tokens,
             temperature=temperature,
         ),
     )
-    response = await gemini_model.generate_content_async(full_prompt)
     return response.text.strip()
 
 
