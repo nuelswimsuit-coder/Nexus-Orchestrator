@@ -60,11 +60,11 @@ foreach ($pat in $killPatterns) {
 }
 
 if ($killedAny) {
-    Write-Host "  Waiting 8s for Telegram to release long-poll sessions..." -ForegroundColor DarkGray
-    Start-Sleep -Seconds 8
+    Write-Host "  Waiting 5s before clearing Telegram sessions..." -ForegroundColor DarkGray
+    Start-Sleep -Seconds 5
 }
 
-# deleteWebhook for both bots
+# Step 1: deleteWebhook + getUpdates to actively release long-poll session
 Write-Host "  Clearing Telegram session locks..." -ForegroundColor DarkGray
 $envFile = Join-Path $ROOT ".env"
 if (Test-Path $envFile) {
@@ -73,17 +73,28 @@ if (Test-Path $envFile) {
         if ($line -match "^(TELEGRAM_BOT_TOKEN|TELEGRAM_NEXUS_BOT_TOKEN)\s*=\s*(.+)") {
             $token = $matches[2].Trim()
             if ($token -and -not $token.StartsWith("#")) {
+                $shortId = ($token -split ':')[0]
                 try {
+                    # 1. Delete webhook
                     $url = "https://api.telegram.org/bot$token/deleteWebhook?drop_pending_updates=true"
                     Invoke-WebRequest -Uri $url -TimeoutSec 5 -UseBasicParsing -ErrorAction SilentlyContinue | Out-Null
-                    $shortId = ($token -split ':')[0]
-                    Write-Host "  deleteWebhook OK ($shortId...)" -ForegroundColor DarkGray
+                    # 2. getUpdates with timeout=0 — forces Telegram to close any existing long-poll session
+                    $url2 = "https://api.telegram.org/bot$token/getUpdates?timeout=0&offset=-1"
+                    Invoke-WebRequest -Uri $url2 -TimeoutSec 8 -UseBasicParsing -ErrorAction SilentlyContinue | Out-Null
+                    Write-Host "  Session cleared ($shortId...)" -ForegroundColor DarkGray
                 } catch {}
             }
         }
     }
 }
-Start-Sleep -Seconds 2
+
+# Step 2: Wait for Telegram to fully release the old polling connection (30s TTL)
+if ($killedAny) {
+    Write-Host "  Waiting 30s for Telegram polling TTL to expire..." -ForegroundColor DarkGray
+    Start-Sleep -Seconds 30
+} else {
+    Start-Sleep -Seconds 2
+}
 
 # ================================================
 # [1] Redis
@@ -191,16 +202,18 @@ if (Test-Port -Port 3000) {
 }
 
 # ================================================
-# [5] Nexus Supreme GUI (optional)
+# [5] Nexus Supreme GUI (one instance only)
 # ================================================
-Write-Host "[5/5] Nexus Supreme GUI (optional)" -ForegroundColor Yellow
-$answer = Read-Host "  Launch desktop GUI? (y/n) [default: n]"
-if ($answer -eq "y" -or $answer -eq "Y") {
+Write-Host "[5/5] Nexus Supreme GUI" -ForegroundColor Yellow
+$guiRunning = (Get-WmiObject Win32_Process | Where-Object {
+    $_.CommandLine -and $_.CommandLine -like "*Launch_NexusSupreme*"
+} | Measure-Object).Count
+if ($guiRunning -gt 0) {
+    Write-Host "  OK - GUI already running" -ForegroundColor Green
+} else {
     $guiScript = Join-Path $ROOT "Launch_NexusSupreme.py"
     Start-Process -FilePath $PYTHON -ArgumentList $guiScript -WorkingDirectory $ROOT -WindowStyle Normal
     Write-Host "  Started desktop GUI" -ForegroundColor Green
-} else {
-    Write-Host "  Skipped" -ForegroundColor DarkGray
 }
 
 # ================================================
@@ -219,3 +232,6 @@ Write-Host ""
 Write-Host "  Status : powershell -ExecutionPolicy Bypass -File $ROOT\STATUS_NEXUS.ps1" -ForegroundColor DarkGray
 Write-Host "  Stop   : powershell -ExecutionPolicy Bypass -File $ROOT\STOP_NEXUS.ps1"   -ForegroundColor DarkGray
 Write-Host ""
+
+# Auto-open dashboard in browser
+Start-Process "http://localhost:3000/dashboard"

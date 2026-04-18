@@ -18,47 +18,52 @@ function Test-Port {
     } catch { return $false }
 }
 
-function Get-ProcsByScript {
-    param([string]$ScriptName)
-    # @() wrapping ensures array even when WMI returns a single object (PS5 quirk)
-    return @(Get-WmiObject Win32_Process | Where-Object {
-        $_.CommandLine -and $_.CommandLine -like "*$ScriptName*"
-    })
+function Get-ServiceInfo {
+    param([string]$Pattern)
+    $procs = Get-WmiObject Win32_Process | Where-Object {
+        $_.CommandLine -and $_.CommandLine -like "*$Pattern*"
+    }
+    # Use Measure-Object — works on both single objects and arrays in PS5
+    $cnt  = ($procs | Measure-Object).Count
+    $pids = ($procs | ForEach-Object { $_.ProcessId }) -join ", "
+    return @{ Count = $cnt; Pids = $pids }
 }
 
 function Show-Row {
-    param([string]$Label, [bool]$Up, [string]$Detail = "")
-    $tag   = if ($Up) { "[ UP ]  " } else { "[ DOWN ]" }
-    $color = if ($Up) { "Green"   } else { "Red"     }
-    $extra = if ($Detail) { "  PID: $Detail" } else { "" }
+    param([string]$Label, [int]$Count, [string]$Detail = "")
+    if ($Count -gt 0) {
+        $tag   = "[ UP ]  "
+        $color = "Green"
+        $extra = if ($Detail) { "  PID: $Detail" } else { "" }
+    } else {
+        $tag   = "[ DOWN ]"
+        $color = "Red"
+        $extra = ""
+    }
     Write-Host ("  {0,-28} {1}{2}" -f $Label, $tag, $extra) -ForegroundColor $color
 }
 
-# --- Ports ---
-Show-Row -Label "Redis          :6379" -Up (Test-Port -Port 6379)
-Show-Row -Label "FastAPI        :8001" -Up ((Test-Port -Port 8001) -or (Test-Port -Port 8000))
+# --- Port-based checks ---
+$redisUp    = if (Test-Port -Port 6379) { 1 } else { 0 }
+$apiUp      = if ((Test-Port -Port 8001) -or (Test-Port -Port 8000)) { 1 } else { 0 }
+$frontendUp = if (Test-Port -Port 3000)  { 1 } else { 0 }
 
-# --- Frontend ---
-$frontendUp = Test-Port -Port 3000
-Show-Row -Label "Frontend       :3000" -Up $frontendUp
-if ($frontendUp) {
+Show-Row -Label "Redis          :6379" -Count $redisUp
+Show-Row -Label "FastAPI        :8001" -Count $apiUp
+
+Show-Row -Label "Frontend       :3000" -Count $frontendUp
+if ($frontendUp -gt 0) {
     Write-Host "    --> http://localhost:3000/dashboard" -ForegroundColor Cyan
 }
 
-# --- Master ---
-$masterProcs = Get-ProcsByScript "start_master"
-$masterPids  = ($masterProcs | ForEach-Object { $_.ProcessId }) -join ", "
-Show-Row -Label "Master + Bot" -Up ($masterProcs.Count -gt 0) -Detail $masterPids
+# --- Process-based checks ---
+$master  = Get-ServiceInfo "start_master"
+$worker  = Get-ServiceInfo "start_worker"
+$gui     = Get-ServiceInfo "Launch_NexusSupreme"
 
-# --- Worker ---
-$workerProcs = Get-ProcsByScript "start_worker"
-$workerPids  = ($workerProcs | ForEach-Object { $_.ProcessId }) -join ", "
-Show-Row -Label "Worker" -Up ($workerProcs.Count -gt 0) -Detail $workerPids
-
-# --- GUI ---
-$guiProcs = Get-ProcsByScript "Launch_NexusSupreme"
-$guiPids  = ($guiProcs | ForEach-Object { $_.ProcessId }) -join ", "
-Show-Row -Label "Desktop GUI" -Up ($guiProcs.Count -gt 0) -Detail $guiPids
+Show-Row -Label "Master + Bot" -Count $master.Count  -Detail $master.Pids
+Show-Row -Label "Worker"       -Count $worker.Count  -Detail $worker.Pids
+Show-Row -Label "Desktop GUI"  -Count $gui.Count     -Detail $gui.Pids
 
 Write-Host ""
 Write-Host "------------------------------------------------" -ForegroundColor DarkGray
